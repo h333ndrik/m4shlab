@@ -186,6 +186,37 @@ button:focus-visible,
 
 #preview-label { min-width: 0; overflow-wrap: anywhere; }
 
+.preview-readout {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+#preview-time {
+  min-width: 88px;
+  color: #555;
+  text-align: right;
+}
+
+.sound-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #555;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.sound-toggle input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: #555;
+}
+
 .toggle button[aria-pressed="true"] {
   border-color: #454545;
   background: #fff;
@@ -707,6 +738,7 @@ progress {
   .viewer { height: 300px; }
   .preview-meta { align-items: flex-start; flex-direction: column; margin-bottom: 24px; }
   .preview-options { justify-content: space-between; width: 100%; }
+  .preview-readout { width: 100%; justify-content: space-between; margin-left: 0; }
   .preview-meta > button { width: 100%; }
   .section-label { align-items: center; flex-direction: row; }
   .section-tools { width: auto; gap: 4px; }
@@ -726,6 +758,8 @@ progress {
   .clip-controls button { min-width: 44px; min-height: 44px; padding: 8px; }
   .clip-speed-heading button { min-height: 44px; padding: 8px; }
   .clip-look select { min-height: 44px; }
+  .sound-toggle { min-height: 44px; }
+  .sound-toggle input { width: 20px; height: 20px; }
   .clip-speed input[type="range"] { min-height: 44px; }
   .connector { min-height: 44px; }
   .transition-dialog fieldset label { min-height: 44px; }

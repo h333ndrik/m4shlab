@@ -50,14 +50,16 @@ The intervening deployment-only `201d418`/`fb80db1` CNAME create/delete pair is 
 - Audio: the first audio track of each original source is aligned to the merged video timeline at 48 kHz stereo and exported as AAC-LC. Audio is not moshed.
 - Speed: entry-specific 0.1×–4.0× frame mapping with pitch-preserving `atempo` audio.
 - Randomize: reproducible 16-hex seeds, validated same-stream resampling, seed clearing on manual edits, and `random_seed` reports.
-- PWA: standalone install, light splash/theme, maskable m4 icons, service worker `v12`, 27 precached shell assets, runtime-cached ffmpeg.wasm, and offline app-shell startup.
+- PWA: standalone install, light splash/theme, maskable m4 icons, service worker `v13`, 27 precached shell assets, runtime-cached ffmpeg.wasm, and offline app-shell startup.
 - Branding and UI: m4 wordmark in the h4moshlab typographic system; h4moshlab-style light layout, dark preview well, horizontal timeline, and no visible compatibility panel.
 
 ## Post-v1.0 parity updates
 
 - Per-clip looks: Original / Black & white / B&W negative / Color negative are timeline-entry metadata applied to decoded RGBA pixels before the single WebCodecs I420 encode pass. Non-Original looks force preparation from the base bytes, include the look in the normalization cache key, survive undo/redo and reorder, and appear in source/boundary reports. Duplicate clips can carry different looks.
-- Service worker `v12` precaches 27 shell assets, including `looks.js`.
-- Current verification after looks: **79 Node / 28 WebCodecs / 6 PWA** checks passing.
+- Sound toggle: a preview-meta **Sound on** checkbox persists under `m4shlab-audio`, mutes the preview, and skips merged-audio assembly/muxing entirely when off. Reports expose `audio.included=false`, `audio.enabled=false`, and the reason.
+- Preview time/labels: `0.00 / 0.00 s` tracks the active video's current time and duration; source view reads `Clip preview · <filename>` and assembled view reads `Assembled preview · all clips and transitions`.
+- Service worker `v13` precaches 27 shell assets, including `looks.js`.
+- Current verification after looks + sound/time: **79 Node / 30 WebCodecs / 6 PWA** checks passing.
 
 ## Multi-clip implementation
 
@@ -85,7 +87,7 @@ The intervening deployment-only `201d418`/`fb80db1` CNAME create/delete pair is 
 - `manifest.json` declares standalone display, light `#f5f5f3` theme/background, `./` start/scope, SVG icon, 192px any icon, and 512px maskable PNG icon.
 - `favicon.svg` and `icon.svg` use Arial/Helvetica Bold 700 `m4` lettering on `#f5f5f3`; the favicon adapts the sibling h4 tile proportions, while the 512px PWA master keeps the wordmark within the maskable safe area. `favicon-32.png`, `icon-180.png`, `icon-192.png`, and `icon-512.png` are committed raster fallbacks.
 - `index.html` links the manifest, SVG and 32px PNG tab icons, sized 180px Apple touch icon, theme color, and Apple standalone metadata.
-- `sw.js` derives both `m4shlab-v12` and `m4shlab-runtime-v12` from one `VERSION` constant. Install precaches 27 app-shell files, including both favicon assets, `parser/hevc.js`, `classic-mosh.js`, `speed.js`, `looks.js`, `randomize.js`, and `audio.js`, skips `converter-worker.js` and ffmpeg.wasm, calls `skipWaiting()`, and activate deletes old versioned caches before `clients.claim()`.
+- `sw.js` derives both `m4shlab-v13` and `m4shlab-runtime-v13` from one `VERSION` constant. Install precaches 27 app-shell files, including both favicon assets, `parser/hevc.js`, `classic-mosh.js`, `speed.js`, `looks.js`, `randomize.js`, and `audio.js`, skips `converter-worker.js` and ffmpeg.wasm, calls `skipWaiting()`, and activate deletes old versioned caches before `clients.claim()`.
 - Static shell requests are cache-first. Navigation requests fall back to the cached `index.html`. Runtime cache-first applies only to `converter-worker.js` and the pinned jsDelivr ffmpeg core JS/WASM URLs.
 - `app.js` changes only by registering `./sw.js` after `load`; registration failures such as `file://` are swallowed so normal browser operation is unchanged.
 - Bump `VERSION` in `sw.js` whenever a shell or conversion-worker asset changes. Runtime cache separation keeps the 31 MB ffmpeg core out of shell precache; a version bump intentionally invalidates stale worker code too.
@@ -95,10 +97,10 @@ The intervening deployment-only `201d418`/`fb80db1` CNAME create/delete pair is 
 Current post-v1.0 baseline on 2026-11-03 with Node 26.13.0, FFmpeg 9.0.2, and Chrome 156:
 
 - `npm test`: **79/79 PASS**.
-- `npm run test:webcodecs`: **28/28 PASS**.
+- `npm run test:webcodecs`: **30/30 PASS**.
 - `npm run test:pwa`: **6/6 PASS**.
 - `node --check` for all JavaScript and `git diff --check`: PASS.
-- Released v1.0 service worker: `v11`, SHA-256 `a177914d77bc094949cc24fef38d8086306121434b67e6bf7fe674cbe473a50e`. Current looks-block shell is `v12`.
+- Released v1.0 service worker: `v11`, SHA-256 `a177914d77bc094949cc24fef38d8086306121434b67e6bf7fe674cbe473a50e`. Current parity shell is `v13`.
 - PWA precache: 27 shell assets including `looks.js`; manifest/installability and offline reload pass.
 - Melt repeat=4: 315/315 decoded samples, with all non-header RBSP bits byte-identical. Melt duration=12/repeat=2: exact 12-frame window, Continue tail at donor 7, 105/105 decoded; Restore inserts the byte-identical incoming IDR at merged sample 37 and decodes 106/106. Gentler Melt uses source donors [1,1,2,2,3,3,4,6,8,10,11,12], caps each pre-release step at two, and decodes 99/99; Gentler Restore adds the anchor. Loop Release group=4: 99/99 decoded samples with blocks at donors 1/13 and release tail at 21; duration=12 scales to donors [1,2] 3× plus a chronological window and rejoins at donor 13. Reset Pulse interval=6/repeat=2: 99/99 with reset IDRs at merged samples 25/31, donor tables [1,1,2,2,3], and tail donor 13; Restore decodes 100/100. POC type 0 Melt: 171/171. POC type 0 Reset Pulse: 99/99 with segment frame_num/POC starts at 1. Chained Melt→Loop Release: 195/195; Loop Release→Cut: 124/124; Reset Pulse→Cut: 124/124; Reset Pulse→Classic Mosh: 123/123.
 - Native B-frame Melt/Loop Release/Reset Pulse rejects loudly; browser tests confirm native B-frame sources auto-normalize with WebCodecs before the effect runs.
@@ -121,7 +123,7 @@ Current post-v1.0 baseline on 2026-11-03 with Node 26.13.0, FFmpeg 9.0.2, and Ch
 - Normalization target coverage: 1440×1920 + 768×1024 + 320×240 selects one shared 540×720 target.
 - Classic Mosh restore: Phase A 10-frame window exact NAL sequence, byte-identical IDR reinsertion, 75/75 decoded source frames; Phase B 50/50 decoded frames; continue byte-identical to full-length output.
 - Duration 1 accepted; overlong windows clamp and report; durations below one frame raise `ValueError`; chained boundaries retain independent settings.
-- PWA browser test: manifest valid with resolving icons and exact favicon links; service worker v12 active and controlling; 27 shell assets cached; old cache removed; runtime cache contains three ffmpeg entries; offline reload works; offline HEVC conversion and merge produce a 120,718-byte, 59-frame H.264 export.
+- PWA browser test: manifest valid with resolving icons and exact favicon links; service worker v13 active and controlling; 27 shell assets cached; old cache removed; runtime cache contains three ffmpeg entries; offline reload works; offline HEVC conversion and merge produce a 120,718-byte, 59-frame H.264 export.
 - PWA export SHA-256: `47a7fcc6972956e34b9147fead68159350bf16d5f339098436dc5cd8dd25c7b9`.
 
 `npm run test:webcodecs` produced:
@@ -150,7 +152,7 @@ Current post-v1.0 baseline on 2026-11-03 with Node 26.13.0, FFmpeg 9.0.2, and Ch
 
 - manifest/installability: PASS, including `beforeinstallprompt observed=true`;
 - service worker active and controlling, 27 shell assets precached off a fresh profile;
-- activation removed the previous cache and re-registered the v12 shell;
+- activation removed the previous cache and re-registered the v13 shell;
 - runtime cache: `converter-worker.js`, `ffmpeg-core.js`, `ffmpeg-core.wasm`;
 - fully offline HEVC conversion, merge, preview, and export: 59/59 decoded frames.
 

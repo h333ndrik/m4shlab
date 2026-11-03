@@ -36,6 +36,7 @@ const multiGopMergedPath = join(projectRoot, 'testmedia', 'webcodecs-browser-mul
 const hybridExportPath = join(projectRoot, 'testmedia', 'webcodecs-hybrid-export.mp4');
 const multiTimelineExportPath = join(projectRoot, 'testmedia', 'webcodecs-multitimeline-export.mp4');
 const looksMergedPath = join(projectRoot, 'testmedia', 'webcodecs-looks-merged.mp4');
+const audioDisabledPath = join(projectRoot, 'testmedia', 'webcodecs-audio-disabled.mp4');
 const looksFramePath = join(projectRoot, 'testmedia', 'webcodecs-looks-frame.rgb');
 const chromeCandidates = [
   process.env.CHROME_BIN,
@@ -903,6 +904,63 @@ try {
   command('ffmpeg', ['-v', 'error', '-i', audioMergedPath, '-map', '0:a:0', '-f', 'null', '-'], 'audio stream strict decode');
   console.log(`PASS audio merge exports AAC ${audioStream.sample_rate} Hz/${audioStream.channels}ch, 94080 expected samples, runtime-matched duration, encode=${audioState.audio.encodeEngine}, mux=${audioState.audio.muxEngine}`);
 
+  await client.evaluate(`(() => {
+    const sound = document.querySelector('#sound-toggle');
+    sound.checked = false;
+    sound.dispatchEvent(new Event('change', {bubbles: true}));
+  })()`);
+  await client.waitFor(`(() => {
+    if (!document.querySelector('#error').hidden) return true;
+    try {
+      const report = JSON.parse(document.querySelector('#report').textContent);
+      return report.stage === 'merged' && report.merge?.audio?.included === false;
+    } catch { return false; }
+  })()`, 120000);
+  const soundOff = await client.evaluate(`(() => {
+    const report = JSON.parse(document.querySelector('#report').textContent);
+    return {
+      error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
+      checked: document.querySelector('#sound-toggle').checked,
+      muted: document.querySelector('#preview-video').muted,
+      stored: localStorage.getItem('m4shlab-audio'),
+      audio: report.merge.audio,
+      reportAudio: report.audio,
+    };
+  })()`);
+  assert.equal(soundOff.error, null, soundOff.error);
+  assert.equal(soundOff.checked, false);
+  assert.equal(soundOff.muted, true);
+  assert.equal(soundOff.stored, 'false');
+  assert.equal(soundOff.audio.included, false);
+  assert.equal(soundOff.audio.enabled, false);
+  assert.equal(soundOff.reportAudio, false);
+  rmSync(mergedPath, {force: true});
+  rmSync(audioDisabledPath, {force: true});
+  await client.evaluate("document.querySelector('#export-button').click()");
+  await waitForDownload(mergedPath, 30000);
+  writeFileSync(audioDisabledPath, readFileSync(mergedPath));
+  const soundOffProbe = JSON.parse(command('ffprobe', [
+    '-v', 'error', '-show_entries', 'stream=codec_type', '-of', 'json', audioDisabledPath,
+  ], 'sound-off export probe').stdout);
+  assert.equal(soundOffProbe.streams.some(stream => stream.codec_type === 'audio'), false);
+  assert.equal(soundOffProbe.streams.some(stream => stream.codec_type === 'video'), true);
+
+  await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?sound-persisted=1'});
+  await client.waitFor("document.documentElement.dataset.appReady === 'true'", 10000);
+  const persistedSound = await client.evaluate(`({
+    checked: document.querySelector('#sound-toggle').checked,
+    muted: document.querySelector('#preview-video').muted,
+    stored: localStorage.getItem('m4shlab-audio'),
+  })`);
+  assert.deepEqual(persistedSound, {checked: false, muted: true, stored: 'false'});
+  await client.evaluate(`(() => {
+    const sound = document.querySelector('#sound-toggle');
+    sound.checked = true;
+    sound.dispatchEvent(new Event('change', {bubbles: true}));
+  })()`);
+  assert.equal(await client.evaluate("localStorage.getItem('m4shlab-audio')"), 'true');
+  console.log('PASS sound off skips audio assembly/muxing, exports a video-only MP4, mutes preview, and persists across reload');
+
   const audioFallbackScript = await client.send('Page.addScriptToEvaluateOnNewDocument', {
     source: "Object.defineProperty(globalThis, 'AudioEncoder', {value: undefined, configurable: true});",
   });
@@ -1239,8 +1297,29 @@ try {
   assert.equal(state.report.merge.mergedSamples, 49);
   assert.equal(state.report.merge.idrCount, 1);
   assert.equal(state.report.merge.startsWithSingleIdr, true);
+  await client.waitFor("document.querySelector('#preview-video').readyState >= 2 || document.querySelector('#preview-video').error", 15000);
+  await client.evaluate(`(() => {
+    const video = document.querySelector('#preview-video');
+    video.currentTime = 0.5;
+    video.dispatchEvent(new Event('timeupdate'));
+  })()`);
+  const clipPreview = await client.evaluate(`({
+    label: document.querySelector('#preview-label').textContent,
+    time: document.querySelector('#preview-time').textContent,
+    soundChecked: document.querySelector('#sound-toggle').checked,
+    muted: document.querySelector('#preview-video').muted,
+    expectedTime: document.querySelector('#preview-video').currentTime.toFixed(2) + ' / ' + document.querySelector('#preview-video').duration.toFixed(2) + ' s',
+  })`);
+  assert.equal(clipPreview.label, 'Clip preview · synthetic-b-a.mp4');
+  assert.equal(clipPreview.time, clipPreview.expectedTime);
+  assert.match(clipPreview.time, /^0\.50 \/ 0\.[0-9]{2} s$/);
+  assert.equal(clipPreview.soundChecked, true);
+  assert.equal(clipPreview.muted, false);
   await client.evaluate("document.querySelector('#show-modified').click()");
   await client.waitFor("document.querySelector('#preview-video').readyState >= 2 || document.querySelector('#preview-video').error", 15000);
+  const assembledLabel = await client.evaluate("document.querySelector('#preview-label').textContent");
+  assert.equal(assembledLabel, 'Assembled preview · all clips and transitions');
+  console.log('PASS preview labels switch between filename clip view and assembled sequence; time readout tracks current/duration and sound defaults on');
   const playback = await client.evaluate(`({
     readyState: document.querySelector('#preview-video').readyState,
     error: document.querySelector('#preview-video').error?.code ?? null,

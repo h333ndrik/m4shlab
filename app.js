@@ -56,6 +56,9 @@ const originalButton = document.querySelector('#show-original');
 const modifiedButton = document.querySelector('#show-modified');
 const exportButton = document.querySelector('#export-button');
 const previewLabel = document.querySelector('#preview-label');
+const previewTime = document.querySelector('#preview-time');
+const soundToggle = document.querySelector('#sound-toggle');
+const AUDIO_PREFERENCE_KEY = 'm4shlab-audio';
 const reportPanel = document.querySelector('#report-panel');
 const report = document.querySelector('#report');
 const undoButton = document.querySelector('#undo-button');
@@ -97,6 +100,26 @@ let normalizationAttempted = false;
 let undoStack = [];
 let redoStack = [];
 let refreshInFlight = 0;
+let soundEnabled = readSoundPreference();
+
+function readSoundPreference() {
+  try {
+    return localStorage.getItem(AUDIO_PREFERENCE_KEY) !== 'false';
+  } catch {
+    return true;
+  }
+}
+
+function writeSoundPreference() {
+  try {
+    localStorage.setItem(AUDIO_PREFERENCE_KEY, String(soundEnabled));
+  } catch {}
+}
+
+function applySoundPreference() {
+  soundToggle.checked = soundEnabled;
+  video.muted = !soundEnabled;
+}
 
 function formatBytes(value) {
   if (value < 1024) return `${value} B`;
@@ -653,6 +676,21 @@ function videoErrorText() {
   return `${labels[video.error.code] ?? 'Playback failed.'} (media error ${video.error.code})`;
 }
 
+function formatPreviewTime(value) {
+  return Number.isFinite(value) && value >= 0 ? value.toFixed(2) : '0.00';
+}
+
+function updatePreviewTime() {
+  const current = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+  const duration = Number.isFinite(video.duration) ? video.duration : 0;
+  previewTime.textContent = `${formatPreviewTime(current)} / ${formatPreviewTime(duration)} s`;
+}
+
+video.addEventListener('timeupdate', updatePreviewTime);
+video.addEventListener('durationchange', updatePreviewTime);
+video.addEventListener('loadedmetadata', updatePreviewTime);
+video.addEventListener('emptied', () => { previewTime.textContent = '0.00 / 0.00 s'; });
+
 video.addEventListener('error', () => {
   if (!video.getAttribute('src')) return;
   setError(`Preview failed: ${videoErrorText()}`);
@@ -673,6 +711,8 @@ function resetMerged() {
 }
 
 function setPreview(url, label, version = null) {
+  previewTime.textContent = '0.00 / 0.00 s';
+  video.muted = !soundEnabled;
   if (!url) {
     video.removeAttribute('src');
     video.load();
@@ -687,8 +727,12 @@ function setPreview(url, label, version = null) {
   }
 }
 
-function sourceCutLabel() {
-  return clips[0]?.conversion ? 'clip 1 cut (converted source)' : 'clip 1 cut (input)';
+function clipPreviewLabel() {
+  return clips[0] ? `Clip preview · ${clips[0].file.name}` : '—';
+}
+
+function assembledPreviewLabel() {
+  return 'Assembled preview · all clips and transitions';
 }
 
 function showVersion(version) {
@@ -697,7 +741,7 @@ function showVersion(version) {
   setError('');
   setPreview(
     isMerged ? merged.mergedUrl : merged.cutUrl,
-    isMerged ? `merged ${clips.length} clip${clips.length === 1 ? '' : 's'} · video only` : sourceCutLabel(),
+    isMerged ? assembledPreviewLabel() : clipPreviewLabel(),
     isMerged ? 'merged' : 'original',
   );
 }
@@ -712,7 +756,7 @@ function updateSingleClipState() {
   modifiedButton.disabled = true;
 
   if (clips.length === 1) {
-    setPreview(clips[0].url, sourceCutLabel(), 'original');
+    setPreview(clips[0].url, clipPreviewLabel(), 'original');
     emptyPreview.hidden = true;
     status.textContent = `${clips[0].file.name} loaded as clip A (${clipMode(clips[0])}) · add another clip to create a transition.`;
   } else {
@@ -1635,19 +1679,20 @@ async function addMergedAudio(result, clips) {
   return result;
 }
 
-function syncLookControlsBusy() {
+function syncRenderControlsBusy() {
   const busy = refreshInFlight > 0;
   for (const select of document.querySelectorAll('.clip-look select')) select.disabled = busy;
+  soundToggle.disabled = busy;
 }
 
 async function refreshSequence() {
   refreshInFlight += 1;
-  syncLookControlsBusy();
+  syncRenderControlsBusy();
   try {
     await refreshSequenceInternal();
   } finally {
     refreshInFlight -= 1;
-    syncLookControlsBusy();
+    syncRenderControlsBusy();
   }
 }
 
@@ -1702,7 +1747,7 @@ async function refreshSequenceInternal() {
   originalButton.disabled = false;
   modifiedButton.disabled = true;
   exportButton.disabled = true;
-  setPreview(clips[0].url, sourceCutLabel(), 'original');
+  setPreview(clips[0].url, clipPreviewLabel(), 'original');
   emptyPreview.hidden = true;
   status.textContent = 'Preparing the sequence…';
 
@@ -1806,7 +1851,16 @@ async function refreshSequenceInternal() {
       );
     }
     if (token !== refreshToken) return;
-    result = await addMergedAudio(result, clips);
+    if (soundEnabled) {
+      result = await addMergedAudio(result, clips);
+    } else {
+      result.report.audio = {
+        included: false,
+        enabled: false,
+        reason: 'sound toggle is off',
+      };
+    }
+    result.report.audioEnabled = result.report.audio?.included === true;
     if (token !== refreshToken) return;
     const cutUrl = URL.createObjectURL(new Blob([result.cut], {type: 'video/mp4'}));
     const mergedUrl = URL.createObjectURL(new Blob([result.output], {type: 'video/mp4'}));
@@ -1851,6 +1905,7 @@ async function refreshSequenceInternal() {
           random_seed: clip.randomSeed ?? null,
         };
       }),
+      audio: result.report.audio?.included === true,
       merge: result.report,
       cutByteIdentical: result.cut.byteLength === clips[0].bytes.byteLength
         && result.cut.every((value, index) => value === clips[0].bytes[index]),
@@ -1878,6 +1933,13 @@ inputB.addEventListener('change', () => {
   inputB.value = '';
   if (file) loadClipLegacy('b', file);
 });
+soundToggle.addEventListener('change', () => {
+  soundEnabled = soundToggle.checked;
+  writeSoundPreference();
+  applySoundPreference();
+  setError('');
+  if (clips.length > 1) refreshSequence();
+});
 originalButton.addEventListener('click', () => showVersion('original'));
 modifiedButton.addEventListener('click', () => showVersion('merged'));
 undoButton.addEventListener('click', undoTimeline);
@@ -1900,6 +1962,7 @@ dropZone.addEventListener('drop', event => {
 window.addEventListener('dragover', event => event.preventDefault());
 window.addEventListener('drop', event => event.preventDefault());
 
+applySoundPreference();
 updateHistoryButtons();
 updateSingleClipState();
 document.documentElement.dataset.appReady = 'true';
