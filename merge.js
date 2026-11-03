@@ -622,7 +622,7 @@ function integerOption(value, fallback, min, max, label) {
   return resolved;
 }
 
-function loopReleaseSchedule(count, loopFrames) {
+function loopReleaseSchedule(count, loopFrames, smooth = false) {
   if (!Number.isInteger(count) || count < 1) throw new Mp4Error('Loop Release needs at least one incoming sample.');
   const positions = [];
   const blocks = [];
@@ -639,9 +639,43 @@ function loopReleaseSchedule(count, loopFrames) {
   }
   const tailStart = positions.length;
   for (let position = tailStart; position < count; position += 1) positions.push(position);
+  const basePositions = [...positions];
+  const bridges = [];
+  if (smooth) {
+    const boundaries = [
+      ...blocks.slice(1).map((block, index) => ({
+        outputStart: block.emittedStart,
+        label: `${blocks[index].repeats}x-to-${block.repeats}x`,
+      })),
+      ...(tailStart < count ? [{outputStart: tailStart, label: 'tail'}] : []),
+    ];
+    for (const boundary of boundaries) {
+      let previousDonor = positions[boundary.outputStart - 1];
+      const fromDonor = previousDonor;
+      let changed = 0;
+      for (let outputIndex = boundary.outputStart; outputIndex < positions.length; outputIndex += 1) {
+        const desired = basePositions[outputIndex];
+        if (desired <= previousDonor + 2) break;
+        positions[outputIndex] = previousDonor + 2;
+        previousDonor = positions[outputIndex];
+        changed += 1;
+      }
+      if (changed > 0) {
+        bridges.push({
+          ...boundary,
+          frames: changed,
+          fromDonor,
+          toDonor: previousDonor,
+        });
+      }
+    }
+  }
   return {
     positions,
+    basePositions,
     blocks,
+    bridges,
+    smooth,
     tailStart,
   };
 }
@@ -689,15 +723,18 @@ function effectParameters(method, options = {}) {
       loopFrames: null,
     };
   }
-  if (options.smooth === true) throw new Mp4Error('Gentler cadence is only available for Melt.');
   if (method === 'loop') {
+    if (options.smooth !== undefined && typeof options.smooth !== 'boolean') {
+      throw new Mp4Error('Loop smooth must be a boolean.');
+    }
     return {
       method,
       repeat: null,
-      smooth: false,
+      smooth: options.smooth === true,
       loopFrames: integerOption(options.loopFrames ?? options.loop_frames, 4, LOOP_FRAMES_MIN, LOOP_FRAMES_MAX, 'Loop frames'),
     };
   }
+  if (options.smooth === true) throw new Mp4Error('Gentler cadence is only available for Melt and Loop Release.');
   if (method === 'reset-pulse') {
     return {
       method,
@@ -782,7 +819,7 @@ function prepareEffectB(inputB, parsedB, method, options = {}) {
   const firstIdr = nals.find(nal => nal.type === IDR_NAL_TYPE);
   if (!firstIdr) throw new Mp4Error('Clip B has no IDR NAL unit');
   const settings = resolveEffectSettings(track, firstIdr.sampleIndex, method, options);
-  if (effect.smooth && !explicitDuration) throw new Mp4Error('Gentler Melt cadence requires an explicit duration window.');
+  if (effect.smooth && !explicitDuration) throw new Mp4Error(`Gentler ${effect.method === 'loop' ? 'Loop Release' : 'Melt'} cadence requires an explicit duration window.`);
   const sourceSamples = track.samples.map(sample => {
     const sampleNals = bySample.get(sample.index) ?? [];
     const retainedNals = sampleNals.filter(nal => {
@@ -826,7 +863,7 @@ function prepareEffectB(inputB, parsedB, method, options = {}) {
   let meltReleaseOutputIndex = null;
   if (effect.method === 'loop') {
     const windowFrames = explicitDuration ? settings.durationFrames : availableAfterBoundary.length;
-    loopPlan = loopReleaseSchedule(windowFrames, effect.loopFrames);
+    loopPlan = loopReleaseSchedule(windowFrames, effect.loopFrames, effect.smooth);
     const describeBlock = block => ({
       emittedStart: block.emittedStart,
       donorStart: availableAfterBoundary[block.donorPositions[0]].sample.index,
@@ -843,6 +880,9 @@ function prepareEffectB(inputB, parsedB, method, options = {}) {
       windowFrames,
       positions: loopPlan.positions,
       blocks: loopPlan.blocks.map(describeBlock),
+      basePositions: loopPlan.basePositions,
+      bridges: loopPlan.bridges,
+      smooth: loopPlan.smooth,
       tailStart: loopPlan.tailStart,
       tailDonorStart: availableAfterBoundary[loopPlan.tailStart]?.sample.index ?? null,
     };

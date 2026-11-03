@@ -356,6 +356,7 @@ function effectSettingsForClip(clip) {
       durationFrames: settings.durationFrames,
       durationSeconds: settings.durationSeconds,
       ending: settings.ending,
+      smooth: clip.loopSmooth === true,
     };
   }
   if (clip?.transition === 'reset-pulse') {
@@ -539,7 +540,7 @@ function renderConnector(index) {
     duration.textContent = `${effect.durationSeconds.toFixed(2)} s · ${effect.repeat}× · ${effect.smooth ? 'gentler' : 'original'} · ${effect.ending}`;
   } else if (incoming.transition === 'loop') {
     const effect = effectSettingsForClip(incoming);
-    duration.textContent = `${effect.durationSeconds.toFixed(2)} s · ${effect.loopFrames}f · ${effect.ending}`;
+    duration.textContent = `${effect.durationSeconds.toFixed(2)} s · ${effect.loopFrames}f · ${effect.smooth ? 'gentler' : 'original'} · ${effect.ending}`;
   } else if (incoming.transition === 'reset-pulse') {
     const effect = effectSettingsForClip(incoming);
     duration.textContent = `${effect.durationSeconds.toFixed(2)} s · ${effect.resetInterval}f / ${effect.repeat}×`;
@@ -810,7 +811,7 @@ function updateTransitionOptionsVisibility() {
   const method = transitionDialog.querySelector('input[name="transition-method"]:checked')?.value;
   classicMoshOptions.hidden = method === 'cut';
   nalEffectOptions.hidden = method !== 'melt' && method !== 'loop';
-  meltCadenceControl.hidden = method !== 'melt';
+  meltCadenceControl.hidden = method !== 'melt' && method !== 'loop';
   resetPulseOptions.hidden = method !== 'reset-pulse';
   updateRandomizeAvailability();
 }
@@ -836,7 +837,9 @@ function setEffectParameterControl(method, clip) {
   if (method === 'loop') {
     effectParameter.min = '2';
     effectParameter.max = '48';
-    effectParameter.value = String(effectSettingsForClip({...clip, transition: 'loop'}).loopFrames);
+    const loop = effectSettingsForClip({...clip, transition: 'loop'});
+    effectParameter.value = String(loop.loopFrames);
+    meltCadence.value = loop.smooth ? 'gentler' : 'original';
   } else {
     effectParameter.min = '2';
     effectParameter.max = '12';
@@ -972,7 +975,7 @@ transitionRandomize.addEventListener('click', () => {
     updateTransitionOptionsVisibility();
     setEffectParameterControl(settings.method, randomizedClip);
     setResetPulseControls(settings.method, randomizedClip);
-    if (settings.method === 'melt') meltCadence.value = 'original';
+    if (settings.method === 'melt' || settings.method === 'loop') meltCadence.value = 'original';
     transitionDuration.value = String(settings.durationFrames);
     transitionEnding.value = settings.ending;
     activeRandomSeed = settings.randomSeed;
@@ -1006,6 +1009,7 @@ transitionApply.addEventListener('click', event => {
     } : {}),
     ...(selected === 'loop' ? {
       loopFrames: Math.round(Number(effectParameter.value)),
+      loopSmooth: meltCadence.value === 'gentler',
     } : {}),
     ...(selected === 'reset-pulse' ? {
       resetInterval: Math.round(Number(resetInterval.value)),
@@ -1019,6 +1023,7 @@ transitionApply.addEventListener('click', event => {
     || current.meltRepeat !== next.meltRepeat
     || current.meltSmooth !== next.meltSmooth
     || current.loopFrames !== next.loopFrames
+    || current.loopSmooth !== next.loopSmooth
     || current.resetInterval !== next.resetInterval
     || current.resetRepeat !== next.resetRepeat
     || current.randomSeed !== next.randomSeed) {
@@ -1178,6 +1183,7 @@ async function readClipFile(file, index, token) {
     meltRepeat: 4,
     meltSmooth: false,
     loopFrames: 4,
+    loopSmooth: false,
     resetInterval: 12,
     resetRepeat: 4,
     randomSeed: null,

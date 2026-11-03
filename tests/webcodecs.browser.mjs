@@ -548,6 +548,7 @@ try {
       classicHidden: document.querySelector('#classic-mosh-options').hidden,
       ending: document.querySelector('#transition-ending').value,
       cadenceHidden: document.querySelector('#melt-cadence-control').hidden,
+      cadence: document.querySelector('#melt-cadence').value,
       label: document.querySelector('#effect-parameter-label').textContent,
       max: Number(effect.max),
       value: Number(effect.value),
@@ -599,7 +600,8 @@ try {
   assert.equal(durationControls.loopState.label, 'loop frames');
   assert.equal(durationControls.loopState.classicHidden, false);
   assert.equal(durationControls.loopState.ending, 'continue');
-  assert.equal(durationControls.loopState.cadenceHidden, true);
+  assert.equal(durationControls.loopState.cadenceHidden, false);
+  assert.equal(durationControls.loopState.cadence, 'original');
   assert.equal(durationControls.loopState.max, 48);
   assert.equal(durationControls.loopState.value, 4);
   assert.match(durationControls.loopState.valueText, /4 frames/);
@@ -703,7 +705,7 @@ try {
         parameter.value = '${value}';
         parameter.dispatchEvent(new Event('input', {bubbles: true}));
       }
-      if (${JSON.stringify(method)} === 'melt' && ${options.smooth !== undefined}) {
+      if ((${JSON.stringify(method)} === 'melt' || ${JSON.stringify(method)} === 'loop') && ${options.smooth !== undefined}) {
         const cadence = document.querySelector('#melt-cadence');
         cadence.value = '${options.smooth ? 'gentler' : 'original'}';
         cadence.dispatchEvent(new Event('change', {bubbles: true}));
@@ -779,6 +781,18 @@ try {
   assert.equal(loopUi.effect.window.tail.donorStartSample, 13);
   assert.equal(loopUi.effect.scheduledSourceSamples.length, 74);
   assert.equal(loopUi.patchedSamples, 72);
+  const gentleLoopUi = await applyEffect('loop', 4, {durationFrames: 12, ending: 'continue', smooth: true});
+  assert.equal(gentleLoopUi.error, null, gentleLoopUi.error);
+  assert.equal(gentleLoopUi.method, 'loop');
+  assert.equal(gentleLoopUi.mergedSamples, 99);
+  assert.equal(gentleLoopUi.effect.smooth, true);
+  assert.deepEqual(gentleLoopUi.effect.loopSchedule.positions, [0, 1, 0, 1, 0, 1, 3, 5, 7, 9, 10, 11]);
+  assert.deepEqual(gentleLoopUi.effect.window.scheduledSourceSamples, [1, 2, 1, 2, 1, 2, 4, 6, 8, 10, 11, 12]);
+  assert.deepEqual(gentleLoopUi.effect.loopSchedule.bridges, [{outputStart: 6, label: 'tail', frames: 3, fromDonor: 1, toDonor: 7}]);
+  assert.equal(gentleLoopUi.effect.window.tail.donorStartSample, 13);
+  assert.equal(gentleLoopUi.patchedSamples, 72);
+  assert.equal(gentleLoopUi.previewEnabled, true);
+  console.log('PASS browser Gentler Loop bridges to the release tail with <=2 donor advances and decodes 99 samples');
   const resetUi = await applyEffect('reset-pulse', null, {durationFrames: 12, interval: 6, repeat: 2});
   assert.equal(resetUi.error, null, resetUi.error);
   assert.equal(resetUi.method, 'reset-pulse');

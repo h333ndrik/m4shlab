@@ -56,6 +56,7 @@ const meltDurationOutputPath = join(projectRoot, 'testmedia', 'synthetic-melt-du
 const meltRestoreOutputPath = join(projectRoot, 'testmedia', 'synthetic-melt-restore-test-output.mp4');
 const meltGentleOutputPath = join(projectRoot, 'testmedia', 'synthetic-melt-gentle-test-output.mp4');
 const loopDurationOutputPath = join(projectRoot, 'testmedia', 'synthetic-loop-duration-test-output.mp4');
+const loopGentleOutputPath = join(projectRoot, 'testmedia', 'synthetic-loop-gentle-test-output.mp4');
 const resetPulseOutputPath = join(projectRoot, 'testmedia', 'synthetic-reset-pulse-test-output.mp4');
 const resetPulsePoc0OutputPath = join(projectRoot, 'testmedia', 'synthetic-reset-pulse-poc0-test-output.mp4');
 const resetPulseRestoreOutputPath = join(projectRoot, 'testmedia', 'synthetic-reset-pulse-restore-test-output.mp4');
@@ -748,6 +749,7 @@ assertEffectNalPayloads(
   'loop',
 );
 writeFileSync(loopOutputPath, loopMerge.output);
+assert.equal(createHash('sha256').update(loopMerge.output).digest('hex'), 'a2654bb53026dcf11cb040c05aecdffd2299a387fb4f0693c3a8da9635541fe3', 'original Loop Release output changed');
 const loopProbe = command('ffprobe', [
   '-v', 'error', '-select_streams', 'v:0', '-count_frames',
   '-show_entries', 'stream=codec_name,nb_frames,nb_read_frames,has_b_frames',
@@ -947,6 +949,73 @@ const loopRestore = await mergeEffectH264(multiGopAInput, multiGopBInput, multiG
 assert.equal(loopRestore.report.mergedSamples, 100);
 assert.deepEqual(loopRestore.report.reInsertedIdrPositions, [37]);
 pass('Loop Release duration=12 scales the 3×/2× window, rejoins at donor 13, and Restore decodes with an anchor');
+
+const gentleLoopWindow = [1, 2, 1, 2, 1, 2, 4, 6, 8, 10, 11, 12];
+const gentleLoopSchedule = [
+  ...gentleLoopWindow,
+  ...Array.from({length: 62}, (_, index) => index + 13),
+];
+const gentleLoop = await mergeEffectH264(multiGopAInput, multiGopBInput, multiGopAParsed, multiGopBParsed, {
+  method: 'loop',
+  loopFrames: 4,
+  durationFrames: 12,
+  ending: 'continue',
+  smooth: true,
+});
+assert.equal(gentleLoop.report.effect.smooth, true);
+assert.equal(gentleLoop.report.effect.window.smooth, true);
+assert.deepEqual(gentleLoop.report.effect.loopSchedule.positions, [0, 1, 0, 1, 0, 1, 3, 5, 7, 9, 10, 11]);
+assert.deepEqual(gentleLoop.report.effect.loopSchedule.basePositions, [0, 1, 0, 1, 0, 1, 6, 7, 8, 9, 10, 11]);
+assert.deepEqual(gentleLoop.report.effect.loopSchedule.bridges, [{
+  outputStart: 6,
+  label: 'tail',
+  frames: 3,
+  fromDonor: 1,
+  toDonor: 7,
+}]);
+assert.deepEqual(gentleLoop.report.effect.window.scheduledSourceSamples, gentleLoopWindow);
+assert.deepEqual(gentleLoop.report.effect.scheduledSourceSamples, gentleLoopSchedule);
+assert.deepEqual(gentleLoop.report.effect.window.tail, {
+  outputStart: 37,
+  donorStartSample: 13,
+  restoreResetPosition: null,
+});
+const gentleLoopPositions = gentleLoop.report.effect.loopSchedule.positions;
+const gentleLoopWraps = [];
+for (let index = 1; index < gentleLoopPositions.length; index += 1) {
+  const delta = gentleLoopPositions[index] - gentleLoopPositions[index - 1];
+  if (delta < 0) gentleLoopWraps.push(index);
+  if (index < gentleLoop.report.effect.loopSchedule.bridges[0].outputStart + gentleLoop.report.effect.loopSchedule.bridges[0].frames) {
+    assert.ok(delta <= 2, `Gentler Loop donor advance ${delta} at output ${index}`);
+  }
+}
+assert.deepEqual(gentleLoopWraps, [2, 4]);
+assert.equal(gentleLoop.report.mergedSamples, 99);
+assert.equal(gentleLoop.report.frameAlignment.patchedSamples, 72);
+const gentleLoopParsed = parseMp4(gentleLoop.output);
+assertEffectNalPayloads(
+  extractNals(gentleLoop.output, gentleLoopParsed.videoTrack),
+  extractNals(multiGopAInput, multiGopAParsed.videoTrack).length,
+  multiGopBNals,
+  gentleLoop.report.effect.scheduledSourceSamples,
+  meltSps,
+  'loop-gentler',
+);
+writeFileSync(loopGentleOutputPath, gentleLoop.output);
+const gentleLoopProbe = command('ffprobe', [
+  '-v', 'error', '-select_streams', 'v:0', '-count_frames',
+  '-show_entries', 'stream=nb_read_frames,has_b_frames', '-of', 'default=noprint_wrappers=1', loopGentleOutputPath,
+], 'Gentler Loop decode probe');
+assert.match(gentleLoopProbe.stdout, /nb_read_frames=99/);
+assert.match(gentleLoopProbe.stdout, /has_b_frames=0/);
+command('ffmpeg', ['-v', 'error', '-i', loopGentleOutputPath, '-f', 'null', '-'], 'Gentler Loop strict decode');
+await assert.rejects(
+  () => mergeEffectH264(multiGopAInput, multiGopBInput, multiGopAParsed, multiGopBParsed, {
+    method: 'loop', loopFrames: 4, smooth: true,
+  }),
+  error => /Gentler Loop Release cadence requires an explicit duration window/.test(error.message),
+);
+pass('Gentler Loop bridges the tail jump with donor advances <=2, preserves block wraps, keeps the 12-frame window, and decodes 99/99');
 
 const clampedMeltDuration = await mergeEffectH264(multiGopAInput, multiGopBInput, multiGopAParsed, multiGopBParsed, {
   method: 'melt',
@@ -1430,6 +1499,15 @@ assert.equal(loopDurationAudio.expectedSamples, 99 * 1920);
 assert.equal(loopDurationAudio.segments[1].dropFrames, 1);
 assert.equal(loopDurationAudio.segments[1].videoFrames, 74);
 assert.equal(loopDurationAudio.segments[1].paddedFrames, 50);
+const gentleLoopAudio = assembleAudioTimeline({
+  clips: [audioA, audioB],
+  methods: ['loop'],
+  videoSampleCounts: [25, 99],
+  fps: 25,
+});
+assert.equal(gentleLoopAudio.expectedSamples, 99 * 1920);
+assert.equal(gentleLoopAudio.segments[1].videoFrames, 74);
+assert.equal(gentleLoopAudio.segments[1].paddedFrames, 50);
 const gentleAudio = assembleAudioTimeline({
   clips: [audioA, audioB],
   methods: [{method: 'melt', dropFrames: 1}],
@@ -1439,7 +1517,7 @@ const gentleAudio = assembleAudioTimeline({
 assert.equal(gentleAudio.expectedSamples, 99 * 1920);
 assert.equal(gentleAudio.segments[1].videoFrames, 74);
 assert.equal(gentleAudio.segments[1].paddedFrames, 50);
-pass('Melt, Gentler Melt, and Loop duration/ending windows keep audio sample-exact with linear timeline padding');
+pass('Melt, Gentler Melt, Gentler Loop, and Loop duration/ending windows keep audio sample-exact with linear timeline padding');
 
 const loopAudio = assembleAudioTimeline({
   clips: [audioA, audioB],
