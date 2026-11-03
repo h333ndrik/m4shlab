@@ -17,6 +17,9 @@ const fixtures = {
   effectA: join(projectRoot, 'testmedia', 'synthetic-multigop-a.mp4'),
   effectB: join(projectRoot, 'testmedia', 'synthetic-multigop-b.mp4'),
   bFrameB: join(projectRoot, 'testmedia', 'synthetic-b-b.mp4'),
+  audioA: join(projectRoot, 'testmedia', 'synthetic-audio-a.mp4'),
+  audioB: join(projectRoot, 'testmedia', 'synthetic-audio-b.mp4'),
+  silentB: join(projectRoot, 'testmedia', 'synthetic-audio-silent-b.mp4'),
   poc0A: join(projectRoot, 'testmedia', 'synthetic-multigop-poc0-a.mp4'),
   poc0B: join(projectRoot, 'testmedia', 'synthetic-multigop-poc0-b.mp4'),
 };
@@ -26,6 +29,7 @@ const normalizedPaths = {
 };
 const downloadDir = join(projectRoot, 'testmedia', 'webcodecs-browser-downloads');
 const mergedPath = join(downloadDir, 'm4shlab-merge.mp4');
+const audioMergedPath = join(projectRoot, 'testmedia', 'webcodecs-audio-merged.mp4');
 const multiGopMergedPath = join(projectRoot, 'testmedia', 'webcodecs-browser-multigop-merged.mp4');
 const hybridExportPath = join(projectRoot, 'testmedia', 'webcodecs-hybrid-export.mp4');
 const multiTimelineExportPath = join(projectRoot, 'testmedia', 'webcodecs-multitimeline-export.mp4');
@@ -675,6 +679,103 @@ try {
   assert.equal(normalizedEffectSources.aEncode, 'WebCodecs');
   assert.equal(normalizedEffectSources.bEncode, 'WebCodecs');
   console.log('PASS selecting Melt on native B-frame clips auto-normalizes both sources before applying the NAL effect');
+
+  await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?audio-merge=1'});
+  await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
+  await client.setFile('#file-input-a', fixtures.audioA);
+  await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 30000);
+  await client.setFile('#file-input-b', fixtures.audioB);
+  await client.waitFor(`(() => {
+    if (!document.querySelector('#error').hidden) return true;
+    const node = document.querySelector('#report');
+    if (!node.textContent) return false;
+    try {
+      const report = JSON.parse(node.textContent);
+      return report.stage === 'merged' && report.merge?.audio?.included === true;
+    } catch { return false; }
+  })()`, 120000);
+  const audioState = await client.evaluate(`(() => {
+    const node = document.querySelector('#report');
+    let report = null;
+    try { report = node.textContent ? JSON.parse(node.textContent) : null; } catch {}
+    return {
+      error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
+      status: document.querySelector('#status').textContent,
+      audio: report?.merge?.audio ?? null,
+      aAudio: report?.sources?.a?.audio ?? null,
+      bAudio: report?.sources?.b?.audio ?? null,
+      mergedSamples: report?.merge?.mergedSamples ?? null,
+    };
+  })()`);
+  assert.ok(audioState.audio, `audio merge report missing; status=${audioState.status}; error=${audioState.error}`);
+  assert.equal(audioState.error, null, audioState.error);
+  assert.equal(audioState.aAudio.hasAudio, true);
+  assert.equal(audioState.bAudio.hasAudio, true);
+  assert.equal(audioState.mergedSamples, 49);
+  assert.equal(audioState.audio.included, true);
+  assert.equal(audioState.audio.sampleRate, 48000);
+  assert.equal(audioState.audio.channels, 2);
+  assert.equal(audioState.audio.expectedSamples, 94080);
+  assert.equal(audioState.audio.segments[1].dropFrames, 1);
+  assert.equal(audioState.audio.segments[1].availableFrames, 24);
+  const audioSupport = await client.evaluate(`(async () => (await AudioEncoder.isConfigSupported({codec: 'mp4a.40.2', sampleRate: 48000, numberOfChannels: 2, bitrate: 128000})).supported)()`);
+  assert.equal(audioState.audio.encodeEngine, audioSupport ? 'WebCodecs' : 'ffmpeg.wasm');
+  assert.equal(audioState.audio.muxEngine, 'ffmpeg.wasm');
+
+  rmSync(mergedPath, {force: true});
+  await client.evaluate("document.querySelector('#export-button').click()");
+  await waitForDownload(mergedPath, 30000);
+  writeFileSync(audioMergedPath, readFileSync(mergedPath));
+  const audioProbe = command('ffprobe', [
+    '-v', 'error', '-show_entries', 'stream=codec_type,codec_name,sample_rate,channels,duration,nb_read_frames:format=duration',
+    '-count_frames', '-of', 'json', audioMergedPath,
+  ], 'audio merge probe');
+  const audioProbeJson = JSON.parse(audioProbe.stdout);
+  const audioStream = audioProbeJson.streams.find(stream => stream.codec_type === 'audio');
+  const videoStream = audioProbeJson.streams.find(stream => stream.codec_type === 'video');
+  assert.equal(audioStream.codec_name, 'aac');
+  assert.equal(Number(audioStream.sample_rate), 48000);
+  assert.equal(audioStream.channels, 2);
+  assert.ok(Math.abs(Number(audioStream.duration) - 1.96) < 0.002, audioStream.duration);
+  assert.ok(Math.abs(Number(videoStream.duration) - 1.96) < 0.002, videoStream.duration);
+  assert.equal(Number(audioProbeJson.format.duration), Number(videoStream.duration));
+  command('ffmpeg', ['-v', 'error', '-i', audioMergedPath, '-map', '0:a:0', '-f', 'null', '-'], 'audio stream strict decode');
+  console.log(`PASS audio merge exports AAC ${audioStream.sample_rate} Hz/${audioStream.channels}ch, 94080 expected samples, runtime-matched duration, encode=${audioState.audio.encodeEngine}, mux=${audioState.audio.muxEngine}`);
+
+  const audioFallbackScript = await client.send('Page.addScriptToEvaluateOnNewDocument', {
+    source: "Object.defineProperty(globalThis, 'AudioEncoder', {value: undefined, configurable: true});",
+  });
+  await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?audio-fallback=1'});
+  await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
+  assert.equal(await client.evaluate("typeof AudioEncoder"), 'undefined');
+  await client.setFile('#file-input-a', fixtures.audioA);
+  await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 30000);
+  await client.setFile('#file-input-b', fixtures.audioB);
+  await client.waitFor(`(() => {
+    if (!document.querySelector('#error').hidden) return true;
+    const node = document.querySelector('#report');
+    if (!node.textContent) return false;
+    try {
+      const report = JSON.parse(node.textContent);
+      return report.stage === 'merged' && report.merge?.audio?.included === true;
+    } catch { return false; }
+  })()`, 120000);
+  const audioFallback = await client.evaluate(`(() => {
+    const node = document.querySelector('#report');
+    let report = null;
+    try { report = node.textContent ? JSON.parse(node.textContent) : null; } catch {}
+    return {
+      error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
+      audio: report?.merge?.audio ?? null,
+    };
+  })()`);
+  assert.equal(audioFallback.error, null, audioFallback.error);
+  assert.equal(audioFallback.audio.encodeEngine, 'ffmpeg.wasm');
+  assert.equal(audioFallback.audio.muxEngine, 'ffmpeg.wasm');
+  assert.equal(audioFallback.audio.expectedSamples, 94080);
+  assert.ok(audioFallback.audio.encoderDelaySamples >= 0);
+  console.log(`PASS AudioEncoder unavailable: PCM encoded in ffmpeg.wasm and merged audio reports delay=${audioFallback.audio.encoderDelaySamples} samples`);
+  await client.send('Page.removeScriptToEvaluateOnNewDocument', {identifier: audioFallbackScript.identifier});
 
   await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?single-pair=1'});
   await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);

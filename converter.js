@@ -177,6 +177,114 @@ async function runConversion(inputBytes, options) {
   });
 }
 
+async function runWorkerTask(payload, transfer, options = {}) {
+  const id = nextRequestId++;
+  const slot = await acquireWorker();
+  const instance = slot.worker;
+  const started = performance.now();
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const clear = () => {
+      instance.removeEventListener('message', onMessage);
+      instance.removeEventListener('error', onWorkerError);
+      instance.removeEventListener('messageerror', onMessageError);
+    };
+    const fail = (error, healthy = true) => {
+      if (settled) return;
+      settled = true;
+      clear();
+      releaseWorker(slot, healthy);
+      reject(error);
+    };
+    const onMessage = event => {
+      const data = event.data;
+      if (data.requestId !== id) return;
+      if (data.type === 'status') options.onStatus?.(data.message);
+      else if (data.type === 'done') {
+        if (settled) return;
+        settled = true;
+        clear();
+        releaseWorker(slot, true);
+        resolve({
+          bytes: data.output ? new Uint8Array(data.output) : null,
+          present: data.present !== false,
+          elapsedMs: Math.round(performance.now() - started),
+        });
+      } else if (data.type === 'error') {
+        const outOfMemory = /out of memory|memory access out of bounds|cannot enlarge|allocation failed|oom|runtimeerror/i.test(data.message || '');
+        fail(friendlyError(data.message), !outOfMemory);
+      }
+    };
+    const onWorkerError = event => fail(friendlyError(event.message || 'converter worker failed'), false);
+    const onMessageError = () => fail(new Error('ffmpeg.wasm worker message could not be decoded'), false);
+    instance.addEventListener('message', onMessage);
+    instance.addEventListener('error', onWorkerError);
+    instance.addEventListener('messageerror', onMessageError);
+    instance.postMessage({id, ...payload}, transfer);
+  });
+}
+
+export async function extractAudioPcmWithFfmpeg(inputBytes, expectedSamples, options = {}) {
+  if (!(inputBytes instanceof Uint8Array)) throw new TypeError('extractAudioPcmWithFfmpeg expects a Uint8Array');
+  if (!Number.isInteger(expectedSamples) || expectedSamples < 0) throw new Error('Audio extraction requires an exact non-negative sample count.');
+  const copy = new Uint8Array(inputBytes.byteLength);
+  copy.set(inputBytes);
+  const task = await runWorkerTask({
+    type: 'extract-audio',
+    inputBytes: copy.buffer,
+    expectedSamples,
+  }, [copy.buffer], options);
+  if (!task.present) {
+    return {
+      pcm: null,
+      present: false,
+      engine: 'ffmpeg.wasm',
+      elapsedMs: task.elapsedMs,
+    };
+  }
+  const interleaved = new Float32Array(task.bytes.buffer, task.bytes.byteOffset, task.bytes.byteLength / 4);
+  const expectedInterleaved = expectedSamples * 2;
+  if (interleaved.length !== expectedInterleaved) {
+    throw new Error(`ffmpeg audio extraction returned ${interleaved.length} samples; expected ${expectedInterleaved}.`);
+  }
+  const planar = new Float32Array(expectedInterleaved);
+  for (let sample = 0; sample < expectedSamples; sample += 1) {
+    planar[sample] = interleaved[sample * 2];
+    planar[expectedSamples + sample] = interleaved[sample * 2 + 1];
+  }
+  return {
+    pcm: planar,
+    present: true,
+    engine: 'ffmpeg.wasm',
+    elapsedMs: task.elapsedMs,
+  };
+}
+
+async function runAudioMux(type, videoBytes, audioBytes, expectedSamples, options = {}) {
+  if (!(videoBytes instanceof Uint8Array) || !(audioBytes instanceof Uint8Array)) throw new TypeError('Audio muxing expects video and audio Uint8Arrays');
+  if (!Number.isInteger(expectedSamples) || expectedSamples <= 0) throw new Error('Audio muxing requires a positive exact sample count.');
+  const videoCopy = new Uint8Array(videoBytes.byteLength);
+  videoCopy.set(videoBytes);
+  const audioCopy = new Uint8Array(audioBytes.byteLength);
+  audioCopy.set(audioBytes);
+  const task = await runWorkerTask({
+    type,
+    videoBytes: videoCopy.buffer,
+    audioBytes: audioCopy.buffer,
+    expectedSamples,
+  }, [videoCopy.buffer, audioCopy.buffer], options);
+  if (!task.bytes || task.bytes.byteLength === 0) throw new Error('ffmpeg audio muxing returned an empty MP4.');
+  return {bytes: task.bytes, engine: 'ffmpeg.wasm', elapsedMs: task.elapsedMs};
+}
+
+export function muxAacWithFfmpeg(videoBytes, adtsBytes, expectedSamples, options = {}) {
+  return runAudioMux('mux-adts', videoBytes, adtsBytes, expectedSamples, options);
+}
+
+export function muxPcmWithFfmpeg(videoBytes, wavBytes, expectedSamples, options = {}) {
+  return runAudioMux('mux-wav', videoBytes, wavBytes, expectedSamples, options);
+}
+
 export async function convertToH264(inputBytes, options = {}) {
   if (inputBytes.byteLength > MAX_CONVERSION_BYTES) {
     throw new Error(`convert-on-load is limited to 100 MB; this file is ${(inputBytes.byteLength / (1024 * 1024)).toFixed(1)} MB.`);

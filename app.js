@@ -1,4 +1,4 @@
-import { parseMp4 } from './parser/mp4.js';
+import { childBoxes, parseBoxes, parseMp4 } from './parser/mp4.js';
 import { extractNals } from './parser/nal.js';
 import {
   CompatibilityError,
@@ -9,10 +9,28 @@ import {
   mergeMoshH264,
   mergeSequenceH264,
 } from './merge.js';
-import { convertToH264, MAX_CONVERSION_BYTES } from './converter.js';
+import {
+  convertToH264,
+  extractAudioPcmWithFfmpeg,
+  MAX_CONVERSION_BYTES,
+  muxAacWithFfmpeg,
+  muxPcmWithFfmpeg,
+} from './converter.js';
 import { isWebCodecsAvailable, normalizeWithWebCodecs } from './webcodecs.js';
 import { chooseNormalizationTarget } from './webcodecs-muxer.js';
 import { frameRateForTrack, maxMoshFrames } from './classic-mosh.js';
+import {
+  assembleAudioTimeline,
+  buildAdts,
+  encodeAacWithWebCodecs,
+  isAudioEncoderAvailable,
+  retimeMuxedAudio,
+  RuntimeError,
+  samplesPerFrame,
+  wavBytes,
+  AUDIO_CHANNELS,
+  AUDIO_SAMPLE_RATE,
+} from './audio.js';
 
 const MAX_CLIPS = 12;
 const inputA = document.querySelector('#file-input-a');
@@ -70,6 +88,92 @@ function formatBytes(value) {
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function sourceHasAudioTrack(bytes) {
+  try {
+    const boxes = parseBoxes(bytes, 0, bytes.byteLength, {allowSizeZero: true});
+    const moov = boxes.find(box => box.type === 'moov');
+    if (!moov) return false;
+    for (const trak of childBoxes(bytes, moov).filter(box => box.type === 'trak')) {
+      const mdia = childBoxes(bytes, trak).find(box => box.type === 'mdia');
+      if (!mdia) continue;
+      const hdlr = childBoxes(bytes, mdia).find(box => box.type === 'hdlr');
+      if (!hdlr || hdlr.payloadStart + 12 > hdlr.payloadEnd) continue;
+      let handler = '';
+      for (let index = 0; index < 4; index += 1) handler += String.fromCharCode(bytes[hdlr.payloadStart + 8 + index]);
+      if (handler === 'soun') return true;
+    }
+  } catch {}
+  return false;
+}
+
+function silentClipAudio(frames, reason = 'silent') {
+  return {
+    pcm: null,
+    frames,
+    hasAudio: false,
+    source: reason,
+    decodeEngine: null,
+    elapsedMs: 0,
+  };
+}
+
+function planarPcmFromAudioBuffer(buffer, frames) {
+  const left = buffer.getChannelData(0);
+  const right = buffer.numberOfChannels > 1 ? buffer.getChannelData(1) : left;
+  const pcm = new Float32Array(frames * AUDIO_CHANNELS);
+  pcm.set(left.subarray(0, Math.min(frames, left.length)), 0);
+  pcm.set(right.subarray(0, Math.min(frames, right.length)), frames);
+  return pcm;
+}
+
+async function extractClipAudio(sourceBytes, mp4, label) {
+  const track = mp4.videoTrack;
+  const frames = track.samples.length;
+  const fps = frameRateForTrack(track);
+  const frameSamples = samplesPerFrame(fps, AUDIO_SAMPLE_RATE);
+  const expectedSamples = frames * frameSamples;
+  if (!sourceHasAudioTrack(sourceBytes)) return silentClipAudio(frames, 'no audio track');
+
+  const started = performance.now();
+  const OfflineContext = globalThis.OfflineAudioContext ?? globalThis.webkitOfflineAudioContext;
+  if (OfflineContext) {
+    try {
+      const decodeContext = new OfflineContext(AUDIO_CHANNELS, 1, AUDIO_SAMPLE_RATE);
+      const input = sourceBytes.slice();
+      const decoded = await decodeContext.decodeAudioData(input.buffer);
+      if (!decoded || decoded.length === 0) throw new Error('No decodable audio frames.');
+      const renderContext = new OfflineContext(AUDIO_CHANNELS, expectedSamples, AUDIO_SAMPLE_RATE);
+      const source = renderContext.createBufferSource();
+      source.buffer = decoded;
+      source.connect(renderContext.destination);
+      source.start(0);
+      const rendered = await renderContext.startRendering();
+      return {
+        pcm: planarPcmFromAudioBuffer(rendered, expectedSamples),
+        frames,
+        hasAudio: true,
+        source: 'Web Audio decodeAudioData',
+        decodeEngine: 'Web Audio',
+        elapsedMs: Math.round(performance.now() - started),
+      };
+    } catch {}
+  }
+
+  showConversion(label, 'audio', 'Decoding the first audio track with ffmpeg.wasm…');
+  const extracted = await extractAudioPcmWithFfmpeg(sourceBytes, expectedSamples, {
+    onStatus: message => showConversion(label, 'audio', message),
+  });
+  if (!extracted.present) return silentClipAudio(frames, 'no audio track');
+  return {
+    pcm: extracted.pcm,
+    frames,
+    hasAudio: true,
+    source: 'extracted via ffmpeg.wasm',
+    decodeEngine: extracted.engine,
+    elapsedMs: extracted.elapsedMs,
+  };
+}
+
 function conversionEngine(clip) {
   const conversion = clip?.conversion;
   if (conversion?.engine === 'WebCodecs') return 'WebCodecs';
@@ -114,6 +218,13 @@ function clipReport(clip, index) {
     mode: clipMode(clip),
     path: conversionPath(clip),
     conversion: clip.conversion ? {...clip.conversion} : null,
+    audio: clip.audio ? {
+      frames: clip.audio.frames,
+      hasAudio: clip.audio.hasAudio === true,
+      source: clip.audio.source,
+      decodeEngine: clip.audio.decodeEngine,
+      elapsedMs: clip.audio.elapsedMs,
+    } : null,
   };
 }
 
@@ -691,6 +802,14 @@ async function readClipFile(file, index, token) {
     conversion = converted.conversion;
   }
 
+  let audio;
+  try {
+    audio = await extractClipAudio(sourceBytes, mp4, label);
+  } catch (cause) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    throw new Error(`${label} audio could not be prepared: ${detail}`);
+  }
+
   return {
     file,
     bytes,
@@ -702,6 +821,7 @@ async function readClipFile(file, index, token) {
     moshEnding: 'restore',
     meltRepeat: 4,
     loopFrames: 4,
+    audio,
   };
 }
 
@@ -928,6 +1048,129 @@ async function normalizeAllClips(token, target) {
   return true;
 }
 
+function videoSampleCountsForResult(result, clips) {
+  const firstFrames = clips[0].mp4.videoTrack.samples.length;
+  if (clips.length === 2) return [firstFrames, result.report.mergedSamples];
+  return [firstFrames, ...result.report.boundaries.map(boundary => boundary.mergedSamples)];
+}
+
+async function addMergedAudio(result, clips) {
+  const methods = clips.slice(1).map(clip => clip.transition);
+  const fps = frameRateForTrack(clips[0].mp4.videoTrack);
+  const timeline = assembleAudioTimeline({
+    clips: clips.map(clip => clip.audio ?? silentClipAudio(clip.mp4.videoTrack.samples.length)),
+    methods,
+    videoSampleCounts: videoSampleCountsForResult(result, clips),
+    fps,
+    sampleRate: AUDIO_SAMPLE_RATE,
+    channels: AUDIO_CHANNELS,
+  });
+  const sourceClipReport = clips.map((clip, index) => ({
+    index,
+    source: clip.audio?.source ?? 'silence',
+    decodeEngine: clip.audio?.decodeEngine ?? null,
+    elapsedMs: clip.audio?.elapsedMs ?? 0,
+    hasAudio: clip.audio?.hasAudio === true,
+  }));
+  if (!sourceClipReport.some(clip => clip.hasAudio)) {
+    result.report.audio = {
+      included: false,
+      reason: 'all source clips are silent or have no audio track',
+      frames: timeline.frames,
+      expectedSamples: timeline.expectedSamples,
+      sampleRate: AUDIO_SAMPLE_RATE,
+      channels: AUDIO_CHANNELS,
+      segments: timeline.segments,
+      sources: sourceClipReport,
+    };
+    return result;
+  }
+
+  let fallbackReason = null;
+  let muxed = null;
+  let encodeEngine = null;
+  let muxEngine = null;
+  let encodeElapsedMs = 0;
+  let encodedPackets = null;
+  let timingInfo = null;
+  if (isAudioEncoderAvailable()) {
+    try {
+      showConversion('Audio', 'encoding', `Encoding ${timeline.frames} frames of AAC-LC with WebCodecs…`);
+      const started = performance.now();
+      const aac = await encodeAacWithWebCodecs(timeline.pcm, timeline.expectedSamples, {
+        sampleRate: timeline.sampleRate,
+        channels: timeline.channels,
+      });
+      encodeElapsedMs = Math.round(performance.now() - started);
+      const adts = buildAdts(aac, timeline.expectedSamples);
+      encodedPackets = adts.packets;
+      showConversion('Audio', 'muxing', 'Muxing the merged video and WebCodecs AAC with ffmpeg.wasm…');
+      const mux = await muxAacWithFfmpeg(result.output, adts.bytes, timeline.expectedSamples, {
+        onStatus: message => showConversion('Audio', 'muxing', message),
+      });
+      timingInfo = retimeMuxedAudio(mux.bytes, timeline.expectedSamples, timeline.sampleRate);
+      muxed = timingInfo.bytes;
+      encodeEngine = 'WebCodecs';
+      muxEngine = mux.engine;
+    } catch (cause) {
+      fallbackReason = cause instanceof Error ? cause.message : String(cause);
+      showConversion('Audio', 'falling back', `WebCodecs AAC failed; encoding PCM in ffmpeg.wasm. ${fallbackReason}`);
+    }
+  }
+
+  if (!muxed) {
+    const started = performance.now();
+    const wav = wavBytes(timeline.pcm, timeline.expectedSamples, timeline.sampleRate, timeline.channels);
+    const mux = await muxPcmWithFfmpeg(result.output, wav, timeline.expectedSamples, {
+      onStatus: message => showConversion('Audio', 'encoding', message),
+    });
+    timingInfo = retimeMuxedAudio(mux.bytes, timeline.expectedSamples, timeline.sampleRate);
+    muxed = timingInfo.bytes;
+    encodeEngine = 'ffmpeg.wasm';
+    muxEngine = mux.engine;
+    encodeElapsedMs = Math.round(performance.now() - started);
+  }
+
+  let parsed;
+  try {
+    parsed = parseMp4(muxed);
+  } catch (cause) {
+    throw new RuntimeError(`Merged audio MP4 could not be validated: ${cause.message ?? cause}`);
+  }
+  const audioTrack = parsed.tracks.find(track => track.handler === 'soun' && track.complete);
+  if (!audioTrack?.mdhd || !audioTrack.stts) throw new RuntimeError('Merged audio MP4 has no complete audio track.');
+  const expectedDuration = timeline.expectedSamples / timeline.sampleRate;
+  if (!timingInfo || timingInfo.presentationSamples !== timeline.expectedSamples
+    || Math.abs(timingInfo.presentationDurationSeconds - expectedDuration) > 0.5 / timingInfo.movieTimescale) {
+    throw new RuntimeError(`Merged audio presentation ${timingInfo?.presentationDurationSeconds ?? 'unknown'} s does not match expected ${expectedDuration.toFixed(6)} s.`);
+  }
+
+  result.output = muxed;
+  result.report.outputBytes = muxed.byteLength;
+  result.report.audio = {
+    included: true,
+    frames: timeline.frames,
+    samplesPerFrame: timeline.samplesPerFrame,
+    expectedSamples: timeline.expectedSamples,
+    sampleRate: timeline.sampleRate,
+    channels: timeline.channels,
+    durationSeconds: expectedDuration,
+    encodeEngine,
+    muxEngine,
+    encodeElapsedMs,
+    encodedPackets,
+    encodedSamples: timingInfo.encodedSamples,
+    encoderDelaySamples: timingInfo.encoderDelaySamples,
+    mediaEndSamples: timingInfo.mediaEndSamples,
+    webcodecsFallbackReason: fallbackReason,
+    segments: timeline.segments,
+    sources: sourceClipReport,
+    policy: 'audio follows the clip timeline; Classic Mosh drops one incoming frame; Melt/Loop add silence for extra picture-only frames',
+  };
+  finishConversionPanel();
+  return result;
+}
+
 async function refreshSequence() {
   const token = ++refreshToken;
   resetMerged();
@@ -1054,6 +1297,8 @@ async function refreshSequence() {
       );
     }
     if (token !== refreshToken) return;
+    result = await addMergedAudio(result, clips);
+    if (token !== refreshToken) return;
     const cutUrl = URL.createObjectURL(new Blob([result.cut], {type: 'video/mp4'}));
     const mergedUrl = URL.createObjectURL(new Blob([result.output], {type: 'video/mp4'}));
     merged = {result, cutUrl, mergedUrl};
@@ -1066,7 +1311,8 @@ async function refreshSequence() {
       link.click();
     };
     showVersion('original');
-    status.textContent = `${clips.length} clips · ${result.report.mergedSamples} samples · ${result.report.mergedDurationSeconds.toFixed(2)} s · video only`;
+    const audioLabel = result.report.audio?.included ? 'video + AAC audio' : 'video only';
+    status.textContent = `${clips.length} clips · ${result.report.mergedSamples} samples · ${result.report.mergedDurationSeconds.toFixed(2)} s · ${audioLabel}`;
     report.textContent = JSON.stringify({
       stage: 'merged',
       sources: sourcesReport(),

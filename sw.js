@@ -1,4 +1,4 @@
-const VERSION = 'v4';
+const VERSION = 'v5';
 const CACHE_NAME = `m4shlab-${VERSION}`;
 const RUNTIME_CACHE = `m4shlab-runtime-${VERSION}`;
 const APP_SHELL = [
@@ -16,6 +16,7 @@ const APP_SHELL = [
   './converter.js',
   './conversion-settings.js',
   './classic-mosh.js',
+  './audio.js',
   './hybrid-encoder.js',
   './manifest.json',
   './icon.svg',

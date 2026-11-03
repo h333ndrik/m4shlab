@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -11,6 +12,7 @@ import { buildNormalizedMp4, chooseNormalizationTarget } from '../webcodecs-muxe
 import { MAX_TARGET_LONG_SIDE, capNormalizationDimensions } from '../conversion-settings.js';
 import { parseSps } from '../parser/sps.js';
 import { ValueError, frameRateForTrack } from '../classic-mosh.js';
+import { assembleAudioTimeline, buildAdts, retimeMuxedAudio, RuntimeError, samplesPerFrame, wavBytes } from '../audio.js';
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const fixturePath = join(projectRoot, 'testmedia', 'synthetic-h264.mp4');
@@ -28,6 +30,11 @@ const phaseBFixtures = {
   b: join(projectRoot, 'testmedia', 'synthetic-b-b.mp4'),
   mismatch: join(projectRoot, 'testmedia', 'synthetic-b-mismatch.mp4'),
   timescale: join(projectRoot, 'testmedia', 'synthetic-b-timescale.mp4'),
+};
+const audioFixtures = {
+  a: join(projectRoot, 'testmedia', 'synthetic-audio-a.mp4'),
+  b: join(projectRoot, 'testmedia', 'synthetic-audio-b.mp4'),
+  silentB: join(projectRoot, 'testmedia', 'synthetic-audio-silent-b.mp4'),
 };
 const multiGopFixtures = {
   a: join(projectRoot, 'testmedia', 'synthetic-multigop-a.mp4'),
@@ -129,7 +136,7 @@ function assertEffectNalPayloads(outputNals, aNalCount, sourceNals, scheduledSou
   assert.ok(headerBitsChanged > 0, `${label} did not renumber any slice headers`);
 }
 
-const requiredFixtures = [fixturePath, multiSliceIdrPath, ...Object.values(tierOneFixtures), ...Object.values(phaseBFixtures), ...Object.values(multiGopFixtures)];
+const requiredFixtures = [fixturePath, multiSliceIdrPath, ...Object.values(tierOneFixtures), ...Object.values(phaseBFixtures), ...Object.values(audioFixtures), ...Object.values(multiGopFixtures)];
 if (requiredFixtures.some(path => !existsSync(path))) {
   console.log('One or more fixtures are missing; generating local test media with ffmpeg.');
   command('bash', ['testmedia/generate.sh'], 'fixture generation');
@@ -718,6 +725,133 @@ const effectSequenceProbe = command('ffprobe', [
 const effectSequenceFrames = Number(/nb_read_frames=(\d+)/.exec(effectSequenceProbe.stdout)?.[1] ?? 0);
 assert.equal(effectSequenceFrames, 199);
 pass('three-clip Melt then Loop chain emits and decodes 199/199 samples with the running-chain frame counters');
+
+const audioSourceHashes = Object.fromEntries(Object.entries(audioFixtures).map(([key, path]) => [key,
+  createHash('sha256').update(readFileSync(path)).digest('hex'),
+]));
+const audioFrameSamples = samplesPerFrame(25);
+assert.equal(audioFrameSamples, 1920);
+function testClipAudio(frames, base, source = 'test tone') {
+  const sampleFrames = frames * audioFrameSamples;
+  const pcm = new Float32Array(sampleFrames * 2);
+  for (let frame = 0; frame < frames; frame += 1) {
+    pcm[frame * audioFrameSamples] = base + frame;
+    pcm[sampleFrames + frame * audioFrameSamples] = -(base + frame);
+  }
+  return {pcm, frames, source, hasAudio: true};
+}
+const audioA = testClipAudio(25, 1000, 'A tone');
+const audioB = testClipAudio(25, 5000, 'B tone');
+const classicAudio = assembleAudioTimeline({
+  clips: [audioA, audioB],
+  methods: ['classic-mosh'],
+  videoSampleCounts: [25, 49],
+  fps: 25,
+});
+assert.equal(classicAudio.frames, 49);
+assert.equal(classicAudio.expectedSamples, 49 * 1920);
+assert.deepEqual(classicAudio.segments[1], {
+  clipIndex: 1,
+  method: 'classic-mosh',
+  sourceFrames: 25,
+  dropFrames: 1,
+  availableFrames: 24,
+  paddedFrames: 0,
+  videoFrames: 24,
+  source: 'B tone',
+});
+for (let frame = 0; frame < 24; frame += 1) {
+  assert.equal(classicAudio.pcm[25 * 1920 + frame * 1920], audioB.pcm[(frame + 1) * 1920]);
+  assert.equal(classicAudio.pcm[49 * 1920 + 25 * 1920 + frame * 1920], audioB.pcm[25 * 1920 + (frame + 1) * 1920]);
+}
+pass('Classic audio assembly drops exactly one incoming frame and preserves the remaining second-frame PCM samples');
+
+const silentAudio = assembleAudioTimeline({
+  clips: [audioA, {pcm: null, frames: 25, source: 'silence', hasAudio: false}],
+  methods: ['classic-mosh'],
+  videoSampleCounts: [25, 49],
+  fps: 25,
+});
+for (let sample = 25 * 1920; sample < 49 * 1920; sample += 1) {
+  assert.equal(silentAudio.pcm[sample], 0);
+  assert.equal(silentAudio.pcm[49 * 1920 + sample], 0);
+}
+pass('a silent clip contributes exact stereo silence to a mixed audio timeline');
+
+const meltAudio = assembleAudioTimeline({
+  clips: [audioA, audioB],
+  methods: ['melt'],
+  videoSampleCounts: [25, 103],
+  fps: 25,
+});
+assert.equal(meltAudio.segments[1].availableFrames, 25);
+assert.equal(meltAudio.segments[1].paddedFrames, 53);
+assert.equal(meltAudio.pcm.length, 103 * 1920 * 2);
+for (let sample = 50 * 1920; sample < 103 * 1920; sample += 1) {
+  assert.equal(meltAudio.pcm[sample], 0);
+  assert.equal(meltAudio.pcm[103 * 1920 + sample], 0);
+}
+pass('Melt audio follows the linear clip timeline and pads extra picture-only frames with sample-exact silence');
+
+assert.throws(
+  () => assembleAudioTimeline({
+    clips: [audioA, testClipAudio(26, 9000)],
+    methods: ['cut'],
+    videoSampleCounts: [25, 50],
+    fps: 25,
+  }),
+  error => error instanceof RuntimeError && /no audio is trimmed silently/.test(error.message),
+);
+assert.throws(
+  () => assembleAudioTimeline({
+    clips: [audioA, {pcm: new Float32Array(7), frames: 25}],
+    methods: ['cut'],
+    videoSampleCounts: [25, 50],
+    fps: 25,
+  }),
+  error => error instanceof RuntimeError && /does not match 25 frames/.test(error.message),
+);
+pass('audio/video sample mismatches raise RuntimeError instead of producing a broken export');
+
+const testWav = wavBytes(audioA.pcm, audioA.frames * audioFrameSamples);
+assert.equal(String.fromCharCode(...testWav.subarray(0, 4)), 'RIFF');
+assert.equal(new DataView(testWav.buffer).getUint32(40, true), 25 * audioFrameSamples * 2 * 2);
+const fakeAac = {
+  chunks: [{data: Uint8Array.of(1, 2, 3)}],
+  description: Uint8Array.of(0x11, 0x90),
+  sampleRate: 48000,
+  channels: 2,
+  frameSamples: 1024,
+};
+const adts = buildAdts(fakeAac, 1024);
+assert.equal(adts.packets, 1);
+assert.equal(adts.bytes[0], 0xff);
+assert.equal(adts.bytes[1], 0xf1);
+assert.equal((adts.bytes[3] & 0x03) << 11 | adts.bytes[4] << 3 | adts.bytes[5] >> 5, 10);
+pass('WAV fallback and ADTS AAC packetization emit exact-size payload headers');
+
+const audioSourceBytes = new Uint8Array(readFileSync(audioFixtures.a));
+const retimedAudio = retimeMuxedAudio(audioSourceBytes, 48000, 48000);
+const retimedAudioMp4 = parseMp4(retimedAudio.bytes);
+const retimedTrack = retimedAudioMp4.tracks.find(track => track.handler === 'soun');
+assert.equal(retimedAudio.presentationSamples, 48000);
+assert.equal(retimedAudio.presentationDurationSeconds, 1);
+assert.equal(retimedAudio.encoderDelaySamples, 1024);
+assert.equal(retimedAudio.encodedSamples, 49024);
+assert.equal(retimedTrack.mdhd.duration, 49024);
+assert.equal(retimedTrack.tkhd.duration, 48000);
+assert.equal(retimedTrack.stts.durations.reduce((total, value) => total + value, 0), 49024);
+assert.equal(audioSourceBytes.length, readFileSync(audioFixtures.a).byteLength);
+assert.throws(
+  () => retimeMuxedAudio(audioSourceBytes, 50000, 48000),
+  error => error instanceof RuntimeError && /needs at least 51024/.test(error.message),
+);
+pass('muxed AAC keeps its 1024-sample encoder delay while the edit list presents exactly 48000 samples; short packets fail loudly');
+
+for (const [key, expectedHash] of Object.entries(audioSourceHashes)) {
+  assert.equal(createHash('sha256').update(readFileSync(audioFixtures[key])).digest('hex'), expectedHash, `Audio source ${key} changed`);
+}
+pass('audio test sources remain byte-identical after timelines, WAV construction, and ADTS packetization');
 
 await assert.rejects(
   () => mergeEffectH264(phaseAInput, phaseBInput, phaseAParsed, phaseBParsed, {method: 'melt', repeat: 4}),

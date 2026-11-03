@@ -17,7 +17,7 @@ const shellPaths = [
   '/', '/index.html', '/styles.css', '/app.js',
   '/parser/mp4.js', '/parser/nal.js', '/parser/sps.js',
   '/merge.js', '/mosh.js', '/webcodecs.js', '/webcodecs-muxer.js',
-  '/converter.js', '/conversion-settings.js', '/classic-mosh.js', '/hybrid-encoder.js',
+  '/converter.js', '/conversion-settings.js', '/classic-mosh.js', '/audio.js', '/hybrid-encoder.js',
   '/manifest.json', '/icon.svg', '/icon-192.png', '/icon-512.png', '/icon-180.png',
 ];
 const chromeCandidates = [
@@ -225,7 +225,7 @@ try {
 
   const pwaState = await client.evaluate(`(async () => {
     const registration = await navigator.serviceWorker.ready;
-    const cache = await caches.open('m4shlab-v4');
+    const cache = await caches.open('m4shlab-v5');
     return {
       manifestHref: document.querySelector('link[rel="manifest"]')?.getAttribute('href'),
       themeColor: document.querySelector('meta[name="theme-color"]')?.content,
@@ -260,9 +260,9 @@ try {
   console.log(`PASS service worker registered, controlled the page, precached ${shellPaths.length} shell assets, and Chrome reports no manifest/installability errors; beforeinstallprompt observed=${pwaState.installPromptAvailable}`);
 
   await client.evaluate(`(async () => {
-    const old = await caches.open('m4shlab-v3');
+    const old = await caches.open('m4shlab-v4');
     await old.put('/old-shell.txt', new Response('old shell'));
-    const oldRuntime = await caches.open('m4shlab-runtime-v3');
+    const oldRuntime = await caches.open('m4shlab-runtime-v4');
     await oldRuntime.put('/old-worker.js', new Response('old worker'));
     const registration = await navigator.serviceWorker.getRegistration();
     await registration.unregister();
@@ -271,9 +271,9 @@ try {
   await client.waitFor("document.documentElement.dataset.appReady === 'true'", 15000);
   await client.waitFor("navigator.serviceWorker?.controller?.state === 'activated'", 20000);
   const cacheNames = await client.evaluate('caches.keys()');
-  assert.ok(cacheNames.includes('m4shlab-v4'));
-  assert.ok(!cacheNames.includes('m4shlab-v3'), 'old shell cache must be deleted on activate');
-  assert.ok(!cacheNames.includes('m4shlab-runtime-v3'), 'old runtime cache must be deleted on activate');
+  assert.ok(cacheNames.includes('m4shlab-v5'));
+  assert.ok(!cacheNames.includes('m4shlab-v4'), 'old shell cache must be deleted on activate');
+  assert.ok(!cacheNames.includes('m4shlab-runtime-v4'), 'old runtime cache must be deleted on activate');
   console.log('PASS activate cleanup removed the old versioned cache and re-registered the current shell');
 
   const cdnCheck = await fetch('https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm/ffmpeg-core.js', {method: 'HEAD'});
@@ -290,7 +290,7 @@ try {
   assert.equal(onlineConversion.error, null, onlineConversion.error);
   assert.ok(onlineConversion.report.merge.mergedSamples > 0);
   const runtimeKeys = await client.evaluate(`(async () => {
-    const cache = await caches.open('m4shlab-runtime-v4');
+    const cache = await caches.open('m4shlab-runtime-v5');
     return (await cache.keys()).map(request => request.url);
   })()`);
   assert.ok(runtimeKeys.some(url => url.endsWith('/converter-worker.js')), 'conversion worker was not runtime-cached');

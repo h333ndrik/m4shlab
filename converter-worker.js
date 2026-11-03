@@ -84,36 +84,102 @@ function decodeY4mArgs(inputName, outputName, target) {
   ];
 }
 
+function extractPcmArgs(inputName, outputName, expectedSamples) {
+  return [
+    '-i', inputName,
+    '-map', '0:a:0',
+    '-vn',
+    '-ac', '2',
+    '-ar', '48000',
+    '-af', `apad=whole_len=${expectedSamples},atrim=end_sample=${expectedSamples}`,
+    '-f', 'f32le',
+    outputName,
+  ];
+}
+
+function muxAudioArgs(videoName, audioName, outputName, expectedSamples, encodeAudio) {
+  return [
+    '-i', videoName,
+    '-i', audioName,
+    '-map', '0:v:0',
+    '-map', '1:a:0',
+    '-c:v', 'copy',
+    ...(encodeAudio
+      ? ['-c:a', 'aac', '-b:a', '128k', '-ar', '48000', '-ac', '2']
+      : ['-c:a', 'copy']),
+    '-t', (expectedSamples / 48000).toFixed(9),
+    '-movflags', '+faststart',
+    outputName,
+  ];
+}
+
+function cleanupFiles(ffmpeg, names) {
+  for (const name of names) {
+    try { ffmpeg.FS.unlink(name); } catch {}
+  }
+}
+
 self.onmessage = async event => {
-  const {id, type, inputBytes, target, mode = 'encode-wasm'} = event.data;
-  if (type !== 'convert') return;
+  const {id, type, inputBytes, videoBytes, audioBytes, expectedSamples, target, mode = 'encode-wasm'} = event.data;
+  if (!['convert', 'extract-audio', 'mux-adts', 'mux-wav'].includes(type)) return;
   currentRequestId = id;
   currentLogs = [];
-  const inputName = 'input.bin';
+  const inputName = type === 'convert' || type === 'extract-audio' ? 'input.bin' : 'video.mp4';
+  const audioName = type === 'mux-adts' ? 'audio.aac' : 'audio.wav';
   const decodeOnly = mode === 'decode-y4m';
   const outputName = decodeOnly ? 'output.y4m' : 'output.mp4';
   try {
     const ffmpeg = await loadCore();
-    try { ffmpeg.FS.unlink(inputName); } catch {}
-    try { ffmpeg.FS.unlink(outputName); } catch {}
-    post('status', {message: decodeOnly
-      ? 'Decoding with ffmpeg.wasm at the capped normalization size…'
-      : target
-        ? `Converting to H.264 and letterboxing to ${target.width}×${target.height}…`
-        : `Converting to H.264 with the ${MAX_TARGET_LONG_SIDE}px target cap…`});
-    ffmpeg.FS.writeFile(inputName, new Uint8Array(inputBytes));
-    const status = ffmpeg.exec(...(decodeOnly
-      ? decodeY4mArgs(inputName, outputName, target)
-      : conversionArgs(inputName, outputName, target)));
+    cleanupFiles(ffmpeg, [inputName, audioName, outputName, 'output.pcm']);
+    let status;
+    let resultBytes;
+    let present = true;
+    if (type === 'convert') {
+      post('status', {message: decodeOnly
+        ? 'Decoding with ffmpeg.wasm at the capped normalization size…'
+        : target
+          ? `Converting to H.264 and letterboxing to ${target.width}×${target.height}…`
+          : `Converting to H.264 with the ${MAX_TARGET_LONG_SIDE}px target cap…`});
+      ffmpeg.FS.writeFile(inputName, new Uint8Array(inputBytes));
+      status = ffmpeg.exec(...(decodeOnly
+        ? decodeY4mArgs(inputName, outputName, target)
+        : conversionArgs(inputName, outputName, target)));
+      if (status !== 0) throw new Error(`ffmpeg exited with status ${status}`);
+      resultBytes = ffmpeg.FS.readFile(outputName);
+    } else if (type === 'extract-audio') {
+      post('status', {message: 'Extracting and resampling the first audio track with ffmpeg.wasm…'});
+      ffmpeg.FS.writeFile(inputName, new Uint8Array(inputBytes));
+      status = ffmpeg.exec(...extractPcmArgs(inputName, 'output.pcm', expectedSamples));
+      if (status !== 0) {
+        const logs = currentLogs.join(' | ');
+        if (/matches no streams|does not contain any stream/i.test(logs)) present = false;
+        else throw new Error(`ffmpeg audio extraction exited with status ${status}`);
+      } else {
+        resultBytes = ffmpeg.FS.readFile('output.pcm');
+      }
+    } else {
+      post('status', {message: type === 'mux-adts' ? 'Muxing WebCodecs AAC audio and copied video…' : 'Encoding AAC and muxing merged audio…'});
+      ffmpeg.FS.writeFile(inputName, new Uint8Array(videoBytes));
+      ffmpeg.FS.writeFile(audioName, new Uint8Array(audioBytes));
+      status = ffmpeg.exec(...muxAudioArgs(inputName, audioName, outputName, expectedSamples, type === 'mux-wav'));
+      if (status !== 0) throw new Error(`ffmpeg audio mux exited with status ${status}`);
+      resultBytes = ffmpeg.FS.readFile(outputName);
+    }
     ffmpeg.reset();
-    if (status !== 0) throw new Error(`ffmpeg exited with status ${status}`);
-    const output = ffmpeg.FS.readFile(outputName);
-    if (!(output instanceof Uint8Array) || output.byteLength === 0) throw new Error('ffmpeg produced an empty output file');
-    const outputCopy = new Uint8Array(output.byteLength);
-    outputCopy.set(output);
-    try { ffmpeg.FS.unlink(inputName); } catch {}
-    try { ffmpeg.FS.unlink(outputName); } catch {}
-    self.postMessage({type: 'done', requestId: id, output: outputCopy.buffer, container: decodeOnly ? 'y4m' : 'mp4'}, [outputCopy.buffer]);
+    if (present && (!(resultBytes instanceof Uint8Array) || resultBytes.byteLength === 0)) throw new Error('ffmpeg produced an empty output file');
+    if (!present) {
+      self.postMessage({type: 'done', requestId: id, present: false});
+      return;
+    }
+    const outputCopy = new Uint8Array(resultBytes.byteLength);
+    outputCopy.set(resultBytes);
+    self.postMessage({
+      type: 'done',
+      requestId: id,
+      output: outputCopy.buffer,
+      container: type === 'extract-audio' ? 'f32le' : decodeOnly ? 'y4m' : 'mp4',
+      present: true,
+    }, [outputCopy.buffer]);
   } catch (error) {
     const detail = currentLogs.slice(-3).join(' | ');
     const message = error?.message || String(error);

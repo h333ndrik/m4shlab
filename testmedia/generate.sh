@@ -69,6 +69,27 @@ node "$root/testmedia/generate-poc0-fixture.mjs" "$root/testmedia/synthetic-mult
 node "$root/testmedia/generate-poc0-fixture.mjs" "$root/testmedia/synthetic-multigop-poc0-source-c.mp4" "$root/testmedia/synthetic-multigop-poc0-c.mp4"
 printf 'Generated %s\n' "$root/testmedia/synthetic-multigop-poc0-a.mp4" "$root/testmedia/synthetic-multigop-poc0-b.mp4" "$root/testmedia/synthetic-multigop-poc0-c.mp4"
 
+encode_audio_pair() {
+  local output="$1"
+  local frequency="$2"
+  ffmpeg -hide_banner -loglevel error -y \
+    -f lavfi -i "testsrc2=size=320x240:rate=25" \
+    -f lavfi -i "sine=frequency=$frequency:sample_rate=48000:duration=1" \
+    -t 1 \
+    -map 0:v:0 -map 1:a:0 \
+    -c:v libx264 -preset medium -profile:v high -pix_fmt yuv420p \
+    -g 25 -keyint_min 25 -sc_threshold 0 -bf 0 \
+    -c:a aac -b:a 128k -ar 48000 -ac 2 \
+    -video_track_timescale 12800 \
+    -movflags +faststart -shortest \
+    "$root/testmedia/$output"
+  printf 'Generated %s\n' "$root/testmedia/$output"
+}
+
+encode_audio_pair synthetic-audio-a.mp4 440
+encode_audio_pair synthetic-audio-b.mp4 880
+encode_multigop synthetic-audio-silent-b.mp4 320x240 1 "testsrc2=size=320x240:rate=25,hue=h=180"
+
 ffmpeg -hide_banner -loglevel error -y \
   -f lavfi -i "testsrc2=size=320x240:rate=25" \
   -t 1 \
