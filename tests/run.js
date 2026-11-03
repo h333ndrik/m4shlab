@@ -14,6 +14,8 @@ import { ValueError, frameRateForTrack } from '../classic-mosh.js';
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const fixturePath = join(projectRoot, 'testmedia', 'synthetic-h264.mp4');
+const multiSliceIdrPath = join(projectRoot, 'testmedia', 'synthetic-multislice-idr.mp4');
+const multiSliceMoshPath = join(projectRoot, 'testmedia', 'synthetic-multislice-mosh-test-output.mp4');
 const modifiedPath = join(projectRoot, 'testmedia', 'synthetic-mosh-test-output.mp4');
 const tierOneFixtures = {
   quicktime: join(projectRoot, 'testmedia', 'synthetic-quicktime.mov'),
@@ -57,7 +59,7 @@ function pass(message) {
   console.log(`PASS ${message}`);
 }
 
-const requiredFixtures = [fixturePath, ...Object.values(tierOneFixtures), ...Object.values(phaseBFixtures), ...Object.values(multiGopFixtures)];
+const requiredFixtures = [fixturePath, multiSliceIdrPath, ...Object.values(tierOneFixtures), ...Object.values(phaseBFixtures), ...Object.values(multiGopFixtures)];
 if (requiredFixtures.some(path => !existsSync(path))) {
   console.log('One or more fixtures are missing; generating local test media with ffmpeg.');
   command('bash', ['testmedia/generate.sh'], 'fixture generation');
@@ -135,6 +137,52 @@ pass(`export decodes with ffprobe: H.264 ${parsed.videoTrack.width}x${parsed.vid
 const truncated = result.output.subarray(0, Math.floor(result.output.byteLength / 2));
 assert.throws(() => parseMp4(truncated), /extends past|outside|Truncated|Invalid|ended/);
 pass('a deliberately truncated file is rejected instead of being presented as a valid mosh');
+
+const multiSliceInput = new Uint8Array(readFileSync(multiSliceIdrPath));
+const multiSliceParsed = parseMp4(multiSliceInput);
+const multiSliceNals = extractNals(multiSliceInput, multiSliceParsed.videoTrack);
+const multiSliceIdrSamples = [...new Set(multiSliceNals.filter(nal => nal.type === 5).map(nal => nal.sampleIndex))];
+assert.equal(multiSliceParsed.videoTrack.samples.length, 75);
+assert.deepEqual(multiSliceIdrSamples, [0, 25, 50]);
+assert.equal(multiSliceNals.filter(nal => nal.sampleIndex === 0 && nal.type === 5).length, 2);
+assert.equal(multiSliceNals.filter(nal => nal.sampleIndex === 25 && nal.type === 5).length, 2);
+const multiSliceMosh = moshH264(multiSliceInput, multiSliceParsed);
+assert.equal(multiSliceMosh.moshable, true);
+assert.equal(multiSliceMosh.report.boundary.sampleIndex, 25);
+assert.equal(multiSliceMosh.report.boundary.nalIndex, 0);
+assert.equal(multiSliceMosh.report.removedIdrCount, 4);
+assert.equal(multiSliceMosh.report.removedIdrSampleCount, 2);
+assert.equal(multiSliceMosh.report.preservedIdrCount, 2);
+assert.equal(multiSliceMosh.report.expectedDecodedFrames, 73);
+const multiSliceMoshParsed = parseMp4(multiSliceMosh.output);
+const multiSliceMoshNals = extractNals(multiSliceMosh.output, multiSliceMoshParsed.videoTrack);
+const initialAccessUnit = multiSliceNals.filter(nal => nal.sampleIndex === 0);
+const retainedInitialAccessUnit = multiSliceMoshNals.filter(nal => nal.sampleIndex === 0);
+assert.deepEqual(retainedInitialAccessUnit.map(nal => nal.type), initialAccessUnit.map(nal => nal.type));
+for (let i = 0; i < initialAccessUnit.length; i += 1) {
+  assert.deepEqual(retainedInitialAccessUnit[i].data, initialAccessUnit[i].data, `Initial access-unit NAL ${i} changed`);
+}
+assert.equal(retainedInitialAccessUnit.filter(nal => nal.type === 5).length, 2);
+assert.ok(multiSliceMoshNals.every(nal => nal.type !== 5 || nal.sampleIndex === 0));
+assert.equal(multiSliceMoshNals.length, multiSliceNals.length - 4);
+writeFileSync(multiSliceMoshPath, multiSliceMosh.output);
+const multiSliceProbe = command('ffprobe', [
+  '-v', 'error', '-select_streams', 'v:0', '-count_frames',
+  '-show_entries', 'stream=codec_name,width,height,nb_read_frames',
+  '-of', 'default=noprint_wrappers=1', multiSliceMoshPath,
+], 'multi-slice Phase A decode probe');
+const multiSliceDecodedFrames = Number(/nb_read_frames=(\d+)/.exec(multiSliceProbe.stdout)?.[1] ?? 0);
+assert.equal(multiSliceDecodedFrames, 73);
+command('ffmpeg', ['-v', 'error', '-i', multiSliceMoshPath, '-f', 'null', '-'], 'multi-slice Phase A strict decode');
+pass(`multi-slice Phase A keeps both initial IDR slices, starts at sample 25, removes all four boundary/GOP slices, and decodes ${multiSliceDecodedFrames}/73 retained frames`);
+
+const multiSliceMergeBInput = new Uint8Array(readFileSync(phaseBFixtures.b));
+const multiSliceMergeBParsed = parseMp4(multiSliceMergeBInput);
+const multiSliceMerge = await mergeMoshH264(multiSliceInput, multiSliceMergeBInput, multiSliceParsed, multiSliceMergeBParsed);
+assert.equal(multiSliceMerge.report.leadingIdrNalCount, 2);
+assert.equal(multiSliceMerge.report.leadingIdrSampleCount, 1);
+assert.equal(multiSliceMerge.report.startsWithSingleIdr, true);
+pass('merge leading-IDR reporting treats a multi-slice access unit as one leading IDR sample');
 
 
 const quickTimeInput = new Uint8Array(readFileSync(tierOneFixtures.quicktime));

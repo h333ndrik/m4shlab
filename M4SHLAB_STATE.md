@@ -33,14 +33,15 @@ Updated: 2026-11-03
 - `manifest.json` declares standalone display, light `#f5f5f3` theme/background, `./` start/scope, SVG icon, 192px any icon, and 512px maskable PNG icon.
 - `icon.svg` is the lowercase m4 wordmark on the light background; `icon-180.png`, `icon-192.png`, and `icon-512.png` are committed fallbacks.
 - `index.html` links the manifest, SVG favicon, 180px Apple touch icon, theme color, and Apple standalone metadata.
-- `sw.js` derives both `m4shlab-v2` and `m4shlab-runtime-v2` from one `VERSION` constant. Install precaches 20 app-shell files, including `classic-mosh.js`, skips `converter-worker.js` and ffmpeg.wasm, calls `skipWaiting()`, and activate deletes old versioned caches before `clients.claim()`.
+- `sw.js` derives both `m4shlab-v3` and `m4shlab-runtime-v3` from one `VERSION` constant. Install precaches 20 app-shell files, including `classic-mosh.js`, skips `converter-worker.js` and ffmpeg.wasm, calls `skipWaiting()`, and activate deletes old versioned caches before `clients.claim()`.
 - Static shell requests are cache-first. Navigation requests fall back to the cached `index.html`. Runtime cache-first applies only to `converter-worker.js` and the pinned jsDelivr ffmpeg core JS/WASM URLs.
 - `app.js` changes only by registering `./sw.js` after `load`; registration failures such as `file://` are swallowed so normal browser operation is unchanged.
 - Bump `VERSION` in `sw.js` whenever a shell or conversion-worker asset changes. Runtime cache separation keeps the 31 MB ffmpeg core out of shell precache; a version bump intentionally invalidates stale worker code too.
 
 ## Verification
 
-- `npm test`: 43 checks passed.
+- `npm test`: 45 checks passed.
+- Multi-slice Phase A: the second IDR sample is the boundary; both initial access-unit IDR slices remain byte-identical, all four later IDR slices are removed, and 73/73 retained frames decode.
 - Phase A: 111,706 B → 100,238 B, 73 decoded frames.
 - Phase B: 37,029 B + 36,812 B → 67,893 B, 49 decoded frames.
 - Multi-GOP B: 25 A + 75 B samples → 99 samples and 99 decoded frames; two later B IDRs remain, 24 slice headers are aligned, and three keyframes decode.
@@ -72,13 +73,14 @@ Updated: 2026-11-03
 
 - manifest/installability: PASS, including `beforeinstallprompt observed=true`;
 - service worker active and controlling, 20 shell assets precached off a fresh profile;
-- activation removed `m4shlab-v1` and re-registered the v2 shell;
+- activation removed `m4shlab-v2` and re-registered the v3 shell;
 - runtime cache: `converter-worker.js`, `ffmpeg-core.js`, `ffmpeg-core.wasm`;
 - fully offline HEVC conversion, merge, preview, and export: 59/59 decoded frames.
 
 ## Real-clip measurements
 
 - `IMG_1993.MOV` + `IMG_3339.MOV`: HEVC sources normalized to H.264 at 540×720 through ffmpeg.wasm decode plus WebCodecs encode.
+- Follow-up Phase A on the converted `IMG_1993` clip selects sample 19, preserves both initial IDR slices byte-identically, removes 10 later IDR slices (80,862 bytes), and decodes 32 frames instead of the earlier zero.
 - Pair conversion took 5.7 s and 5.8 s, versus 5.3 s / 9.1 s for capped full-WASM and 19.8 s / 33.6 s for earlier full-resolution WASM runs.
 - 112 + 177 source samples merged to 288 samples; strict decode returned 288/288 frames.
 - Later B IDRs were retained, the first B GOP received 32 slice patches across 16 samples, and strict decode exited 0.

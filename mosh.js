@@ -31,8 +31,12 @@ export function moshH264(inputBytes, parsedMp4 = parseMp4(inputBytes), options =
   const videoTrack = parsedMp4.videoTrack;
   const nals = extractNals(inputBytes, videoTrack);
   const idrNals = nals.filter((nal) => nal.type === IDR_NAL_TYPE);
+  const firstIdrSample = idrNals[0]?.sampleIndex ?? null;
+  const boundaryNal = firstIdrSample === null
+    ? null
+    : idrNals.find(nal => nal.sampleIndex > firstIdrSample) ?? null;
 
-  if (idrNals.length < 2) {
+  if (!boundaryNal) {
     const ending = options.ending ?? 'restore';
     if (ending !== 'restore' && ending !== 'continue') throw new ValueError('ending must be "restore" or "continue".');
     return {
@@ -58,7 +62,6 @@ export function moshH264(inputBytes, parsedMp4 = parseMp4(inputBytes), options =
     };
   }
 
-  const boundaryNal = idrNals[1];
   const settings = resolveClassicMoshSettings(videoTrack, boundaryNal.sampleIndex, options);
   if (settings.maximumFrames < 1) {
     return {
@@ -95,6 +98,7 @@ export function moshH264(inputBytes, parsedMp4 = parseMp4(inputBytes), options =
     nalIndex: nal.nalIndex,
   }));
   const removedBytes = removedNals.reduce((total, nal) => total + nal.end - nal.start, 0);
+  const removedIdrSampleCount = new Set(removedNals.map(nal => nal.sampleIndex)).size;
   const reInsertedIdrPositions = restoresWithinClip ? [settings.recoverySampleIndex] : [];
 
   let output;
@@ -156,9 +160,10 @@ export function moshH264(inputBytes, parsedMp4 = parseMp4(inputBytes), options =
       outputSamples: outputSampleCount,
       expectedDecodedFrames: restoresWithinClip
         ? countPictureSamples(output, parseMp4(output).videoTrack)
-        : countPictureSamples(inputBytes, videoTrack) - removedNals.length,
+        : countPictureSamples(inputBytes, videoTrack) - removedIdrSampleCount,
       removedBytes,
       removedIdrCount: removedNals.length,
+      removedIdrSampleCount,
       preservedIdrCount: idrNals.length - removedNals.length + reInsertedIdrPositions.length,
       boundary: {
         fileOffset: boundaryNal.start,

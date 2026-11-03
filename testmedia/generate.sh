@@ -32,6 +32,15 @@ encode synthetic-b-mismatch.mp4 256x240 1 "testsrc2=size=256x240:rate=25"
 encode synthetic-b-timescale.mp4 320x240 1 "testsrc2=size=320x240:rate=25,hue=h=180" 25600
 encode synthetic-native-large-a.mp4 1440x1920 1 "testsrc2=size=1440x1920:rate=25"
 encode synthetic-native-large-b.mp4 768x1024 1 "testsrc2=size=768x1024:rate=25,hue=h=90"
+ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i "testsrc2=size=320x240:rate=25" \
+  -t 3 \
+  -c:v libx264 -preset medium -profile:v high -pix_fmt yuv420p \
+  -g 25 -keyint_min 25 -sc_threshold 0 -bf 2 \
+  -x264-params slices=2 \
+  -movflags +faststart -an \
+  "$root/testmedia/synthetic-multislice-idr.mp4"
+printf 'Generated %s\n' "$root/testmedia/synthetic-multislice-idr.mp4"
 
 encode_multigop() {
   local output="$1"

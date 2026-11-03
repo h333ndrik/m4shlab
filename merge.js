@@ -791,7 +791,8 @@ export async function mergeMoshH264(inputA, inputB, parsedA = parseMp4(inputA), 
   const idrNals = outputNals.filter(nal => nal.type === IDR_NAL_TYPE);
   const firstSampleNals = outputNals.filter(nal => nal.sampleIndex === 0);
   const leadingIdrNalCount = firstSampleNals.filter(nal => nal.type === IDR_NAL_TYPE).length;
-  const startsWithSingleIdr = leadingIdrNalCount === 1;
+  const leadingIdrSampleCount = leadingIdrNalCount > 0 ? 1 : 0;
+  const startsWithSingleIdr = leadingIdrSampleCount === 1;
 
   return {
     output,
@@ -833,7 +834,8 @@ export async function mergeMoshH264(inputA, inputB, parsedA = parseMp4(inputA), 
       re_inserted_idr_positions: preparedB.reInsertedIdrPositions,
       frameAlignment,
       leadingIdrNalCount,
-      startsWithIdrFrame: leadingIdrNalCount > 0,
+      leadingIdrSampleCount,
+      startsWithIdrFrame: leadingIdrSampleCount === 1,
       startsWithSingleIdr,
       audio: 'omitted in Phase B',
     },
