@@ -620,6 +620,30 @@ function integerOption(value, fallback, min, max, label) {
   return resolved;
 }
 
+function loopReleaseSchedule(count, loopFrames) {
+  if (!Number.isInteger(count) || count < 1) throw new Mp4Error('Loop Release needs at least one incoming sample.');
+  const positions = [];
+  const blocks = [];
+  for (const repeats of [3, 2]) {
+    const length = Math.min(loopFrames, Math.floor((Math.floor(count / 2) - positions.length) / repeats));
+    if (length < 2) continue;
+    const emittedStart = positions.length;
+    const donorPositions = Array.from({length}, (_, index) => emittedStart + index);
+    for (let copy = 0; copy < repeats; copy += 1) positions.push(...donorPositions);
+    blocks.push({emittedStart, donorPositions, length, repeats});
+  }
+  if (blocks.length === 0) {
+    throw new Mp4Error(`Loop Release needs at least ${loopFrames * 2 * 3} frames to repeat a ${loopFrames}-frame group three times. Choose a shorter loop or normalize the clip.`);
+  }
+  const tailStart = positions.length;
+  for (let position = tailStart; position < count; position += 1) positions.push(position);
+  return {
+    positions,
+    blocks,
+    tailStart,
+  };
+}
+
 function effectParameters(method, options = {}) {
   if (method === 'melt') {
     return {
@@ -730,25 +754,34 @@ function prepareEffectB(inputB, parsedB, method, options = {}) {
   }
 
   let loopWindow = [];
+  let loopSecondWindow = [];
+  let loopSchedule = null;
+  const availableAfterBoundary = sourceSamples.filter(source => source.sample.index > firstIdr.sampleIndex && source.data);
   if (effect.method === 'loop') {
-    for (const source of sourceSamples) {
-      if (source.sample.index === firstIdr.sampleIndex) continue;
-      if (source.idr) break;
-      if (!source.picture) continue;
-      loopWindow.push(source.sample.index);
-      if (loopWindow.length === effect.loopFrames) break;
-    }
-    if (loopWindow.length < effect.loopFrames) {
-      throw new Mp4Error(`Loop needs ${effect.loopFrames} consecutive non-IDR frames before the next IDR; clip B has ${loopWindow.length}. Choose a shorter loop or normalize the clip.`);
-    }
+    const loopPlan = loopReleaseSchedule(availableAfterBoundary.length, effect.loopFrames);
+    const describeBlock = block => ({
+      emittedStart: block.emittedStart,
+      donorStart: availableAfterBoundary[block.donorPositions[0]].sample.index,
+      length: block.length,
+      repeats: block.repeats,
+      donorSamples: block.donorPositions.map(position => availableAfterBoundary[position].sample.index),
+    });
+    loopWindow = loopPlan.blocks[0].donorPositions
+      .map(position => availableAfterBoundary[position].sample.index);
+    loopSecondWindow = loopPlan.blocks[1]?.donorPositions
+      .map(position => availableAfterBoundary[position].sample.index) ?? [];
+    loopSchedule = {
+      emittedSamples: loopPlan.positions.length,
+      positions: loopPlan.positions,
+      blocks: loopPlan.blocks.map(describeBlock),
+      tailStart: loopPlan.tailStart,
+      tailDonorStart: availableAfterBoundary[loopPlan.tailStart]?.sample.index ?? null,
+    };
   }
-  const loopWindowSet = new Set(loopWindow);
-  const loopWindowLast = loopWindow[loopWindow.length - 1] ?? null;
   const scheduled = [];
   const repeatedSourceSamples = new Set();
   let skippedPrefix = 0;
   let skippedEmpty = 0;
-  let loopRepeated = false;
 
   const schedule = (source, copyIndex) => {
     if (!source.data) return false;
@@ -764,35 +797,41 @@ function prepareEffectB(inputB, parsedB, method, options = {}) {
     return true;
   };
 
-  for (const source of sourceSamples) {
-    if (source.sample.index === firstIdr.sampleIndex) {
-      skippedPrefix += 1;
-      continue;
+  if (effect.method === 'loop') {
+    const occurrences = new Map();
+    for (const position of loopSchedule.positions) {
+      const source = availableAfterBoundary[position];
+      if (!source) throw new Mp4Error(`Loop Release donor ${position} is outside clip B.`);
+      const occurrence = occurrences.get(source.sample.index) ?? 0;
+      schedule(source, occurrence);
+      occurrences.set(source.sample.index, occurrence + 1);
+      if (occurrence > 0) repeatedSourceSamples.add(source.sample.index);
     }
-    if (!source.data) {
-      skippedEmpty += 1;
-      continue;
-    }
-    if (source.idr) {
-      schedule(source, 0);
-      continue;
-    }
-    if (source.picture) {
-      const copies = effect.method === 'melt' ? effect.repeat : 1;
-      for (let copy = 0; copy < copies; copy += 1) {
-        schedule(source, copy);
-        if (effect.method === 'melt' && copy > 0) repeatedSourceSamples.add(source.sample.index);
+    skippedPrefix = 1;
+    skippedEmpty = sourceSamples.filter(source => source.sample.index > firstIdr.sampleIndex && !source.data).length;
+  } else {
+    for (const source of sourceSamples) {
+      if (source.sample.index === firstIdr.sampleIndex) {
+        skippedPrefix += 1;
+        continue;
       }
-      if (effect.method === 'loop' && !loopRepeated && source.sample.index === loopWindowLast) {
-        for (const windowIndex of loopWindow) {
-          schedule(sourceByIndex.get(windowIndex), 1);
-          repeatedSourceSamples.add(windowIndex);
+      if (!source.data) {
+        skippedEmpty += 1;
+        continue;
+      }
+      if (source.idr) {
+        schedule(source, 0);
+        continue;
+      }
+      if (source.picture) {
+        for (let copy = 0; copy < effect.repeat; copy += 1) {
+          schedule(source, copy);
+          if (copy > 0) repeatedSourceSamples.add(source.sample.index);
         }
-        loopRepeated = true;
+        continue;
       }
-      continue;
+      schedule(source, 0);
     }
-    schedule(source, 0);
   }
 
   const pictureSamples = scheduled.filter(sample => sample.retainedNals.some(nal => nal.type === 1 || nal.type === IDR_NAL_TYPE)).length;
@@ -808,6 +847,8 @@ function prepareEffectB(inputB, parsedB, method, options = {}) {
     laterIdrCount: scheduled.reduce((total, sample) => total + sample.retainedNals.filter(nal => nal.type === IDR_NAL_TYPE).length, 0),
     pictureSamples,
     loopWindow,
+    loopSecondWindow,
+    loopSchedule,
     repeatedSourceSamples: [...repeatedSourceSamples].sort((a, b) => a - b),
     samples: scheduled,
   };
@@ -1180,6 +1221,8 @@ export async function mergeEffectH264(inputA, inputB, parsedA = parseMp4(inputA)
       effect: {
         ...preparedB.effect,
         loopWindow: preparedB.loopWindow,
+        loopSecondWindow: preparedB.loopSecondWindow,
+        loopSchedule: preparedB.loopSchedule,
         repeatedSourceSamples: preparedB.repeatedSourceSamples,
         scheduledSourceSamples: preparedB.samples.map(sample => sample.sourceSampleIndex),
       },

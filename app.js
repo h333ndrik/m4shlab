@@ -293,7 +293,7 @@ function effectSettingsForClip(clip) {
 function transitionLabel(method) {
   if (method === 'cut') return 'Cut';
   if (method === 'melt') return 'Melt';
-  if (method === 'loop') return 'Loop';
+  if (method === 'loop') return 'Loop Release';
   return 'Classic Mosh';
 }
 
@@ -420,7 +420,7 @@ function renderConnector(index) {
   } else if (incoming.transition === 'melt') {
     duration.textContent = `${effectSettingsForClip(incoming).repeat}× non-IDR`;
   } else if (incoming.transition === 'loop') {
-    duration.textContent = `${effectSettingsForClip(incoming).loopFrames}-frame window`;
+    duration.textContent = `${effectSettingsForClip(incoming).loopFrames}-frame · 3×/2× release`;
   } else {
     duration.textContent = seconds === null ? 'incoming clip' : `${seconds.toFixed(2)} s`;
   }

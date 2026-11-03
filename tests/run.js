@@ -648,7 +648,11 @@ assert.equal(meltDecodedFrames, meltMerge.report.mergedSamples);
 command('ffmpeg', ['-v', 'error', '-i', meltOutputPath, '-f', 'null', '-'], 'Melt strict decode');
 pass(`Melt repeat=4 emits ${meltMerge.report.mergedSamples} samples, changes only slice header frame_num bits, and decodes ${meltDecodedFrames}/${meltMerge.report.mergedSamples} frames`);
 
-const expectedLoopSchedule = [1, 2, 3, 4, 1, 2, 3, 4, ...Array.from({length: 70}, (_, index) => index + 5)];
+const expectedLoopSchedule = [
+  ...Array.from({length: 3}, () => [1, 2, 3, 4]).flat(),
+  ...Array.from({length: 2}, () => [13, 14, 15, 16]).flat(),
+  ...Array.from({length: 54}, (_, index) => index + 21),
+];
 const loopMerge = await mergeEffectH264(multiGopAInput, multiGopBInput, multiGopAParsed, multiGopBParsed, {
   method: 'loop',
   loopFrames: 4,
@@ -656,10 +660,17 @@ const loopMerge = await mergeEffectH264(multiGopAInput, multiGopBInput, multiGop
 assert.equal(loopMerge.report.method, 'loop');
 assert.equal(loopMerge.report.effect.loopFrames, 4);
 assert.deepEqual(loopMerge.report.effect.loopWindow, [1, 2, 3, 4]);
+assert.deepEqual(loopMerge.report.effect.loopSecondWindow, [13, 14, 15, 16]);
+assert.deepEqual(loopMerge.report.effect.loopSchedule.blocks, [
+  {emittedStart: 0, donorStart: 1, length: 4, repeats: 3, donorSamples: [1, 2, 3, 4]},
+  {emittedStart: 12, donorStart: 13, length: 4, repeats: 2, donorSamples: [13, 14, 15, 16]},
+]);
+assert.equal(loopMerge.report.effect.loopSchedule.tailStart, 20);
+assert.equal(loopMerge.report.effect.loopSchedule.tailDonorStart, 21);
 assert.deepEqual(loopMerge.report.effect.scheduledSourceSamples, expectedLoopSchedule);
-assert.equal(loopMerge.report.bScheduledSamples, 78);
-assert.equal(loopMerge.report.mergedSamples, 103);
-assert.equal(loopMerge.report.frameAlignment.patchedSamples, 76);
+assert.equal(loopMerge.report.bScheduledSamples, 74);
+assert.equal(loopMerge.report.mergedSamples, 99);
+assert.equal(loopMerge.report.frameAlignment.patchedSamples, 72);
 assert.equal(loopMerge.report.bIdrCountRemaining, 2);
 const loopParsed = parseMp4(loopMerge.output);
 const loopNals = extractNals(loopMerge.output, loopParsed.videoTrack);
@@ -680,7 +691,7 @@ const loopProbe = command('ffprobe', [
 const loopDecodedFrames = Number(/nb_read_frames=(\d+)/.exec(loopProbe.stdout)?.[1] ?? 0);
 assert.equal(loopDecodedFrames, loopMerge.report.mergedSamples);
 command('ffmpeg', ['-v', 'error', '-i', loopOutputPath, '-f', 'null', '-'], 'Loop strict decode');
-pass(`Loop loop_frames=4 emits the repeated window then the chronological tail, renumbers all ${loopMerge.report.frameAlignment.patchedSamples} non-IDR samples, and decodes ${loopDecodedFrames}/${loopMerge.report.mergedSamples} frames`);
+pass(`Loop Release loop_frames=4 emits 3× and 2× donor blocks, rejoins at donor 21, renumbers ${loopMerge.report.frameAlignment.patchedSamples} non-IDR samples, and decodes ${loopDecodedFrames}/${loopMerge.report.mergedSamples} frames`);
 
 const poc0Melt = await mergeEffectH264(poc0AInput, poc0BInput, poc0AParsed, poc0BParsed, {
   method: 'melt',
@@ -713,8 +724,8 @@ const effectSequence = await mergeSequenceH264(
 );
 assert.deepEqual(effectSequence.report.methods, ['melt', 'loop']);
 assert.equal(effectSequence.report.effectBoundaries, 2);
-assert.equal(effectSequence.report.mergedSamples, 199);
-assert.equal(effectSequence.report.expectedDecodedFrames, 199);
+assert.equal(effectSequence.report.mergedSamples, 195);
+assert.equal(effectSequence.report.expectedDecodedFrames, 195);
 writeFileSync(join(projectRoot, 'testmedia', 'synthetic-effect-sequence-test-output.mp4'), effectSequence.output);
 const effectSequenceProbe = command('ffprobe', [
   '-v', 'error', '-select_streams', 'v:0', '-count_frames',
@@ -723,8 +734,32 @@ const effectSequenceProbe = command('ffprobe', [
   join(projectRoot, 'testmedia', 'synthetic-effect-sequence-test-output.mp4'),
 ], 'effect sequence decode probe');
 const effectSequenceFrames = Number(/nb_read_frames=(\d+)/.exec(effectSequenceProbe.stdout)?.[1] ?? 0);
-assert.equal(effectSequenceFrames, 199);
-pass('three-clip Melt then Loop chain emits and decodes 199/199 samples with the running-chain frame counters');
+assert.equal(effectSequenceFrames, 195);
+pass('three-clip Melt then Loop Release chain emits and decodes 195/195 samples with the running-chain frame counters');
+
+const loopThenCut = await mergeSequenceH264(
+  [
+    {bytes: multiGopAInput, parsed: multiGopAParsed},
+    {bytes: multiGopBInput, parsed: multiGopBParsed},
+    {bytes: multiGopAInput, parsed: multiGopAParsed},
+  ],
+  [
+    {method: 'loop', loopFrames: 4},
+    {method: 'cut'},
+  ],
+);
+assert.deepEqual(loopThenCut.report.methods, ['loop', 'cut']);
+assert.equal(loopThenCut.report.mergedSamples, 124);
+assert.equal(loopThenCut.report.expectedDecodedFrames, 124);
+writeFileSync(join(projectRoot, 'testmedia', 'synthetic-loop-cut-test-output.mp4'), loopThenCut.output);
+const loopCutProbe = command('ffprobe', [
+  '-v', 'error', '-select_streams', 'v:0', '-count_frames',
+  '-show_entries', 'stream=nb_frames,nb_read_frames',
+  '-of', 'default=noprint_wrappers=1',
+  join(projectRoot, 'testmedia', 'synthetic-loop-cut-test-output.mp4'),
+], 'Loop Release then Cut decode probe');
+assert.match(loopCutProbe.stdout, /nb_read_frames=124/);
+pass('chained Loop Release then Cut preserves the release tail and decodes 124/124 frames');
 
 const audioSourceHashes = Object.fromEntries(Object.entries(audioFixtures).map(([key, path]) => [key,
   createHash('sha256').update(readFileSync(path)).digest('hex'),
@@ -792,6 +827,18 @@ for (let sample = 50 * 1920; sample < 103 * 1920; sample += 1) {
   assert.equal(meltAudio.pcm[103 * 1920 + sample], 0);
 }
 pass('Melt audio follows the linear clip timeline and pads extra picture-only frames with sample-exact silence');
+
+const loopAudio = assembleAudioTimeline({
+  clips: [audioA, audioB],
+  methods: ['loop'],
+  videoSampleCounts: [25, 49],
+  fps: 25,
+});
+assert.equal(loopAudio.segments[1].dropFrames, 1);
+assert.equal(loopAudio.segments[1].availableFrames, 24);
+assert.equal(loopAudio.segments[1].paddedFrames, 0);
+assert.equal(loopAudio.expectedSamples, 49 * 1920);
+pass('Loop Release drops the incoming audio frame paired with the removed first IDR sample');
 
 assert.throws(
   () => assembleAudioTimeline({

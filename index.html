@@ -85,7 +85,7 @@
           <label><input type="radio" name="transition-method" value="cut"> <span><strong>Cut</strong><small>Append the incoming clip byte-for-byte.</small></span></label>
           <label><input type="radio" name="transition-method" value="classic-mosh" checked> <span><strong>Classic Mosh</strong><small>Remove the incoming first IDR and continue its references.</small></span></label>
           <label><input type="radio" name="transition-method" value="melt"> <span><strong>Melt</strong><small>Repeat every non-IDR sample after the first GOP boundary.</small></span></label>
-          <label><input type="radio" name="transition-method" value="loop"> <span><strong>Loop</strong><small>Repeat a short non-IDR window, then continue chronologically.</small></span></label>
+          <label><input type="radio" name="transition-method" value="loop"> <span><strong>Loop Release</strong><small>Repeat motion 3×, then 2×, and rejoin the donor timeline.</small></span></label>
         </fieldset>
         <div id="classic-mosh-options" class="classic-mosh-options">
           <div class="mosh-control-heading">

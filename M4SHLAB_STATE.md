@@ -14,6 +14,7 @@ Updated: 2026-11-03
 - Classic Mosh duration + ending: frame-quantized restore windows with byte-identical IDR reinsertion, full-length continue mode, per-boundary chained settings, report fields, and UI controls.
 - Block E: NAL-level Melt/Loop boundaries with per-sample `frame_num` and type-0 POC-LSB renumbering, bounded repeat/window controls, B-frame normalization gating, and chained reporting.
 - Block F: merged audio from each original source, exact 48 kHz stereo timeline assembly, AAC-LC encoding, delayed-video-frame handling for Classic Mosh, silence padding for Melt/Loop, edit-list-accurate duration, and WebCodecs/ffmpeg.wasm path reporting.
+- Block G: Loop Release scheduling with a first group repeated 3×, a second timeline-aligned group repeated 2×, and an exact donor-index release tail; later IDRs remain in the tail as anchors.
 - **State: PWA shell and merged audio done.** m4shlab is installable, precaches its complete app shell, reloads offline, runtime-caches ffmpeg.wasm after first conversion, and exports an AAC-LC soundtrack aligned to the merged video timeline.
 - h4moshlab-style interface with a dark preview well, header import control, horizontal timeline, and no visible compatibility panel.
 
@@ -25,9 +26,9 @@ Updated: 2026-11-03
 - The sequence report records clip count, methods, source/merged samples, expected decoded frames, boundary alignment details, normalization paths, per-source audio preparation, merged-audio segments, encode/mux engines, encoder delay, and exact presentation timing.
 - `app.js` imports multiple files or dropped files, caps the timeline at 12, and normalizes every clip to one shared target when any boundary differs. Native H.264 uses WebCodecs first; tier-2 or WebCodecs-failing inputs use ffmpeg.wasm with the hybrid WebCodecs encoder when available.
 - Clip cards have active reorder/remove controls. Undo/redo snapshots cover import, reorder, removal, and transition changes without revoking media needed by an older snapshot.
-- Each dashed connector opens a dialog with Cut, Classic Mosh, Melt and Loop. Classic Mosh exposes duration/ending controls; Melt exposes repeat 2–12 and Loop exposes a 2–48-frame window. Transition settings follow the incoming clip when cards are reordered.
+- Each dashed connector opens a dialog with Cut, Classic Mosh, Melt and Loop Release. Classic Mosh exposes duration/ending controls; Melt exposes repeat 2–12 and Loop Release exposes a 2–48-frame group. Transition settings follow the incoming clip when cards are reordered.
 - The preview shows clip 1 untouched or the full merged chain. Export downloads the complete sequence as `m4shlab-merge.mp4`; source audio is muxed automatically when any source track exists.
-- Melt schedules every incoming non-IDR sample multiple times; Loop schedules the first non-IDR window twice, then the chronological tail. Both retain later IDRs, reject reordered inputs, and renumber emitted slice headers through the existing RBSP/EBSP-safe patcher.
+- Melt schedules every incoming non-IDR sample multiple times. Loop Release builds donor positions from the first group repeated 3× and the second timeline-aligned group repeated 2×, then appends the donor tail from the release index. Both retain later IDRs, reject reordered inputs, and renumber emitted slice headers through the existing RBSP/EBSP-safe patcher.
 - `classic-mosh.js` owns nominal fps detection, frame quantization, duration clamping, `ValueError`, and picture-sample counting. `mosh.js` and `merge.js` use the same settings so Phase A and boundary merges agree.
 - Restore removes IDRs only inside the selected window, inserts the original first-IDR sample before frame N+1, and preserves remaining samples plus later IDR anchors. Continue ignores the shorter window and remains byte-identical to the old full-length output. Default full duration plus restore preserves legacy exports.
 
@@ -43,9 +44,9 @@ Updated: 2026-11-03
 
 ## Verification
 
-- `npm test`: 57 checks passed.
-- Melt repeat=4: 315/315 decoded samples, with all non-header RBSP bits byte-identical. Loop window=4: 103/103 decoded samples. POC type 0 Melt: 171/171. Chained Melt→Loop: 199/199.
-- Native B-frame Melt/Loop rejects loudly; browser tests confirm native B-frame sources auto-normalize with WebCodecs before the effect runs.
+- `npm test`: 61 checks passed.
+- Melt repeat=4: 315/315 decoded samples, with all non-header RBSP bits byte-identical. Loop Release group=4: 99/99 decoded samples with blocks at donors 1/13 and release tail at 21. POC type 0 Melt: 171/171. Chained Melt→Loop Release: 195/195; Loop Release→Cut: 124/124.
+- Native B-frame Melt/Loop Release rejects loudly; browser tests confirm native B-frame sources auto-normalize with WebCodecs before the effect runs.
 - Classic audio assembly drops exactly the first incoming frame and preserves the remaining second-frame PCM; a silent clip contributes exact stereo silence; Melt follows the linear timeline and pads its extra 53 picture frames with silence.
 - Audio/video sample mismatches raise `RuntimeError`; WAV and ADTS headers have exact sizes; the retiming test preserves a 1,024-sample encoder delay while presenting exactly 48,000 samples and refuses requests beyond the encoded packet coverage.
 - Audio fixture source hashes remain unchanged.
@@ -75,7 +76,7 @@ Updated: 2026-11-03
 - the three-clip browser flow exposed two Cut/Classic Mosh connectors, changed the first boundary to Cut, completed reorder/remove/undo, previewed 540×720, and exported 74 decoded frames;
 - the preserved two-clip path still merged 49 samples, previewed 320×240, and exported a decodable video;
 - the preserved export SHA-256 is `b4bb6c4827b2f7a8fe6d93777ff63f4491dd0b8eb497148dd3b2d07da1666bef`;
-- browser Melt/Loop controls emitted 315- and 103-sample sequences with fresh slice numbering and decodable previews; native B-frame sources normalized before the effect ran;
+- browser Melt/Loop Release controls emitted 315- and 99-sample sequences with fresh slice numbering and decodable previews; native B-frame sources normalized before the effect ran;
 - the audio merge exported AAC-LC at 48 kHz stereo with 94,080 expected sample frames, a 1.960 s runtime match, WebCodecs encode, ffmpeg.wasm mux, and strict audio decode;
 - with `AudioEncoder` unavailable, the same 94,080-sample timeline encoded through ffmpeg.wasm and reported its 1,024-sample encoder delay;
 - ffmpeg.wasm decode plus WebCodecs encode completed both pair progress bars, and forced fallback named ffmpeg.wasm.
@@ -106,7 +107,7 @@ Updated: 2026-11-03
 - Multi-GOP alignment supports type 2 and non-reordered type 0/1 streams. Type 0/1 requires no B-slices and no non-zero composition offsets; reordered B fails explicitly.
 - The 100 MB limit is a soft limit; available device memory can still be exceeded.
 - Classic Mosh duration is bounded by frames after the incoming first GOP boundary. Restore is a hard reference reset, not a blend; the visible recovery jump is intentional. Continue ignores the shortened duration and keeps the full chain.
-- Melt and Loop are decode-order effects, not pixel blending. Device decoders may render repeated reference chains differently; both methods require B-frame-free, non-reordered inputs.
-- Timeline maximum is 12 clips. Merged audio follows the clip timeline but is not audio moshing: Classic Mosh drops one incoming frame, while Melt/Loop use linear audio plus silence for extra picture frames. Only the first source audio track is used, normalized to 48 kHz stereo and exported as AAC-LC. Crossfades, multi-track mixing, servers, uploads, and general-codec WebCodecs demuxing remain out of scope.
+- Melt and Loop Release are decode-order effects, not pixel blending. Device decoders may render repeated reference chains differently; both methods require B-frame-free, non-reordered inputs.
+- Timeline maximum is 12 clips. Merged audio follows the clip timeline but is not audio moshing: Classic Mosh and Loop Release drop one incoming frame, while Melt uses linear audio plus silence for extra picture frames. Only the first source audio track is used, normalized to 48 kHz stereo and exported as AAC-LC. Crossfades, multi-track mixing, servers, uploads, and general-codec WebCodecs demuxing remain out of scope.
 - PWA first load requires network. The OS may evict Cache Storage, `file://` cannot register the worker, and a very large wasm conversion may still exceed iOS memory. iOS Home Screen/standalone behavior still needs a physical-device check.
 - The reported iPhone `IMG_4767.mov` / `final_0.mov` pair was not present locally; automated coverage uses a generated Safari-shaped POC type 0 fixture, so a physical-device retest is still required.

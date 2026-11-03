@@ -639,10 +639,13 @@ try {
   const loopUi = await applyEffect('loop', 4);
   assert.equal(loopUi.error, null, loopUi.error);
   assert.equal(loopUi.method, 'loop');
-  assert.equal(loopUi.mergedSamples, 103);
+  assert.equal(loopUi.mergedSamples, 99);
   assert.deepEqual(loopUi.effect.loopWindow, [1, 2, 3, 4]);
-  assert.equal(loopUi.effect.scheduledSourceSamples.length, 78);
-  assert.equal(loopUi.patchedSamples, 76);
+  assert.deepEqual(loopUi.effect.loopSecondWindow, [13, 14, 15, 16]);
+  assert.equal(loopUi.effect.loopSchedule.tailStart, 20);
+  assert.equal(loopUi.effect.loopSchedule.tailDonorStart, 21);
+  assert.equal(loopUi.effect.scheduledSourceSamples.length, 74);
+  assert.equal(loopUi.patchedSamples, 72);
   await client.evaluate("document.querySelector('#show-modified').click()");
   await client.waitFor("document.querySelector('#preview-video').readyState >= 2 || document.querySelector('#preview-video').error", 15000);
   const effectPlayback = await client.evaluate(`({
@@ -653,7 +656,7 @@ try {
   assert.equal(effectPlayback.error, null);
   assert.equal(effectPlayback.width, 320);
   assert.equal(effectPlayback.height, 240);
-  console.log('PASS browser Melt and Loop controls produce 315- and 103-sample sequences with fresh slice numbering and decodable preview');
+  console.log('PASS browser Melt and Loop Release controls produce 315- and 99-sample sequences with fresh slice numbering and decodable preview');
 
   await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?normalize-effect=1'});
   await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
