@@ -1,30 +1,19 @@
 # m4shlab
 
-H.264 bitstream moshing in the browser — fully client-side, no server, no upload.
+**m4shlab v1.0 release candidate** — H.264 bitstream moshing in the browser, fully client-side with no server and no upload.
 
-Phase A MVP: one H.264 clip, IDR removal produces visible moshing in the preview, export decodes.
+## Release feature overview
 
-Phase B MVP: two compatible H.264 clips, Classic A→B merge in the browser, export decodes as video.
+- **Timeline editor:** import and arrange up to 12 clips, reorder or remove clips, undo/redo timeline edits, and preview either the first cut or the complete chained result.
+- **Seven transition variants across five boundary methods:** Cut is the untouched control; Classic Mosh removes the incoming first IDR and aligns the first GOP; Melt is available with Original or Gentler cadence; Loop Release is available with Original or Gentler cadence; Reset Pulse re-inserts a reference anchor on an interval. All four mosh methods expose frame-quantized duration and Restore/Continue ending controls.
+- **Gentler cadence:** Melt bounds donor advances to two frames before its release point and uses consecutive donors for the final quarter. Loop Release bridges the 3×→2× and release-tail jumps with donor advances of at most two frames while preserving the repeated block wraps. Both keep the selected window, video frame count, and audio timeline exact.
+- **Per-clip speed:** every timeline entry has an independent 0.1×–4.0× control in 0.1× steps and Reset. Speed uses one WebCodecs frame-mapping/normalization pass at 30 fps; audio follows through a chained ffmpeg.wasm `atempo` path with pitch preserved and an exact sample count.
+- **Seeded Randomize:** the 16-hex seed deterministically selects a valid method, duration, ending, repeat/group size, and Reset interval for Classic Mosh, Melt, Loop Release, or Reset Pulse. The same seed and clips reproduce the same variant; manual edits clear the seed.
+- **Universal import and acceleration:** conventional H.264 MP4/MOV parses natively. Conventional HEVC MOV/MP4 uses native WebCodecs decode when available; other supported inputs use the lazy ffmpeg.wasm path. Incompatible sequence members are normalized automatically to one shared target.
+- **Audio:** merged exports use the first audio track from each original source, aligned to the normalized video timeline at 48 kHz stereo and encoded as AAC-LC. Audio follows the timeline but is not moshed.
+- **PWA:** m4shlab is installable and its cached app shell starts offline after the first successful load.
 
-Multi-clip timeline: import up to 12 clips, arrange them on one horizontal timeline, choose Cut, Classic Mosh, Melt, Loop Release or Reset Pulse at every boundary, and export the complete chained sequence. The two-clip flow remains the N=2 case.
-
-Classic Mosh duration + ending: each boundary has a frame-quantized duration and an ending mode. **Restore clear image** re-inserts the original boundary IDR after the effect window; **Continue motion** preserves the previous full-length IDR-free chain.
-
-Melt and Loop Release: both now have a frame-quantized effect window and a **Continue motion** or **Restore clear image** ending. Melt repeats consecutive non-IDR donors with a repeat factor from 2 to 12; its **Gentler · smaller motion jumps** cadence bounds donor advances to two frames before the release point and uses consecutive donors for the final quarter. Loop Release takes a 2–48-frame group, repeats it 3×, repeats a second timeline-aligned group 2× when space permits, then rejoins the donor timeline. Continue appends the chronological tail from the next unused donor; Restore first inserts the incoming clip's original first IDR byte-identically. Later IDRs remain reference anchors and every emitted slice receives fresh `frame_num` and type-0 POC-LSB values.
-
-Reset Pulse: each frame-quantized interval starts by re-inserting B's original first IDR sample, then fills the interval with repeated consecutive B P-samples. The interval is 4–48 frames and the P-sample repeat is 2–12. Restore/Continue tail behavior matches Classic Mosh.
-
-Per-clip speed: every timeline entry has an independent 0.1×–4.0× speed control in 0.1× steps and a Reset action. Speed is applied during one WebCodecs decode/frame-map/encode pass at 30 fps, then combined with the 720px normalization target. Audio uses a chained ffmpeg.wasm `atempo` filter, so duration follows the clip speed while pitch is preserved. Audio and video remain sample- and frame-exact.
-
-Phase D PWA shell: m4shlab is installable and its app shell works offline after the first successful load. ffmpeg.wasm is cached on first use, not precached.
-
-Universal import: conventional H.264 MP4/MOV parses natively; other formats are converted locally with lazily loaded ffmpeg.wasm.
-
-Phase C normalization: incompatible native H.264 sequence members are decoded and re-encoded locally with WebCodecs when the browser supports H.264 encode/decode. ffmpeg.wasm remains the fallback.
-
-Merged audio: each source clip's first audio track is decoded locally to 48 kHz stereo PCM, aligned exactly to its normalized video timeline, concatenated in sequence order, encoded as AAC-LC, and muxed into the merged MP4. If no source has audio, the export remains video-only.
-
-Automatic sequence normalization starts as soon as native compatibility fails. If any boundary differs, every clip is converted to one shared target capped at 720 pixels on the long side, using WebCodecs or ffmpeg.wasm, then compatibility is checked again on the converted bytes. Conversions can run in parallel, and HEVC-style ffmpeg.wasm decodes use WebCodecs for H.264 encoding when available.
+Automatic sequence normalization starts when native compatibility fails. All clips are converted to one shared target capped at **720 pixels on the long side**, using WebCodecs first and ffmpeg.wasm as fallback, then compatibility is checked again on the converted bytes. Conversions can run in parallel.
 
 ## Run it
 
@@ -333,7 +322,16 @@ The effect depends on the source GOP structure. Decode behavior is device-depend
 
 Phase A handles a single H.264 video track in a conventional (non-fragmented) MP4. Interleaved audio sample offsets are adjusted when present. On multi-GOP sources, removing later IDRs can make the decoder discard dependent pictures, so the decoded frame count can be lower than the MP4 sample/packet count; that is the intended mosh behavior, not a parse failure.
 
-WebCodecs availability does not guarantee hardware acceleration, a particular profile, or support at every resolution; the browser chooses the implementation. If its H.264 decoder/encoder configuration, I420 frame construction, or frame-number alignment is unsupported, the app falls back to ffmpeg.wasm. Current normalizing support is limited to natively parsed H.264 sources because the demuxer is H.264-only; HEVC and other codecs go directly to ffmpeg.wasm.
+The release has these explicit limits:
+
+- **Resolution:** normalization caps the long side at 720 px. This is lossy for larger sources, but it keeps browser encoding practical and does not remove the reference-loss effect.
+- **Video transformation:** normalization and every transition are video-only. Export audio is a linear, sample-aligned companion track; it is never moshed, crossfaded, mixed across several tracks, or used to hide a visual discontinuity.
+- **Decoding:** bitstream effects depend on the source GOP structure and the device decoder. Some clips may hold, black out, drop pictures, or show different corruption around missing references. Melt, Loop Release, and Reset Pulse require B-frame-free, non-reordered inputs and normalize native B-frame sources first.
+- **POC constraints:** type 0/1 multi-GOP alignment is accepted only without B-slices and non-zero composition offsets. Genuinely reordered streams fail loudly instead of producing a short or broken file.
+- **Device resources:** the 100 MB conversion input limit is soft. WebCodecs does not guarantee hardware acceleration or support for every profile and resolution. iOS Safari can still run out of memory during large wasm conversions; PWA storage and cached wasm assets may be evicted by the OS.
+- **Platform verification:** desktop Chrome and headless browser flows are automated. Physical iPhone/iPad standalone launch, memory pressure, and thermal behavior still require the release checklist in `NEXT_SESSION.md`.
+
+WebCodecs availability does not guarantee hardware acceleration, a particular profile, or support at every resolution; the browser chooses the implementation. If an H.264 or HEVC decoder/encoder configuration is unsupported, the app falls back to ffmpeg.wasm. Conventional HEVC MOV/MP4 files have a dedicated `hvcC` demux path; fragmented or otherwise unsupported containers still require conversion.
 
 The 720-pixel long-side cap is intentional and lossy for larger sources. It substantially reduces encode time and memory, and does not reduce the visible mosh effect because bitstream reference loss is resolution-independent. WebCodecs encoders may inject extra IDRs beyond the requested 30-frame cadence; B therefore recovers at its first encoder-provided IDR, which can shorten the affected first GOP.
 
@@ -341,7 +339,7 @@ The ffmpeg.wasm fallback depends on downloading the pinned core from jsDelivr. P
 
 Direct merging supports compatible sequence members only. Resolution, profile, level, chroma, bit depth, PPS, and video timescale must match; differing SPS payloads require equivalent parsed core fields. Phase C can normalize native H.264 mismatches to a common target first. The sequence itself is capped at 12 clips. Merged audio is aligned to the video timeline but is not moshed: Classic Mosh, Loop Release, Reset Pulse, and explicit-window Melt drop one incoming frame; extra picture frames receive silence. Sources without an audio track contribute silence when another source supplies audio. Multi-GOP B is supported: the mosh targets B's first GOP, then the retained B IDRs act as clean recovery anchors, so later B GOPs should play normally after the intended boundary corruption. Type 0/1 POC alignment is limited to streams with no B-slices and no composition reordering; genuinely reordered multi-GOP streams fail explicitly instead of silently producing a short decode. Audio handling is limited to the first track, 48 kHz stereo, and AAC-LC export; very long sequences, memory pressure, or browser codec gaps can still block audio preparation. WebCodecs video normalization is video-only and intentionally removes B-frames; it is not a general-purpose transcoder. Audio is taken from the original files rather than the normalized video.
 
-Native parsing is not HEVC, fragmented-MP4, encrypted-media, or multi-video-track capable; those unsupported local files must go through Tier 2 conversion where applicable.
+The default Tier-1 H.264 parser is not a general container parser. Conventional HEVC is handled through its dedicated `hvcC` path; fragmented MP4, encrypted media, and multiple video tracks remain unsupported and must be converted where applicable.
 
 All effect durations are bounded by the frames available after the incoming clip's first GOP boundary. Melt/Loop duration counts the effect window, not the following chronological tail, so the total contribution can differ from the window length. Direct API calls that omit duration keep the legacy full-length schedules; the UI submits an explicit window. Reset Pulse requires its interval to fit inside that duration and uses a hard IDR reset at each interval; repeated P-samples are not a blend or a smoothness guarantee. Restore inserts the original boundary IDR at frame N+1; it does not blend frames or guarantee smooth motion through the recovery jump. Continue deliberately retains the prediction chain. Gentler Melt only bounds donor movement; it is not interpolation or a guarantee of perceptual smoothness, and large source cuts or accumulated prediction corruption can still jump. Melt, Loop Release and Reset Pulse are decode-order bitstream effects: they do not blend pixels beyond the repeated slices and can look different across device decoders.
 

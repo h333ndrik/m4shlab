@@ -2,29 +2,56 @@
 
 Updated: 2026-11-03
 
-## Current baseline
+## Release candidate
 
-- Phase A: Classic single-clip IDR removal (`b9fa9b6`).
-- Phase B: compatible H.264 A→B merge (`3a7540d`).
-- Universal import: hardened MP4/MOV parsing plus lazy ffmpeg.wasm conversion (`bf64130`).
-- Phase C: WebCodecs normalization with ffmpeg.wasm fallback.
-- Phase B multi-GOP repair: retain later B IDR anchors and align the first B GOP's `frame_num`.
-- Automatic incompatible-sequence normalization, shared capped targets, parallel workers, and ffmpeg.wasm decode plus WebCodecs encode.
-- Multi-clip timeline: up to 12 clips, per-boundary Cut/Classic Mosh methods, reorder/remove with undo/redo, chained preview and export (`69aab54`).
-- Classic Mosh duration + ending: frame-quantized restore windows with byte-identical IDR reinsertion, full-length continue mode, per-boundary chained settings, report fields, and UI controls.
-- Block E: NAL-level Melt/Loop boundaries with per-sample `frame_num` and type-0 POC-LSB renumbering, bounded repeat/window controls, B-frame normalization gating, and chained reporting.
-- Block F: merged audio from each original source, exact 48 kHz stereo timeline assembly, AAC-LC encoding, delayed-video-frame handling for Classic Mosh, silence padding for Melt/Loop, edit-list-accurate duration, and WebCodecs/ffmpeg.wasm path reporting.
-- Block G: Loop Release scheduling with a first group repeated 3×, a second timeline-aligned group repeated 2×, and an exact donor-index release tail; later IDRs remain in the tail as anchors.
-- Block H: Reset Pulse boundary with interval-based byte-identical first-IDR reinsertion, repeated P-sample donors, per-segment frame_num/POC-LSB resets, Classic-Mosh Restore/Continue tails, report tables, and UI controls.
-- Phase E duration/ending: Melt and Loop Release now use output-frame effect windows, Continue tails from the next unused donor, byte-identical Restore IDRs at the exit, and shared duration/ending controls with Classic Mosh and Reset Pulse.
-- Phase E Gentler: Melt has Original and Gentler repetition movement; Gentler caps donor advances at two frames before the release point and uses consecutive donors for the final quarter, without changing duration or using interpolation.
-- Phase F speed: every clip has independent 0.1×–4.0× speed in 0.1× steps, one-pass WebCodecs frame mapping plus normalization at 30 fps, chained ffmpeg.wasm `atempo` audio with preserved pitch, per-card Reset, and exact frame/audio timeline reports.
-- Block I Gentler Loop: Loop Release now has Original and Gentler cadence. Gentler bridges forward donor jumps at the 3×→2× and tail boundaries with advances of at most two frames, preserves internal block wraps, and keeps the selected output window and audio timeline exact. This is an m4shlab-only extension; h4moshlab does not expose Gentler on Loop Release.
-- Block H HEVC: conventional `hvc1`/`hev1` files expose `hvcC` and length-prefixed HEVC samples, try native WebCodecs HEVC decode with the existing H.264 normalization encoder, and fall back to ffmpeg.wasm when unsupported. Reports distinguish `WebCodecs (HEVC)` from `ffmpeg.wasm`.
-- Block G randomize: each non-Cut boundary has a reproducible 16-hex seeded Randomize action. The mulberry32-style stream selects only valid methods, durations, endings and method parameters; the seed survives undo/reorder and is reported as `random_seed`.
-- **State: PWA shell, merged audio, Loop Release, Reset Pulse, effect-window controls with Gentler Melt, and per-clip speed done.** m4shlab is installable, precaches its complete app shell, reloads offline, runtime-caches ffmpeg.wasm after first conversion, and exports an AAC-LC soundtrack aligned to the merged video timeline.
-- Branding: new `m4` wordmark in the sibling h4moshlab typographic system, with a rounded 32px favicon, 32px PNG tab fallback, and maskable-safe PWA/Apple icons. The h4 cursor brand remains separate.
-- h4moshlab-style interface with a dark preview well, header import control, horizontal timeline, and no visible compatibility panel.
+**State: release candidate complete — `m4shlab-v1.0`.** Feature freeze is `52b00e3e27484f1f1aa377a614279831b1c7ea2b`; this documentation commit is the annotated `m4shlab-v1.0` release tag. m4shlab is a fully client-side, installable H.264 bitstream editor with a multi-clip timeline, five boundary methods across seven selectable cadence/method variants, merged audio, universal local conversion, seeded randomization, per-clip speed, and a versioned offline app shell.
+
+No feature work remains for this release. Remaining work is user review, physical iPhone/iPad acceptance testing, and any follow-up fixes found there. The tag is immutable and must never be moved or deleted.
+
+## Feature commit history
+
+| Commit | Feature | Node checks |
+| --- | --- | ---: |
+| `b9fa9b6` | Phase A single-clip Classic Mosh | 8 |
+| `3a7540d` | Phase B compatible A→B merge | 17 |
+| `bf64130` | Universal import and lazy ffmpeg.wasm conversion | 23 |
+| `841a1eb` | Phase C WebCodecs normalization | 25 |
+| `77c1798` | Multi-GOP Phase B repair | 27 |
+| `4de1e45` | Auto-normalization, 720px cap, parallel conversion | 27 |
+| `aa150f8` | Safari POC type 0 merge fix | 30 |
+| `f085228` | h4moshlab layout; compatibility panel removed | 30 |
+| `69aab54` | Multi-clip timeline and chained Classic Mosh | 35 |
+| `666cd8c` | Installable offline PWA shell | 35 |
+| `c8843c3` | Final h4moshlab editor shell layout | 35 |
+| `39495cf` | Classic Mosh duration and ending controls | 43 |
+| `3f247ba` | Multi-slice Phase A boundary fix | 45 |
+| `3a41cd5` | NAL-level Melt and Loop transitions | 50 |
+| `8f23e91` | Timeline-aligned AAC audio in merged exports | 57 |
+| `8964248` | Loop Release 3×/2× scheduling | 61 |
+| `18b7d78` | Reset Pulse transition | 65 |
+| `2729803` | Duration and ending for Melt and Loop | 70 |
+| `edd658e` | Gentler cadence for Melt | 72 |
+| `f8c7286` | Per-clip speed with pitch-preserving audio | 74 |
+| `4b563d0` | m4 wordmark branding and icons | 74 |
+| `76531be` | Reproducible seeded Randomize | 75 |
+| `1664a4a` | Native WebCodecs HEVC import | 76 |
+| `52b00e3` | Gentler cadence for Loop Release | 77 |
+
+The intervening deployment-only `201d418`/`fb80db1` CNAME create/delete pair is intentionally excluded from the feature table. Browser and PWA counts were introduced and expanded alongside these commits; the frozen release baseline is **77 Node / 27 WebCodecs / 6 PWA** checks.
+
+## Release baseline
+
+- Phase A: sample-based Classic single-clip IDR removal with multi-slice handling.
+- Phase B: compatible H.264 A→B merge, retained later IDRs, first-GOP `frame_num`/POC-LSB alignment, and a byte-safe RBSP/EBSP patcher.
+- Universal import: hardened MP4/MOV parsing, conventional HEVC `hvcC` demuxing, lazy ffmpeg.wasm conversion, and WebCodecs/ffmpeg.wasm path reporting.
+- Phase C: automatic WebCodecs normalization to one shared target capped at 720 px, with ffmpeg.wasm fallback and parallel conversion.
+- Multi-clip timeline: up to 12 clips, Cut/Classic Mosh/Melt/Loop Release/Reset Pulse boundaries, reorder/remove with undo/redo, chained preview and export.
+- Effect controls: Classic Mosh, Melt, Loop Release, and Reset Pulse have frame-quantized duration and Restore/Continue endings; Melt and Loop Release also expose Original/Gentler cadence.
+- Audio: the first audio track of each original source is aligned to the merged video timeline at 48 kHz stereo and exported as AAC-LC. Audio is not moshed.
+- Speed: entry-specific 0.1×–4.0× frame mapping with pitch-preserving `atempo` audio.
+- Randomize: reproducible 16-hex seeds, validated same-stream resampling, seed clearing on manual edits, and `random_seed` reports.
+- PWA: standalone install, light splash/theme, maskable m4 icons, service worker `v11`, 26 precached shell assets, runtime-cached ffmpeg.wasm, and offline app-shell startup.
+- Branding and UI: m4 wordmark in the h4moshlab typographic system; h4moshlab-style light layout, dark preview well, horizontal timeline, and no visible compatibility panel.
 
 ## Multi-clip implementation
 
@@ -58,7 +85,14 @@ Updated: 2026-11-03
 
 ## Verification
 
-- `npm test`: 77 checks passed.
+Frozen release baseline on 2026-11-03 with Node 26.13.0, FFmpeg 9.0.2, and Chrome 156:
+
+- `npm test`: **77/77 PASS**.
+- `npm run test:webcodecs`: **27/27 PASS**.
+- `npm run test:pwa`: **6/6 PASS**.
+- `node --check` for all JavaScript and `git diff --check`: PASS.
+- Deployed service worker: `v11`, byte-identical to local `sw.js`, SHA-256 `a177914d77bc094949cc24fef38d8086306121434b67e6bf7fe674cbe473a50e`.
+- PWA precache: 26 shell assets; manifest/installability and offline reload pass.
 - Melt repeat=4: 315/315 decoded samples, with all non-header RBSP bits byte-identical. Melt duration=12/repeat=2: exact 12-frame window, Continue tail at donor 7, 105/105 decoded; Restore inserts the byte-identical incoming IDR at merged sample 37 and decodes 106/106. Gentler Melt uses source donors [1,1,2,2,3,3,4,6,8,10,11,12], caps each pre-release step at two, and decodes 99/99; Gentler Restore adds the anchor. Loop Release group=4: 99/99 decoded samples with blocks at donors 1/13 and release tail at 21; duration=12 scales to donors [1,2] 3× plus a chronological window and rejoins at donor 13. Reset Pulse interval=6/repeat=2: 99/99 with reset IDRs at merged samples 25/31, donor tables [1,1,2,2,3], and tail donor 13; Restore decodes 100/100. POC type 0 Melt: 171/171. POC type 0 Reset Pulse: 99/99 with segment frame_num/POC starts at 1. Chained Melt→Loop Release: 195/195; Loop Release→Cut: 124/124; Reset Pulse→Cut: 124/124; Reset Pulse→Classic Mosh: 123/123.
 - Native B-frame Melt/Loop Release/Reset Pulse rejects loudly; browser tests confirm native B-frame sources auto-normalize with WebCodecs before the effect runs.
 - Gentler Loop duration=12/group=4 uses donor positions [0,1,0,1,0,1,3,5,7,9,10,11], keeps block wraps at outputs 2/4, reports a three-frame tail bridge from donor 1 to 7, decodes 99/99, and preserves a 99×1920-sample audio timeline. Original Loop cadence remained byte-identical at SHA-256 `a2654bb53026dcf11cb040c05aecdffd2299a387fb4f0693c3a8da9635541fe3`.
@@ -125,7 +159,7 @@ Updated: 2026-11-03
 ## Limits / next work
 
 - WebCodecs does not guarantee hardware acceleration or support for every profile/resolution.
-- WebCodecs normalization currently requires natively parseable H.264 because the demuxer does not expose HEVC samples.
+- WebCodecs normalization supports native H.264 through the H.264 sample path and conventional HEVC through the dedicated `hvcC` path. Other containers/codecs use ffmpeg.wasm; fragmented MP4 still requires conversion.
 - The 720-pixel cap is lossy for larger sources and may place the first recovery IDR earlier than requested because some encoders insert extra keyframes.
 - Sequence conversion starts at most two WASM workers; additional clips wait, and peak memory can still exhaust iPhone Safari on large inputs.
 - Multi-GOP alignment supports type 2 and non-reordered type 0/1 streams. Type 0/1 requires no B-slices and no non-zero composition offsets; reordered B fails explicitly.
