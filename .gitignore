@@ -2,6 +2,7 @@ node_modules/
 work/
 dist/
 testmedia/*
+comparison/*.mp4
 !testmedia/generate.sh
 !testmedia/generate-poc0-fixture.mjs
 .DS_Store

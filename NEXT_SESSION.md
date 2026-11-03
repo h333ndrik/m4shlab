@@ -1,8 +1,8 @@
-# release candidate m4shlab-v1.0 — user review and device testing
+# m4shlab-v1.0 release complete — user review and device testing
 
 ## Status
 
-The feature set is frozen at `52b00e3`, documented in this release commit, and tagged `m4shlab-v1.0`. The automated release baseline is **77 Node / 27 WebCodecs / 6 PWA** checks passing. The GitHub Pages build serves service-worker version `v11`.
+The v1.0 release is complete at tag `m4shlab-v1.0`. Its automated release baseline is **77 Node / 27 WebCodecs / 6 PWA** checks passing. User review and physical-device testing remain; later main-branch parity work is outside the immutable release tag.
 
 Do not move or delete the release tag. Record any device finding first, diagnose it against a reproducible fixture, and only then propose a follow-up fix.
 

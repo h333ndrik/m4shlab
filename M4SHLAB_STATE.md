@@ -2,9 +2,9 @@
 
 Updated: 2026-11-03
 
-## Release candidate
+## Release complete
 
-**State: v1.0 released; post-release h4moshlab parity work in progress.** The immutable `m4shlab-v1.0` tag points to `2aa8ee5536474581c05f4fe5ca30635597a0c526`; feature freeze for the release remains `52b00e3e27484f1f1aa377a614279831b1c7ea2b`. m4shlab is a fully client-side, installable H.264 bitstream editor with a multi-clip timeline, five boundary methods across seven selectable cadence/method variants, merged audio, universal local conversion, seeded randomization, per-clip speed, and a versioned offline app shell.
+**State: release complete, awaiting user review.** The immutable `m4shlab-v1.0` tag points to `2aa8ee5536474581c05f4fe5ca30635597a0c526`; feature freeze for the release remains `52b00e3e27484f1f1aa377a614279831b1c7ea2b`. The v1.0 comparison evidence is recorded in `COMPARISON.md` and `comparison/`. Post-v1.0 parity updates remain separate commits after the tag. m4shlab is a fully client-side, installable H.264 bitstream editor with a multi-clip timeline, five boundary methods across seven selectable cadence/method variants, merged audio, universal local conversion, seeded randomization, per-clip speed, and a versioned offline app shell.
 
 No feature work remains for this release. Remaining work is user review, physical iPhone/iPad acceptance testing, and any follow-up fixes found there. The tag is immutable and must never be moved or deleted.
 

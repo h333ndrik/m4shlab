@@ -1,6 +1,8 @@
 # m4shlab
 
-**m4shlab v1.0 release candidate** — H.264 bitstream moshing in the browser, fully client-side with no server and no upload.
+**m4shlab v1.0** — H.264 bitstream moshing in the browser, fully client-side with no server and no upload.
+
+[Side-by-side comparison with h4moshlab](COMPARISON.md)
 
 ## Release feature overview
 
