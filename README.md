@@ -8,6 +8,8 @@ Phase B MVP: two compatible H.264 clips, Classic A→B merge in the browser, exp
 
 Multi-clip timeline: import up to 12 clips, arrange them on one horizontal timeline, choose Cut or Classic Mosh at every boundary, and export the complete chained sequence. The two-clip flow remains the N=2 case.
 
+Phase D PWA shell: m4shlab is installable and its app shell works offline after the first successful load. ffmpeg.wasm is cached on first use, not precached.
+
 Universal import: conventional H.264 MP4/MOV parses natively; other formats are converted locally with lazily loaded ffmpeg.wasm.
 
 Phase C normalization: incompatible native H.264 sequence members are decoded and re-encoded locally with WebCodecs when the browser supports H.264 encode/decode. ffmpeg.wasm remains the fallback.
@@ -25,6 +27,18 @@ Open `http://127.0.0.1:4173`, choose up to 12 clips with **Import clips**, or dr
 The Phase A single-clip transfer remains available through `mosh.js` and its unchanged test chain.
 
 The app has no package dependencies and no build step. `npm start` only serves the local static files; video never leaves the browser. WebCodecs normalization stays in browser memory. When the fallback is needed, the pinned ffmpeg.wasm core is fetched from jsDelivr on demand; only the local wasm worker receives the file bytes.
+
+## Install (PWA)
+
+Service workers require HTTPS or `localhost`; GitHub Pages provides HTTPS automatically.
+
+- **iOS / iPadOS Safari:** tap **Share** → **Add to Home Screen**.
+- **Android Chrome:** use the install banner when offered, or open the browser menu → **Install app** / **Add to Home screen**.
+- **Desktop Chrome/Edge:** use the install icon in the address bar, or the browser menu → **Install m4shlab**.
+
+The first load must reach the network so the manifest and versioned app shell can be cached. After that the UI starts offline. Import, Classic Mosh, preview, and export are local operations and continue to work without a network. New-format conversion needs the ffmpeg.wasm core; the first conversion downloads it, then `converter-worker.js`, `ffmpeg-core.js`, and `ffmpeg-core.wasm` stay in the runtime cache. The OS may evict that cache under storage pressure, in which case conversion needs network again.
+
+The current cache version is `v1` (`m4shlab-v1` plus `m4shlab-runtime-v1`). Bump `VERSION` in `sw.js` whenever app-shell or conversion-worker files change. Activation deletes older versioned caches, including the old runtime cache, so the worker cannot run stale code.
 
 ## Supported formats
 
@@ -105,9 +119,10 @@ The committed test chain includes `testmedia/generate.sh`; generated media is ig
 ```sh
 npm test
 npm run test:webcodecs
+npm run test:pwa
 ```
 
-`npm test` requires Node and `ffmpeg`/`ffprobe`. If fixtures are missing, it runs `testmedia/generate.sh`, which creates local, ignored test media:
+`npm test` requires Node and `ffmpeg`/`ffprobe`. `npm run test:pwa` requires Chrome/Chromium and network access for its first ffmpeg.wasm conversion; it tests the resulting offline cache. If fixtures are missing, it runs `testmedia/generate.sh`, which creates local, ignored test media:
 
 - a 3-second 320×240 Phase A clip with IDRs at samples 0, 25, and 50;
 - matching 1-second 320×240 A/B clips with identical High-profile settings and timescale;
@@ -145,7 +160,11 @@ The tests assert:
 - a three-file mixed-resolution browser import normalizes all cards to 540×720, offers only Cut/Classic Mosh at each connector, supports reorder/remove/undo, and exports the full 74-frame Cut + Mosh sequence;
 - ffmpeg.wasm decode + WebCodecs encode and the full-WASM fallback both name the encoder that ran.
 - the browser has no compatibility panel, status badge, table, or SPS/PPS hash display;
-- blocking merge errors render as a short alert rather than a compatibility panel.
+- blocking merge errors render as a short alert rather than a compatibility panel;
+- the manifest has standalone display, the light theme, SVG/192/512/maskable icons, and a 180px Apple touch icon;
+- the service worker activates, controls the page, precaches the 19-file app shell, and excludes the conversion worker and ffmpeg core from precache;
+- Chrome reports no manifest or installability errors, activates `beforeinstallprompt`, and the activate handler removes an older versioned cache;
+- an offline reload serves the complete shell, after which previously cached ffmpeg.wasm converts and merges HEVC inputs locally and the exported MP4 decodes.
 
 Current local results (2026-11-03, Node 26.13.0, FFmpeg 9.0.2, Google Chrome 156): all 35 Node checks pass. Phase A removes 11,468 bytes and decodes 73 frames. Phase B merges 25 A samples plus 24 retained B samples, decodes 49 frames, and produces the same 67,893-byte export. The multi-GOP regression merges 25 A + 75 B samples, retains two later B IDRs, patches 24 first-GOP slice headers, and decodes all 99 expected frames with three keyframes. A Safari-shaped POC type 0 pair also merges with POC-LSB alignment and decodes 99/99 frames; a genuinely reordered type 0 multi-GOP stream remains rejected. The WebCodecs muxer test emits 8 samples with a 14,984-byte mdat payload and 4,096 duration units. Tier-1 fixtures additionally verify a QuickTime H.264 MOV (25 samples / 26 NALs), a size-zero mdat, standalone `wide`, a 64-bit mdat, the exact HEVC error, and the exact fragmented-MP4 error.
 
@@ -171,11 +190,24 @@ PASS ffmpeg.wasm decode + WebCodecs encode: 320x240, both progress bars complete
 PASS WebCodecs stubbed unavailable: ffmpeg.wasm fallback ran and the report identifies it
 ```
 
+`npm run test:pwa` produced:
+
+```text
+PASS manifest is valid with standalone display, light theme, SVG/192/512/maskable icons, and a 180px Apple touch icon
+PASS service worker registered, controlled the page, precached 19 shell assets, and Chrome reports no manifest/installability errors; beforeinstallprompt observed=true
+PASS activate cleanup removed the old versioned cache and re-registered the current shell
+PASS first online conversion runtime-cached converter-worker.js, ffmpeg-core.js, and ffmpeg-core.wasm (3 runtime entries)
+PASS offline reload served the complete app shell from Cache Storage with no network
+PASS previously cached ffmpeg.wasm converted two HEVC clips fully offline; merge preview and 120718-byte export decoded 59 frames, SHA-256 47a7fcc6972956e34b9147fead68159350bf16d5f339098436dc5cd8dd25c7b9
+```
+
 The same test asserts the normalized A/B streams parse via `parser/nal.js` with exactly one leading IDR each, the B frame-number alignment patches 24 delta samples, the merged `stsz` sum equals mdat content, all 49 frames decode, there is no audio, and `has_b_frames=0`. With `VideoDecoder`/`VideoEncoder` stubbed unavailable, the report switches to `normalized via ffmpeg.wasm`.
 
 `npm run test:conversion` remains the optional Playwright test for the HEVC ffmpeg.wasm path. It exits with a clear skip when Playwright or the CDN is unavailable.
 
 Verification includes synthetic fixtures, two real iPhone MOVs, and headless Chrome. A physical iPhone acceptance run is still separate: Safari/WebCodecs behavior, thermal throttling, and device memory cannot be inferred from desktop Chrome.
+
+PWA installation and offline reload are verified in headless Chrome against `localhost`. iOS Home Screen launch, standalone safe-area behavior, and OS cache eviction still need a physical-device check.
 
 The reported `IMG_4767.mov` and `final_0.mov` were not available in this workspace, so the Safari encoder shape is covered by a generated POC type 0 fixture. The actual pair still needs a final iPhone retest.
 
@@ -196,6 +228,8 @@ The ffmpeg.wasm fallback depends on downloading the pinned core from jsDelivr. P
 Direct merging supports compatible sequence members only. Resolution, profile, level, chroma, bit depth, PPS, and video timescale must match; differing SPS payloads require equivalent parsed core fields. Phase C can normalize native H.264 mismatches to a common target first. The sequence itself is capped at 12 clips, and all merged exports have no audio. Normalized clips also drop audio before moshing. Multi-GOP B is supported: the mosh targets B's first GOP, then the retained B IDRs act as clean recovery anchors, so later B GOPs should play normally after the intended boundary corruption. Type 0/1 POC alignment is limited to streams with no B-slices and no composition reordering; genuinely reordered multi-GOP streams fail explicitly instead of silently producing a short decode. WebCodecs normalization is video-only and intentionally removes B-frames; it is not a general-purpose transcoder.
 
 Native parsing is not HEVC, fragmented-MP4, encrypted-media, or multi-video-track capable; those unsupported local files must go through Tier 2 conversion where applicable.
+
+The PWA cache is not a persistence guarantee. First load needs network; a browser may evict Cache Storage, `file://` cannot register a service worker, and iOS may reclaim storage or terminate a large wasm conversion under memory pressure. The service worker deliberately does not cache source media or generated exports outside the page's in-memory Blob URLs.
 
 ## Attribution
 

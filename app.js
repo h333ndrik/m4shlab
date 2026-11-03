@@ -922,3 +922,11 @@ window.addEventListener('beforeunload', () => {
   if (merged?.mergedUrl) urls.add(merged.mergedUrl);
   for (const url of urls) URL.revokeObjectURL(url);
 });
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', async () => {
+    try {
+      await navigator.serviceWorker.register('./sw.js');
+    } catch {}
+  });
+}

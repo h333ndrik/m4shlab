@@ -12,6 +12,9 @@ const types = new Map([
   ['.css', 'text/css; charset=utf-8'],
   ['.mp4', 'video/mp4'],
   ['.json', 'application/json; charset=utf-8'],
+  ['.svg', 'image/svg+xml'],
+  ['.png', 'image/png'],
+  ['.wasm', 'application/wasm'],
 ]);
 
 createServer(async (request, response) => {

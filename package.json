@@ -13,6 +13,7 @@
     "test": "node tests/run.js",
     "test:fixture": "bash testmedia/generate.sh",
     "test:conversion": "node tests/conversion.browser.mjs",
-    "test:webcodecs": "node tests/webcodecs.browser.mjs"
+    "test:webcodecs": "node tests/webcodecs.browser.mjs",
+    "test:pwa": "node tests/pwa.browser.mjs"
   }
 }
