@@ -454,6 +454,8 @@ try {
       durationMax: Number(duration.max),
       durationValue: Number(duration.value),
       durationMode: document.querySelector('#transition-duration-mode').textContent,
+      randomizeDisabled: document.querySelector('#transition-randomize').disabled,
+      seed: document.querySelector('#transition-seed').textContent,
     };
   })()`);
   assert.equal(dialogMethods.open, true);
@@ -465,6 +467,57 @@ try {
   assert.ok(dialogMethods.durationMax >= 1);
   assert.equal(dialogMethods.durationValue, dialogMethods.durationMax);
   assert.equal(dialogMethods.durationMode, 'full length');
+  assert.equal(dialogMethods.randomizeDisabled, false);
+  assert.equal(dialogMethods.seed, 'seed —');
+  const randomizedUi = await client.evaluate(`(() => {
+    const button = document.querySelector('#transition-randomize');
+    button.click();
+    const seeded = {
+      seedText: document.querySelector('#transition-seed').textContent,
+      method: document.querySelector('#transition-dialog input[name="transition-method"]:checked').value,
+      duration: Number(document.querySelector('#transition-duration').value),
+      ending: document.querySelector('#transition-ending').value,
+      mode: document.querySelector('#transition-duration-mode').textContent,
+    };
+    const duration = document.querySelector('#transition-duration');
+    duration.dispatchEvent(new Event('input', {bubbles: true}));
+    return {
+      ...seeded,
+      clearedSeedText: document.querySelector('#transition-seed').textContent,
+    };
+  })()`);
+  assert.match(randomizedUi.seedText, /^seed [0-9a-f]{16}$/);
+  assert.ok(['classic-mosh', 'melt', 'loop', 'reset-pulse'].includes(randomizedUi.method));
+  assert.ok(randomizedUi.duration >= 12 && randomizedUi.duration <= dialogMethods.durationMax);
+  assert.ok(randomizedUi.ending === 'restore' || randomizedUi.ending === 'continue');
+  assert.equal(randomizedUi.mode, 'randomized');
+  assert.equal(randomizedUi.clearedSeedText, 'seed —');
+  const appliedRandomSeed = await client.evaluate(`(() => {
+    document.querySelector('#transition-randomize').click();
+    const seed = document.querySelector('#transition-seed').textContent.replace('seed ', '');
+    document.querySelector('#transition-apply').click();
+    return seed;
+  })()`);
+  assert.match(appliedRandomSeed, /^[0-9a-f]{16}$/);
+  await client.waitFor(`(() => {
+    const node = document.querySelector('#report');
+    if (!node.textContent) return false;
+    try {
+      const report = JSON.parse(node.textContent);
+      return report.stage === 'merged' && report.transitions?.[0]?.random_seed === '${appliedRandomSeed}';
+    } catch { return false; }
+  })()`, 30000);
+  console.log('PASS Randomize creates a 16-hex seed, manual edits clear it, and random_seed persists in the boundary report');
+  await client.evaluate("document.querySelector('#undo-button').click()");
+  await client.waitFor(`(() => {
+    const node = document.querySelector('#report');
+    if (!node.textContent) return false;
+    try {
+      const report = JSON.parse(node.textContent);
+      return report.stage === 'merged' && report.transitions?.[0]?.random_seed === null;
+    } catch { return false; }
+  })()`, 30000);
+  await client.evaluate("document.querySelector('.connector').click()");
   const durationControls = await client.evaluate(`(() => {
     const duration = document.querySelector('#transition-duration');
     duration.value = '5';

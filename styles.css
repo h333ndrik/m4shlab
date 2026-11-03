@@ -485,6 +485,25 @@ progress {
   font-size: 18px;
 }
 
+.randomize-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 18px;
+  padding: 10px 12px;
+  border: 1px solid var(--soft-line);
+  border-radius: 4px;
+  background: #f5f5f3;
+}
+
+.randomize-row output {
+  color: var(--muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.03em;
+}
+
 .transition-dialog fieldset {
   display: grid;
   gap: 8px;

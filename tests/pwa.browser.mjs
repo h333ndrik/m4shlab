@@ -17,7 +17,7 @@ const shellPaths = [
   '/', '/index.html', '/styles.css', '/app.js',
   '/parser/mp4.js', '/parser/nal.js', '/parser/sps.js',
   '/merge.js', '/mosh.js', '/webcodecs.js', '/webcodecs-muxer.js',
-  '/converter.js', '/conversion-settings.js', '/classic-mosh.js', '/speed.js', '/audio.js', '/hybrid-encoder.js',
+  '/converter.js', '/conversion-settings.js', '/classic-mosh.js', '/speed.js', '/randomize.js', '/audio.js', '/hybrid-encoder.js',
   '/manifest.json', '/favicon.svg', '/favicon-32.png', '/icon.svg', '/icon-192.png', '/icon-512.png', '/icon-180.png',
 ];
 const chromeCandidates = [

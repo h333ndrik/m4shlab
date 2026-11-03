@@ -14,6 +14,7 @@ import { parseSps } from '../parser/sps.js';
 import { ValueError, frameRateForTrack } from '../classic-mosh.js';
 import { assembleAudioTimeline, buildAdts, retimeMuxedAudio, RuntimeError, samplesPerFrame, wavBytes } from '../audio.js';
 import { SpeedValueError, atempoChain, atempoFilter, normalizeSpeed, speedFramePlan } from '../speed.js';
+import { RANDOM_METHODS, RandomizeError, canRandomize, randomizeTransition, validateRandomTransition } from '../randomize.js';
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const fixturePath = join(projectRoot, 'testmedia', 'synthetic-h264.mp4');
@@ -1201,6 +1202,37 @@ const audioSourceHashes = Object.fromEntries(Object.entries(audioFixtures).map((
 ]));
 const audioFrameSamples = samplesPerFrame(25);
 assert.equal(audioFrameSamples, 1920);
+
+const randomSeed = '0123456789abcdef';
+const randomAgain = randomizeTransition({seed: randomSeed, availableFrames: 144, fps: 30});
+assert.deepEqual(randomizeTransition({seed: randomSeed, availableFrames: 144, fps: 30}), randomAgain, 'same seed must reproduce the exact randomized settings');
+assert.equal(randomAgain.randomSeed, randomSeed);
+let randomizedCombinations = 0;
+for (let index = 0; index < 50; index += 1) {
+  const seed = index.toString(16).padStart(16, '0');
+  for (const method of RANDOM_METHODS) {
+    const settings = randomizeTransition({seed, availableFrames: 144, fps: 30, methods: [method]});
+    assert.equal(settings.method, method);
+    assert.ok(settings.randomSeed === seed);
+    assert.ok(settings.durationFrames >= 12 && settings.durationFrames <= 144);
+    assert.ok(settings.durationFrames / 30 >= 0.5);
+    assert.ok(settings.ending === 'restore' || settings.ending === 'continue');
+    if (method === 'melt') assert.ok(settings.repeat >= 2 && settings.repeat <= 12);
+    if (method === 'loop') assert.ok(settings.loopFrames >= 2 && settings.loopFrames < settings.durationFrames && settings.loopFrames <= 48);
+    if (method === 'reset-pulse') {
+      assert.ok(settings.resetInterval >= 4 && settings.resetInterval < settings.durationFrames && settings.resetInterval <= 48);
+      assert.ok(settings.repeat >= 2 && settings.repeat <= 12);
+    }
+    validateRandomTransition(settings, {availableFrames: 144, fps: 30});
+    randomizedCombinations += 1;
+  }
+}
+assert.equal(randomizedCombinations, 200);
+assert.equal(canRandomize({availableFrames: 15, fps: 30}), true);
+assert.equal(canRandomize({availableFrames: 14, fps: 30}), false);
+assert.throws(() => randomizeTransition({seed: 'not-a-seed', availableFrames: 144, fps: 30}), RandomizeError);
+assert.throws(() => randomizeTransition({seed: '0000000000000001', availableFrames: 14, fps: 30}), RandomizeError);
+pass('Randomize reproduces identical settings per seed and validates 50 seeds x 4 methods (200 combinations) within duration, ending, repeat, loop and reset guards');
 
 const speedPlans = new Map([
   [2, speedFramePlan(60, 30, 2)],

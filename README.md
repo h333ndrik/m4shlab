@@ -32,7 +32,7 @@ Automatic sequence normalization starts as soon as native compatibility fails. I
 npm start
 ```
 
-Open `http://127.0.0.1:4173`, choose up to 12 clips with **Import clips**, or drop them onto the timeline. Use the card arrows to reorder, the remove buttons to edit the sequence, the per-card speed slider to set 0.1×–4.0×, and undo/redo for timeline changes. Click each dashed connector to choose **Cut**, **Classic Mosh**, **Melt**, **Loop Release** or **Reset Pulse**. Every non-Cut method exposes duration and ending controls; Melt adds a repeat factor and Original/Gentler movement selector, Loop Release a group length, and Reset Pulse its interval and P-repeat. Switch between the first-clip cut and the full merged sequence; validation and normalization happen in the background, and only a blocking error is surfaced. Play from the start for the clearest result. Export downloads `m4shlab-merge.mp4` with the full sequence and source audio when available.
+Open `http://127.0.0.1:4173`, choose up to 12 clips with **Import clips**, or drop them onto the timeline. Use the card arrows to reorder, the remove buttons to edit the sequence, the per-card speed slider to set 0.1×–4.0×, and undo/redo for timeline changes. The transition dialog can generate a reproducible seeded random mosh variant. Click each dashed connector to choose **Cut**, **Classic Mosh**, **Melt**, **Loop Release** or **Reset Pulse**. Every non-Cut method exposes duration and ending controls; Melt adds a repeat factor and Original/Gentler movement selector, Loop Release a group length, and Reset Pulse its interval and P-repeat. Switch between the first-clip cut and the full merged sequence; validation and normalization happen in the background, and only a blocking error is surfaced. Play from the start for the clearest result. Export downloads `m4shlab-merge.mp4` with the full sequence and source audio when available.
 
 The Phase A single-clip transfer remains available through `mosh.js` and its unchanged test chain.
 
@@ -92,6 +92,12 @@ The page follows the h4moshlab visual language: a light radial-gradient backgrou
 3. Native H.264 normalization reuses parsed samples and `avcC`, decodes with `VideoDecoder`, scales/letterboxes through a canvas, converts to limited-range I420, and encodes every sequence member with `VideoEncoder` using identical settings.
 4. HEVC, WebM, fragmented MP4, and unsupported H.264 configurations use ffmpeg.wasm for decode. If WebCodecs H.264 encoding is available, ffmpeg.wasm emits a capped Y4M stream and WebCodecs performs the encode; otherwise the complete encode stays in the WASM worker.
 5. The UI and JSON report name decode path, encode path, target, parallel execution, fallback reason, and duration for every clip. Compatibility is checked again on the converted bytes before preview and chained merge, without rendering a criteria table.
+
+### Randomize
+
+Every mosh boundary has a **Randomize** action for Classic Mosh, Melt, Loop Release and Reset Pulse; Cut disables it. Each click creates a 16-character hexadecimal seed with `crypto.getRandomValues`. A mulberry32-style generator derives the method, frame-quantized duration, ending and method-specific repeat/loop/interval values from that seed, so the same seed and clip constraints reproduce the same variant. Generated values obey the 12–144 frame duration range, the 0.5-second aligned-effect minimum, Loop frames shorter than the duration, and Reset intervals shorter than the duration. Invalid candidates are redrawn from the same seeded stream for at most 20 attempts.
+
+The seed is stored as `randomSeed` on the timeline entry, survives undo/redo and reorder, and is reported as `random_seed` on the boundary. Editing any transition control manually clears the seed. Randomize does not modify audio-follow behavior.
 
 ### Per-clip speed
 
@@ -210,6 +216,8 @@ The tests assert:
 - Loop Release duration=12 scales the release blocks into the window, rejoins at donor 13, and decodes 99/99; its Restore variant adds the normal recovery anchor;
 - Melt/Loop duration clamps to 74 frames, accepts one frame, rejects zero, and keeps the audio timeline exactly equal to merged video frames × samples per frame;
 - speed plans map 60 frames to 30, 120, 60, and 35 output frames at 2×, 0.5×, 1×, and 1.7×; out-of-range values raise `SpeedValueError`;
+- the seeded randomizer reproduces identical settings for the same seed and validates 50 seeds × all four mosh methods (200 combinations);
+- the browser Randomize action generates a 16-hex seed, a manual edit clears its display, and the applied seed appears as `random_seed` in the boundary report;
 - 2×, 0.5×, and 1.7× atempo chains preserve a 440 Hz tone and emit exactly 48,000, 192,000, and 56,000 samples; each stage is within 0.5–2.0×;
 - the browser merges a 2× clip plus a 0.5× clip into 150 frames with 240,000 audio samples, decodes 150/150 frames, and exports at 30 fps;
 - fractional 1.7× produces 35 decodable frames and a 35-frame audio timeline; Reset restores 1.0× and 60 input/output frames;
@@ -237,7 +245,7 @@ The tests assert:
 - the browser has no compatibility panel, status badge, table, or SPS/PPS hash display;
 - blocking merge errors render as a short alert rather than a compatibility panel;
 - the manifest has standalone display, the light theme, SVG/192/512/maskable icons, and a 180px Apple touch icon;
-- the service worker activates, controls the page, precaches the 24-file app shell, and excludes the conversion worker and ffmpeg core from precache;
+- the service worker activates, controls the page, precaches the 25-file app shell, and excludes the conversion worker and ffmpeg core from precache;
 - Chrome reports no manifest or installability errors, activates `beforeinstallprompt`, and the activate handler removes an older versioned cache;
 - an offline reload serves the complete shell, after which previously cached ffmpeg.wasm converts and merges HEVC inputs locally and the exported MP4 decodes.
 
@@ -266,6 +274,7 @@ PASS browser Melt, Gentler Melt, Loop Release, and Reset Pulse produce 105-, 99-
 PASS selecting Melt on native B-frame clips auto-normalizes both sources before applying the NAL effect
 PASS audio merge exports AAC 48000 Hz/2ch, 94080 expected samples, runtime-matched duration, encode=WebCodecs, mux=ffmpeg.wasm
 PASS AudioEncoder unavailable: PCM encoded in ffmpeg.wasm and merged audio reports delay=1024 samples
+PASS Randomize creates a 16-hex seed, manual edits clear it, and random_seed persists in the boundary report
 PASS 2× + 0.5× clips merge to 150/150 frames and 240000 exact audio samples at 30 fps
 PASS fractional 1.7× produces 35 decodable frames with a 35-frame audio timeline
 PASS per-clip Reset restores 1.0× with 60 input and 60 output frames
@@ -281,7 +290,7 @@ PASS WebCodecs stubbed unavailable: ffmpeg.wasm fallback ran and the report iden
 ```text
 PASS manifest is valid with standalone display, light theme, resolving SVG/192/512-maskable icons, and favicon plus 180px Apple links
 INFO wordmark geometry: favicon 30.3×25.0 inside 32×32; maskable corner 196.7px <= 204.8px safe radius
-PASS service worker registered, controlled the page, precached 24 shell assets, and Chrome reports no manifest/installability errors; beforeinstallprompt observed=true
+PASS service worker registered, controlled the page, precached 25 shell assets, and Chrome reports no manifest/installability errors; beforeinstallprompt observed=true
 PASS activate cleanup removed the old versioned cache and re-registered the current shell
 PASS first online conversion runtime-cached converter-worker.js, ffmpeg-core.js, and ffmpeg-core.wasm (3 runtime entries)
 PASS offline reload served the complete app shell from Cache Storage with no network

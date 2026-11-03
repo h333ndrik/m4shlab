@@ -19,6 +19,7 @@ Updated: 2026-11-03
 - Phase E duration/ending: Melt and Loop Release now use output-frame effect windows, Continue tails from the next unused donor, byte-identical Restore IDRs at the exit, and shared duration/ending controls with Classic Mosh and Reset Pulse.
 - Phase E Gentler: Melt has Original and Gentler repetition movement; Gentler caps donor advances at two frames before the release point and uses consecutive donors for the final quarter, without changing duration or using interpolation.
 - Phase F speed: every clip has independent 0.1×–4.0× speed in 0.1× steps, one-pass WebCodecs frame mapping plus normalization at 30 fps, chained ffmpeg.wasm `atempo` audio with preserved pitch, per-card Reset, and exact frame/audio timeline reports.
+- Block G randomize: each non-Cut boundary has a reproducible 16-hex seeded Randomize action. The mulberry32-style stream selects only valid methods, durations, endings and method parameters; the seed survives undo/reorder and is reported as `random_seed`.
 - **State: PWA shell, merged audio, Loop Release, Reset Pulse, effect-window controls with Gentler Melt, and per-clip speed done.** m4shlab is installable, precaches its complete app shell, reloads offline, runtime-caches ffmpeg.wasm after first conversion, and exports an AAC-LC soundtrack aligned to the merged video timeline.
 - Branding: new `m4` wordmark in the sibling h4moshlab typographic system, with a rounded 32px favicon, 32px PNG tab fallback, and maskable-safe PWA/Apple icons. The h4 cursor brand remains separate.
 - h4moshlab-style interface with a dark preview well, header import control, horizontal timeline, and no visible compatibility panel.
@@ -36,6 +37,7 @@ Updated: 2026-11-03
 - The preview shows clip 1 untouched or the full merged chain. Export downloads the complete sequence as `m4shlab-merge.mp4`; source audio is muxed automatically when any source track exists.
 - Melt schedules non-IDR donors through an explicit output-frame window, then continues from the next unused donor or restores B's original first IDR. Gentler starts from the same hold plan, bounds each pre-release donor advance to two frames, and makes the final quarter consecutive. Loop Release scales its 3×/2× blocks into the window and joins the chronological tail at the next donor. Reset Pulse starts every interval with B's original first IDR sample, then repeats consecutive P donors until the interval is full. All three reject reordered inputs and renumber emitted slice headers through the RBSP/EBSP-safe patcher. API calls without a duration retain the legacy full schedules; the UI always supplies an explicit window.
 - `classic-mosh.js` owns nominal fps detection, frame quantization, duration clamping, `ValueError`, and picture-sample counting. `mosh.js` and `merge.js` use the same settings so Phase A and boundary merges agree.
+- `randomize.js` owns 16-hex seed validation, the mulberry32-style stream, technical constraint validation, and bounded same-stream resampling for Randomize. The dialog stores the seed on the incoming clip, clears it on manual control edits, and includes it in the boundary report.
 - `speed.js` owns 0.1× step validation, time-aware output frame counts, Bresenham-style donor mapping, and the multiplicative `atempo` stage chain. Normalization encodes the mapped 30 fps frames; ffmpeg.wasm applies the same chain to PCM and trims/pads to `output_frames × 1600` samples.
 - Restore removes IDRs only inside the selected window, inserts the original first-IDR sample before frame N+1, and preserves remaining samples plus later IDR anchors. Continue ignores the shorter window and remains byte-identical to the old full-length output. Default full duration plus restore preserves legacy exports.
 
@@ -44,16 +46,17 @@ Updated: 2026-11-03
 - `manifest.json` declares standalone display, light `#f5f5f3` theme/background, `./` start/scope, SVG icon, 192px any icon, and 512px maskable PNG icon.
 - `favicon.svg` and `icon.svg` use Arial/Helvetica Bold 700 `m4` lettering on `#f5f5f3`; the favicon adapts the sibling h4 tile proportions, while the 512px PWA master keeps the wordmark within the maskable safe area. `favicon-32.png`, `icon-180.png`, `icon-192.png`, and `icon-512.png` are committed raster fallbacks.
 - `index.html` links the manifest, SVG and 32px PNG tab icons, sized 180px Apple touch icon, theme color, and Apple standalone metadata.
-- `sw.js` derives both `m4shlab-v10` and `m4shlab-runtime-v10` from one `VERSION` constant. Install precaches 24 app-shell files, including both favicon assets, `classic-mosh.js`, `speed.js`, and `audio.js`, skips `converter-worker.js` and ffmpeg.wasm, calls `skipWaiting()`, and activate deletes old versioned caches before `clients.claim()`.
+- `sw.js` derives both `m4shlab-v10` and `m4shlab-runtime-v10` from one `VERSION` constant. Install precaches 25 app-shell files, including both favicon assets, `classic-mosh.js`, `speed.js`, `randomize.js`, and `audio.js`, skips `converter-worker.js` and ffmpeg.wasm, calls `skipWaiting()`, and activate deletes old versioned caches before `clients.claim()`.
 - Static shell requests are cache-first. Navigation requests fall back to the cached `index.html`. Runtime cache-first applies only to `converter-worker.js` and the pinned jsDelivr ffmpeg core JS/WASM URLs.
 - `app.js` changes only by registering `./sw.js` after `load`; registration failures such as `file://` are swallowed so normal browser operation is unchanged.
 - Bump `VERSION` in `sw.js` whenever a shell or conversion-worker asset changes. Runtime cache separation keeps the 31 MB ffmpeg core out of shell precache; a version bump intentionally invalidates stale worker code too.
 
 ## Verification
 
-- `npm test`: 74 checks passed.
+- `npm test`: 75 checks passed.
 - Melt repeat=4: 315/315 decoded samples, with all non-header RBSP bits byte-identical. Melt duration=12/repeat=2: exact 12-frame window, Continue tail at donor 7, 105/105 decoded; Restore inserts the byte-identical incoming IDR at merged sample 37 and decodes 106/106. Gentler Melt uses source donors [1,1,2,2,3,3,4,6,8,10,11,12], caps each pre-release step at two, and decodes 99/99; Gentler Restore adds the anchor. Loop Release group=4: 99/99 decoded samples with blocks at donors 1/13 and release tail at 21; duration=12 scales to donors [1,2] 3× plus a chronological window and rejoins at donor 13. Reset Pulse interval=6/repeat=2: 99/99 with reset IDRs at merged samples 25/31, donor tables [1,1,2,2,3], and tail donor 13; Restore decodes 100/100. POC type 0 Melt: 171/171. POC type 0 Reset Pulse: 99/99 with segment frame_num/POC starts at 1. Chained Melt→Loop Release: 195/195; Loop Release→Cut: 124/124; Reset Pulse→Cut: 124/124; Reset Pulse→Classic Mosh: 123/123.
 - Native B-frame Melt/Loop Release/Reset Pulse rejects loudly; browser tests confirm native B-frame sources auto-normalize with WebCodecs before the effect runs.
+- Randomize reproduces identical settings for the same seed and validates all 200 combinations across 50 seeds × four mosh methods. Browser UI generates a 16-hex seed, clears it after a manual edit, and reports the applied value as `random_seed`.
 - Speed frame plans produce 30/120/60/35 frames for 60 source frames at 2×/0.5×/1×/1.7×. Speed 1.0× keeps the original 60/60 frame path; out-of-range values and non-0.1 steps fail loudly.
 - Chained atempo at 2×, 0.5×, and 1.7× preserves a 440 Hz tone (spectral estimate) and emits exactly 48,000/192,000/56,000 samples. Every stage is within 0.5–2.0×.
 - Classic audio assembly drops exactly the first incoming frame and preserves the remaining second-frame PCM; a silent clip contributes exact stereo silence; explicit-window Melt starts one frame in and pads extra picture frames with silence, while the legacy duration-less API keeps its original full audio segment.
@@ -69,7 +72,7 @@ Updated: 2026-11-03
 - Normalization target coverage: 1440×1920 + 768×1024 + 320×240 selects one shared 540×720 target.
 - Classic Mosh restore: Phase A 10-frame window exact NAL sequence, byte-identical IDR reinsertion, 75/75 decoded source frames; Phase B 50/50 decoded frames; continue byte-identical to full-length output.
 - Duration 1 accepted; overlong windows clamp and report; durations below one frame raise `ValueError`; chained boundaries retain independent settings.
-- PWA browser test: manifest valid with resolving icons and exact favicon links; service worker active and controlling; 24 shell assets cached; old cache removed; runtime cache contains three ffmpeg entries; offline reload works; offline HEVC conversion and merge produce a 120,718-byte, 59-frame H.264 export.
+- PWA browser test: manifest valid with resolving icons and exact favicon links; service worker active and controlling; 25 shell assets cached; old cache removed; runtime cache contains three ffmpeg entries; offline reload works; offline HEVC conversion and merge produce a 120,718-byte, 59-frame H.264 export.
 - PWA export SHA-256: `47a7fcc6972956e34b9147fead68159350bf16d5f339098436dc5cd8dd25c7b9`.
 
 `npm run test:webcodecs` produced:
@@ -96,7 +99,7 @@ Updated: 2026-11-03
 `npm run test:pwa` produced:
 
 - manifest/installability: PASS, including `beforeinstallprompt observed=true`;
-- service worker active and controlling, 24 shell assets precached off a fresh profile;
+- service worker active and controlling, 25 shell assets precached off a fresh profile;
 - activation removed `m4shlab-v9` and re-registered the v10 shell;
 - runtime cache: `converter-worker.js`, `ffmpeg-core.js`, `ffmpeg-core.wasm`;
 - fully offline HEVC conversion, merge, preview, and export: 59/59 decoded frames.

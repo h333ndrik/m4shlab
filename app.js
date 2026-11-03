@@ -21,6 +21,7 @@ import { isWebCodecsAvailable, normalizeWithWebCodecs } from './webcodecs.js';
 import { chooseNormalizationTarget } from './webcodecs-muxer.js';
 import { frameRateForTrack, maxMoshFrames } from './classic-mosh.js';
 import { atempoChain, normalizeSpeed, SPEED_MAX, SPEED_MIN, SPEED_STEP } from './speed.js';
+import { canRandomize, randomizeTransition } from './randomize.js';
 import {
   assembleAudioTimeline,
   buildAdts,
@@ -61,6 +62,8 @@ const redoButton = document.querySelector('#redo-button');
 const transitionDialog = document.querySelector('#transition-dialog');
 const transitionTitle = document.querySelector('#transition-title');
 const transitionApply = document.querySelector('#transition-apply');
+const transitionRandomize = document.querySelector('#transition-randomize');
+const transitionSeed = document.querySelector('#transition-seed');
 const classicMoshOptions = document.querySelector('#classic-mosh-options');
 const transitionDuration = document.querySelector('#transition-duration');
 const transitionDurationValue = document.querySelector('#transition-duration-value');
@@ -88,6 +91,7 @@ let importToken = 0;
 let activeBoundary = null;
 let activeMoshFps = 25;
 let activeMoshMaximum = 0;
+let activeRandomSeed = null;
 let normalizationAttempted = false;
 let undoStack = [];
 let redoStack = [];
@@ -750,12 +754,48 @@ function redoTimeline() {
   restoreState(next);
 }
 
+function updateTransitionSeedDisplay() {
+  transitionSeed.textContent = activeRandomSeed ? `seed ${activeRandomSeed}` : 'seed —';
+}
+
+function clearRandomSeed() {
+  if (activeRandomSeed === null) return;
+  activeRandomSeed = null;
+  updateTransitionSeedDisplay();
+}
+
+function randomMethodsForClip(clip) {
+  if (!clip) return [];
+  const methods = ['classic-mosh'];
+  const eligibility = inspectEffectEligibility(clip.bytes, clip.mp4);
+  if (eligibility.eligible) methods.push('melt', 'loop', 'reset-pulse');
+  return methods;
+}
+
+function updateRandomizeAvailability() {
+  const method = transitionDialog.querySelector('input[name="transition-method"]:checked')?.value;
+  const clip = clips[activeBoundary];
+  const methods = randomMethodsForClip(clip);
+  const enabled = method !== 'cut' && canRandomize({
+    availableFrames: activeMoshMaximum,
+    fps: activeMoshFps,
+    methods,
+  });
+  transitionRandomize.disabled = !enabled;
+  transitionRandomize.title = enabled
+    ? 'Generate a reproducible random mosh variant'
+    : activeMoshMaximum < 12
+      ? 'Randomize needs at least 12 frames after the first GOP boundary'
+      : 'No valid random combination is available for this boundary';
+}
+
 function updateTransitionOptionsVisibility() {
   const method = transitionDialog.querySelector('input[name="transition-method"]:checked')?.value;
   classicMoshOptions.hidden = method === 'cut';
   nalEffectOptions.hidden = method !== 'melt' && method !== 'loop';
   meltCadenceControl.hidden = method !== 'melt';
   resetPulseOptions.hidden = method !== 'reset-pulse';
+  updateRandomizeAvailability();
 }
 
 function updateTransitionDurationDisplay(custom = false) {
@@ -838,6 +878,8 @@ function openTransition(boundaryIndex) {
   transitionDurationMode.textContent = clip.moshDurationFrames === undefined || clip.moshDurationFrames === null
     ? 'full length'
     : 'custom';
+  activeRandomSeed = clip.randomSeed ?? null;
+  updateTransitionSeedDisplay();
   updateTransitionDurationDisplay(false);
   setEffectParameterControl(method, clip);
   setResetPulseControls(method, clip);
@@ -848,6 +890,7 @@ function openTransition(boundaryIndex) {
 
 for (const radio of transitionDialog.querySelectorAll('input[name="transition-method"]')) {
   radio.addEventListener('change', () => {
+    clearRandomSeed();
     if (clips[activeBoundary]?.transition !== radio.value) {
       transitionEnding.value = radio.value === 'melt' || radio.value === 'loop' ? 'continue' : 'restore';
     }
@@ -856,15 +899,75 @@ for (const radio of transitionDialog.querySelectorAll('input[name="transition-me
     setResetPulseControls(radio.value, clips[activeBoundary]);
   });
 }
-effectParameter.addEventListener('input', updateEffectParameterDisplay);
-resetInterval.addEventListener('input', updateResetPulseDisplay);
-resetRepeat.addEventListener('input', updateResetPulseDisplay);
+effectParameter.addEventListener('input', () => {
+  clearRandomSeed();
+  updateEffectParameterDisplay();
+});
+resetInterval.addEventListener('input', () => {
+  clearRandomSeed();
+  updateResetPulseDisplay();
+});
+resetRepeat.addEventListener('input', () => {
+  clearRandomSeed();
+  updateResetPulseDisplay();
+});
 transitionDuration.addEventListener('input', () => {
+  clearRandomSeed();
   updateTransitionDurationDisplay(true);
   updateResetIntervalLimit();
 });
 transitionEnding.addEventListener('change', () => {
+  clearRandomSeed();
   transitionDurationMode.textContent = 'custom';
+});
+meltCadence.addEventListener('change', clearRandomSeed);
+
+function generateRandomSeed() {
+  const bytes = new Uint8Array(8);
+  if (!globalThis.crypto?.getRandomValues) throw new Error('This browser cannot generate a secure random seed.');
+  globalThis.crypto.getRandomValues(bytes);
+  return [...bytes].map(value => value.toString(16).padStart(2, '0')).join('');
+}
+
+transitionRandomize.addEventListener('click', () => {
+  const clip = clips[activeBoundary];
+  if (!clip) return;
+  try {
+    const settings = randomizeTransition({
+      seed: generateRandomSeed(),
+      availableFrames: activeMoshMaximum,
+      fps: activeMoshFps,
+      methods: randomMethodsForClip(clip),
+    });
+    const radio = transitionDialog.querySelector(`input[name="transition-method"][value="${settings.method}"]`);
+    if (!radio) throw new Error(`Randomized method ${settings.method} is unavailable.`);
+    radio.checked = true;
+    const randomizedClip = {
+      ...clip,
+      transition: settings.method,
+      moshDurationFrames: settings.durationFrames,
+      moshEnding: settings.ending,
+      meltRepeat: settings.repeat ?? clip.meltRepeat,
+      loopFrames: settings.loopFrames ?? clip.loopFrames,
+      resetInterval: settings.resetInterval ?? clip.resetInterval,
+      resetRepeat: settings.repeat ?? clip.resetRepeat,
+    };
+    updateTransitionOptionsVisibility();
+    setEffectParameterControl(settings.method, randomizedClip);
+    setResetPulseControls(settings.method, randomizedClip);
+    if (settings.method === 'melt') meltCadence.value = 'original';
+    transitionDuration.value = String(settings.durationFrames);
+    transitionEnding.value = settings.ending;
+    activeRandomSeed = settings.randomSeed;
+    updateTransitionSeedDisplay();
+    updateTransitionDurationDisplay(false);
+    transitionDurationMode.textContent = 'randomized';
+    updateEffectParameterDisplay();
+    updateResetPulseDisplay();
+    setError('');
+  } catch (cause) {
+    setError(cause instanceof Error ? cause.message : String(cause));
+  }
 });
 
 transitionApply.addEventListener('click', event => {
@@ -891,6 +994,7 @@ transitionApply.addEventListener('click', event => {
       resetInterval: Math.round(Number(resetInterval.value)),
       resetRepeat: Math.round(Number(resetRepeat.value)),
     } : {}),
+    randomSeed: selected === 'cut' ? null : activeRandomSeed,
   };
   if (current.transition !== next.transition
     || current.moshDurationFrames !== next.moshDurationFrames
@@ -899,7 +1003,8 @@ transitionApply.addEventListener('click', event => {
     || current.meltSmooth !== next.meltSmooth
     || current.loopFrames !== next.loopFrames
     || current.resetInterval !== next.resetInterval
-    || current.resetRepeat !== next.resetRepeat) {
+    || current.resetRepeat !== next.resetRepeat
+    || current.randomSeed !== next.randomSeed) {
     rememberState();
     clips = clips.map((clip, index) => index === activeBoundary ? next : clip);
   }
@@ -910,6 +1015,8 @@ transitionApply.addEventListener('click', event => {
 
 transitionDialog.addEventListener('close', () => {
   activeBoundary = null;
+  activeRandomSeed = null;
+  updateTransitionSeedDisplay();
 });
 
 async function convertClipSource(index, label, sourceBytes, options, parseError = null) {
@@ -1005,6 +1112,7 @@ async function readClipFile(file, index, token) {
     loopFrames: 4,
     resetInterval: 12,
     resetRepeat: 4,
+    randomSeed: null,
     audio,
   };
 }
@@ -1581,6 +1689,7 @@ async function refreshSequence() {
           loopFrames: effect?.loopFrames ?? null,
           resetInterval: effect?.resetInterval ?? null,
           resetRepeat: effect?.repeat ?? null,
+          random_seed: clip.randomSeed ?? null,
         };
       }),
       merge: result.report,

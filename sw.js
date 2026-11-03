@@ -17,6 +17,7 @@ const APP_SHELL = [
   './conversion-settings.js',
   './classic-mosh.js',
   './speed.js',
+  './randomize.js',
   './audio.js',
   './hybrid-encoder.js',
   './manifest.json',
