@@ -527,6 +527,7 @@ async function refreshPair() {
   }
 
   status.textContent = 'Compatible pair. Building the merged MP4…';
+  setError('');
   try {
     const result = await mergeMoshH264(clips.a.bytes, clips.b.bytes, clips.a.mp4, clips.b.mp4);
     if (token !== refreshToken) return;

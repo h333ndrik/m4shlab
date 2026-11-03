@@ -3,4 +3,5 @@ work/
 dist/
 testmedia/*
 !testmedia/generate.sh
+!testmedia/generate-poc0-fixture.mjs
 .DS_Store

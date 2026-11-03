@@ -38,11 +38,12 @@ encode_multigop() {
   local size="$2"
   local seconds="$3"
   local source="$4"
+  local coder="${5:-cabac}"
   ffmpeg -hide_banner -loglevel error -y \
     -f lavfi -i "$source" \
     -t "$seconds" \
     -c:v libx264 -preset medium -profile:v high -pix_fmt yuv420p \
-    -g 25 -keyint_min 25 -sc_threshold 0 -bf 0 \
+    -g 25 -keyint_min 25 -sc_threshold 0 -bf 0 -coder "$coder" \
     -video_track_timescale 12800 \
     -movflags +faststart -an \
     "$root/testmedia/$output"
@@ -51,6 +52,11 @@ encode_multigop() {
 
 encode_multigop synthetic-multigop-a.mp4 320x240 1 "testsrc2=size=320x240:rate=25"
 encode_multigop synthetic-multigop-b.mp4 320x240 3 "testsrc2=size=320x240:rate=25,hue=h=90"
+encode_multigop synthetic-multigop-poc0-source-a.mp4 320x240 1 "testsrc2=size=320x240:rate=25" vlc
+encode_multigop synthetic-multigop-poc0-source-b.mp4 320x240 3 "testsrc2=size=320x240:rate=25,hue=h=90" vlc
+node "$root/testmedia/generate-poc0-fixture.mjs" "$root/testmedia/synthetic-multigop-poc0-source-a.mp4" "$root/testmedia/synthetic-multigop-poc0-a.mp4"
+node "$root/testmedia/generate-poc0-fixture.mjs" "$root/testmedia/synthetic-multigop-poc0-source-b.mp4" "$root/testmedia/synthetic-multigop-poc0-b.mp4"
+printf 'Generated %s\n' "$root/testmedia/synthetic-multigop-poc0-a.mp4" "$root/testmedia/synthetic-multigop-poc0-b.mp4"
 
 ffmpeg -hide_banner -loglevel error -y \
   -f lavfi -i "testsrc2=size=320x240:rate=25" \

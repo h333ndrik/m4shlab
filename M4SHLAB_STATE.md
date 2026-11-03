@@ -18,6 +18,7 @@ Updated: 2026-11-03
 - `webcodecs-muxer.js` writes a conventional faststart MP4 with `stts`, `stss`, `stsc`, `stsz`, and `stco`/`co64`.
 - B's first-GOP non-key slices are aligned to continue A's `frame_num`. This is required because separately encoded clips restart at zero and decoders otherwise discard early B frames after its first IDR is removed.
 - Classic Phase B now removes only B's first IDR sample. Later B IDR samples stay as reference anchors, and the first B GOP's slice headers are patched modulo `2^log2_max_frame_num`. Emulation-prevention bytes are regenerated through RBSP unescape/re-escape.
+- Safari WebCodecs output with `pic_order_cnt_type=0` is accepted for multi-GOP merge when B has no B-slices and `ctts` has no non-zero composition offsets. Both `frame_num` and type-0 `pic_order_cnt_lsb` are aligned; genuinely reordered streams remain rejected.
 - `app.js` shows `normalizing clips…` immediately when a native pair fails compatibility. It normalizes both clips, re-checks the converted bytes, and shows the actionable incompatibility only when normalization itself fails. The report marks `autoNormalized`, `parallel`, the shared target, decode path, encode path, and fallback details.
 - Native H.264 pairs normalize in parallel with two WebCodecs jobs. Codec/container failures fall back to two concurrent ffmpeg.wasm workers when possible.
 - `converter-worker.js` can emit a capped `yuv420p` Y4M stream. `hybrid-encoder.js` then encodes those frames with WebCodecs and muxes with the existing MP4 writer; the full WASM encoder remains the fallback.
@@ -25,13 +26,15 @@ Updated: 2026-11-03
 
 ## Verification
 
-- `npm test`: 27 checks passed.
+- `npm test`: 30 checks passed.
 - Phase A: 111,706 B → 100,238 B, 73 decoded frames.
 - Phase B: 37,029 B + 36,812 B → 67,893 B, 49 decoded frames.
 - Multi-GOP B: 25 A + 75 B samples → 99 samples and 99 decoded frames; two later B IDRs remain, 24 slice headers are aligned, and three keyframes decode.
 - `npm run test:webcodecs`:
   - normalized clips: 53,018 B and 52,775 B, exactly one leading IDR sample each;
   - the 75-frame fixture produced keyframes at samples 1, 31, and 61; its merge retained two later IDRs and decoded all 149 frames;
+  - a Safari-style POC type 0 multi-GOP pair merged with POC-LSB alignment and decoded 99/99 frames; the browser test also cleared a deliberately stale error;
+  - POC type 0 with true B-frame reordering was rejected with an explicit picture-reordering message;
   - a 1440×1920 + 768×1024 native pair showed `normalizing clips…`, normalized both clips to 540×720 with WebCodecs, re-checked compatibility, and merged 49 samples;
   - merged export: 49 frames, H.264 320×240, `yuv420p`/`tv`, `has_b_frames=0`, video-only;
   - merged SHA-256: `b4bb6c4827b2f7a8fe6d93777ff63f4491dd0b8eb497148dd3b2d07da1666bef`;
@@ -52,6 +55,7 @@ Updated: 2026-11-03
 - WebCodecs normalization currently requires natively parseable H.264 because the demuxer does not expose HEVC samples.
 - The 720-pixel cap is lossy for larger sources and may place the first B recovery IDR earlier than requested because some encoders insert extra keyframes.
 - Two parallel WASM workers reduce wall time but increase peak memory; very large inputs may still fail on iPhone or other memory-constrained devices.
-- Multi-GOP `frame_num` alignment requires `pic_order_cnt_type=2`; reordered multi-GOP B fails explicitly rather than silently losing frames.
+- Multi-GOP alignment supports type 2 and non-reordered type 0/1 streams. Type 0/1 requires no B-slices and no non-zero composition offsets; reordered B fails explicitly rather than silently losing frames.
+- The reported iPhone `IMG_4767.mov` / `final_0.mov` pair was not present locally; automated coverage uses a generated Safari-shaped POC type 0 fixture, so a physical-device retest is still required.
 - The 100 MB limit is a soft limit; available device memory can still be exceeded.
 - Merged exports remain video-only. Audio, PWA, multi-clip timelines, and general-codec WebCodecs demuxing remain out of scope for this block.

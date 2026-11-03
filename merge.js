@@ -549,9 +549,22 @@ function sliceHeaderState(nalData) {
   const rbsp = unescapeRbsp(nalData.subarray(1));
   const bits = new SliceHeaderBits(rbsp);
   bits.readUnsignedExpGolomb();
+  const sliceType = bits.readUnsignedExpGolomb();
   bits.readUnsignedExpGolomb();
-  bits.readUnsignedExpGolomb();
-  return {rbsp, bits, frameNumberBit: bits.bit};
+  return {rbsp, bits, sliceType: sliceType % 5, frameNumberBit: bits.bit};
+}
+
+function inspectPictureReordering(inputB, parsedB) {
+  const offsets = parsedB.videoTrack.ctts?.offsets ?? [];
+  const compositionReordered = offsets.some(offset => offset !== 0);
+  const bSlices = extractNals(inputB, parsedB.videoTrack)
+    .filter(nal => nal.type === 1 || nal.type === IDR_NAL_TYPE)
+    .filter(nal => sliceHeaderState(nal.data).sliceType === 1);
+  return {
+    compositionReordered,
+    bSliceCount: bSlices.length,
+    noReordering: !compositionReordered && bSlices.length === 0,
+  };
 }
 
 function readSliceFrameNumber(nalData, log2MaxFrameNum) {
@@ -560,14 +573,28 @@ function readSliceFrameNumber(nalData, log2MaxFrameNum) {
   return bits.readBits(log2MaxFrameNum);
 }
 
-function patchSliceFrameNumber(nalData, log2MaxFrameNum, frameNumber) {
+function writeFixedBits(rbsp, position, count, value) {
+  const masked = value % (2 ** count);
+  for (let i = 0; i < count; i += 1) {
+    const bitPosition = position + i;
+    if ((masked >> (count - 1 - i)) & 1) rbsp[bitPosition >> 3] |= 1 << (7 - (bitPosition & 7));
+    else rbsp[bitPosition >> 3] &= ~(1 << (7 - (bitPosition & 7)));
+  }
+}
+
+function patchSliceHeader(nalData, log2MaxFrameNum, frameNumber, pictureOrderCount = null) {
   const {rbsp, frameNumberBit} = sliceHeaderState(nalData);
   if (frameNumberBit + log2MaxFrameNum > rbsp.byteLength * 8) throw new Mp4Error('H.264 slice is too short to patch frame_num');
-  const value = frameNumber % (2 ** log2MaxFrameNum);
-  for (let i = 0; i < log2MaxFrameNum; i += 1) {
-    const position = frameNumberBit + i;
-    if ((value >> (log2MaxFrameNum - 1 - i)) & 1) rbsp[position >> 3] |= 1 << (7 - (position & 7));
-    else rbsp[position >> 3] &= ~(1 << (7 - (position & 7)));
+  writeFixedBits(rbsp, frameNumberBit, log2MaxFrameNum, frameNumber);
+  if (pictureOrderCount) {
+    const state = sliceHeaderState(nalData);
+    state.bits.readBits(log2MaxFrameNum);
+    if ((nalData[0] & 0x1f) === IDR_NAL_TYPE) state.bits.readUnsignedExpGolomb();
+    const position = state.bits.bit;
+    if (position + pictureOrderCount.log2MaxPicOrderCntLsb > rbsp.byteLength * 8) {
+      throw new Mp4Error('H.264 slice is too short to patch pic_order_cnt_lsb');
+    }
+    writeFixedBits(rbsp, position, pictureOrderCount.log2MaxPicOrderCntLsb, pictureOrderCount.value);
   }
   const escaped = escapeRbsp(rbsp);
   const output = new Uint8Array(escaped.byteLength + 1);
@@ -588,7 +615,7 @@ function writeLengthPrefix(length, width) {
   return output;
 }
 
-function patchSampleFrameNumber(sampleData, lengthSize, log2MaxFrameNum, frameNumber) {
+function patchSampleFrameNumber(sampleData, lengthSize, log2MaxFrameNum, frameNumber, pictureOrderCount = null) {
   const view = new DataView(sampleData.buffer, sampleData.byteOffset, sampleData.byteLength);
   const parts = [];
   let patchedNals = 0;
@@ -603,7 +630,7 @@ function patchSampleFrameNumber(sampleData, lengthSize, log2MaxFrameNum, frameNu
     const end = start + length;
     if (length === 0 || end > sampleData.byteLength) throw new Mp4Error('Encoded sample contains an invalid NAL length');
     const nal = sampleData.subarray(start, end);
-    const patched = (nal[0] & 0x1f) === 1 ? patchSliceFrameNumber(nal, log2MaxFrameNum, frameNumber) : nal;
+    const patched = (nal[0] & 0x1f) === 1 ? patchSliceHeader(nal, log2MaxFrameNum, frameNumber, pictureOrderCount) : nal;
     if (patched !== nal) patchedNals += 1;
     parts.push(writeLengthPrefix(patched.byteLength, lengthSize), patched);
     offset = end;
@@ -619,21 +646,43 @@ function alignFirstBGop(inputA, parsedA, inputB, parsedB, preparedB) {
   const aSps = aConfig.sps.length ? parseSps(aConfig.sps[0]) : null;
   if (!bSps) throw new Mp4Error('Clip B has no SPS for frame-number alignment');
   if (!aSps) throw new Mp4Error('Clip A has no SPS for frame-number alignment');
-  if (bSps.picOrderCntType !== 2) {
+  const reordering = inspectPictureReordering(inputB, parsedB);
+  if (bSps.picOrderCntType !== 2 && !reordering.noReordering) {
     if (preparedB.idrSamples.length > 1) {
-      throw new Mp4Error('Multi-GOP B frame-number alignment requires pic_order_cnt_type 2 (no picture-order reordering).');
+      const evidence = [
+        reordering.compositionReordered ? 'ctts contains non-zero composition offsets' : null,
+        reordering.bSliceCount ? `${reordering.bSliceCount} B-slice NAL${reordering.bSliceCount === 1 ? '' : 's'}` : null,
+      ].filter(Boolean).join('; ');
+      throw new Mp4Error(`Multi-GOP B frame-number alignment rejected: pic_order_cnt_type ${bSps.picOrderCntType} stream has picture reordering (${evidence}).`);
     }
     return {applied: false, reason: 'single-gop-picture-reordering'};
   }
   if (aSps.log2MaxFrameNum !== bSps.log2MaxFrameNum) {
     throw new Mp4Error(`Multi-GOP B frame-number alignment requires matching log2_max_frame_num (${aSps.log2MaxFrameNum} ≠ ${bSps.log2MaxFrameNum}).`);
   }
+  if (bSps.picOrderCntType !== 2 && aSps.picOrderCntType !== bSps.picOrderCntType) {
+    throw new Mp4Error(`Frame-number alignment cannot combine A pic_order_cnt_type ${aSps.picOrderCntType} with B pic_order_cnt_type ${bSps.picOrderCntType}.`);
+  }
+  if (bSps.picOrderCntType === 0 && aSps.log2MaxPicOrderCntLsb !== bSps.log2MaxPicOrderCntLsb) {
+    throw new Mp4Error(`Frame-number alignment requires matching log2_max_pic_order_cnt_lsb (${aSps.log2MaxPicOrderCntLsb} ≠ ${bSps.log2MaxPicOrderCntLsb}).`);
+  }
 
   const aSlices = extractNals(inputA, parsedA.videoTrack).filter(nal => nal.type === 1 || nal.type === IDR_NAL_TYPE);
   const lastASlice = aSlices[aSlices.length - 1];
   if (!lastASlice) throw new Mp4Error('Clip A has no slice for frame-number alignment');
   const aLastFrameNum = readSliceFrameNumber(lastASlice.data, bSps.log2MaxFrameNum);
+  let aLastPicOrderCntLsb = null;
+  if (bSps.picOrderCntType === 0) {
+    const {bits, frameNumberBit} = sliceHeaderState(lastASlice.data);
+    bits.readBits(bSps.log2MaxFrameNum);
+    if ((lastASlice.data[0] & 0x1f) === IDR_NAL_TYPE) bits.readUnsignedExpGolomb();
+    if (frameNumberBit + bSps.log2MaxFrameNum + bSps.log2MaxPicOrderCntLsb > bits.bytes.byteLength * 8) {
+      throw new Mp4Error('Clip A slice is too short to read pic_order_cnt_lsb');
+    }
+    aLastPicOrderCntLsb = bits.readBits(bSps.log2MaxPicOrderCntLsb);
+  }
   const modulo = 2 ** bSps.log2MaxFrameNum;
+  const pocModulo = bSps.picOrderCntType === 0 ? 2 ** bSps.log2MaxPicOrderCntLsb : null;
   const nextIdrSample = preparedB.idrSamples[1] ?? parsedB.videoTrack.samples.length;
   let patchedSamples = 0;
   let patchedNals = 0;
@@ -641,7 +690,11 @@ function alignFirstBGop(inputA, parsedA, inputB, parsedB, preparedB) {
   for (const sample of preparedB.samples) {
     if (sample.sourceSampleIndex >= nextIdrSample) break;
     const frameNumber = (aLastFrameNum + (sample.sourceSampleIndex - preparedB.firstIdrSample)) % modulo;
-    const patched = patchSampleFrameNumber(sample.data, parsedB.videoTrack.lengthSize, bSps.log2MaxFrameNum, frameNumber);
+    const pictureOrderCount = bSps.picOrderCntType === 0 ? {
+      value: (aLastPicOrderCntLsb + (sample.sourceSampleIndex - preparedB.firstIdrSample)) % pocModulo,
+      log2MaxPicOrderCntLsb: bSps.log2MaxPicOrderCntLsb,
+    } : null;
+    const patched = patchSampleFrameNumber(sample.data, parsedB.videoTrack.lengthSize, bSps.log2MaxFrameNum, frameNumber, pictureOrderCount);
     if (patched.patchedNals === 0) continue;
     sample.data = patched.data;
     patchedSamples += 1;
@@ -657,6 +710,11 @@ function alignFirstBGop(inputA, parsedA, inputB, parsedB, preparedB) {
     patchedNals,
     log2MaxFrameNum: bSps.log2MaxFrameNum,
     picOrderCntType: bSps.picOrderCntType,
+    pictureOrderCountPatch: bSps.picOrderCntType === 0 ? {
+      aLastPicOrderCntLsb,
+      log2MaxPicOrderCntLsb: bSps.log2MaxPicOrderCntLsb,
+    } : null,
+    pictureReordering: reordering,
     emulationPrevention: 'RBSP bytes are unescaped, patched, then re-escaped with fresh emulation-prevention bytes',
   };
 }

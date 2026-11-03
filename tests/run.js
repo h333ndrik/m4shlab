@@ -6,9 +6,10 @@ import { dirname, join } from 'node:path';
 import { childBoxes, parseBoxes, parseMp4 } from '../parser/mp4.js';
 import { extractNals } from '../parser/nal.js';
 import { moshH264 } from '../mosh.js';
-import { CompatibilityError, checkCompatibility, mergeMoshH264 } from '../merge.js';
+import { CompatibilityError, checkCompatibility, mergeMoshH264, parseAvcConfig } from '../merge.js';
 import { buildNormalizedMp4, chooseNormalizationTarget } from '../webcodecs-muxer.js';
 import { MAX_TARGET_LONG_SIDE, capNormalizationDimensions } from '../conversion-settings.js';
+import { parseSps } from '../parser/sps.js';
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const fixturePath = join(projectRoot, 'testmedia', 'synthetic-h264.mp4');
@@ -28,9 +29,12 @@ const phaseBFixtures = {
 const multiGopFixtures = {
   a: join(projectRoot, 'testmedia', 'synthetic-multigop-a.mp4'),
   b: join(projectRoot, 'testmedia', 'synthetic-multigop-b.mp4'),
+  poc0A: join(projectRoot, 'testmedia', 'synthetic-multigop-poc0-a.mp4'),
+  poc0B: join(projectRoot, 'testmedia', 'synthetic-multigop-poc0-b.mp4'),
 };
 const mergedPath = join(projectRoot, 'testmedia', 'synthetic-b-merged-test-output.mp4');
 const multiGopMergedPath = join(projectRoot, 'testmedia', 'synthetic-multigop-merged-test-output.mp4');
+const multiGopPoc0MergedPath = join(projectRoot, 'testmedia', 'synthetic-multigop-poc0-merged-test-output.mp4');
 const normalizedMuxPath = join(projectRoot, 'testmedia', 'synthetic-webcodecs-mux-output.mp4');
 
 function command(program, args, label) {
@@ -419,5 +423,51 @@ const multiGopKeyFrames = command('ffprobe', [
 ], 'multi-GOP keyframe inventory').stdout.split(/\s+/).filter(value => value.startsWith('1')).length;
 assert.equal(multiGopKeyFrames, 3);
 pass(`Multi-GOP merged export decodes all ${multiGopDecodedFrames} frames with three keyframe anchors (A plus two retained B IDRs)`);
+
+await assert.rejects(
+  () => mergeMoshH264(input, input, parsed, parsed),
+  error => /pic_order_cnt_type 0 stream has picture reordering/.test(error.message)
+    && /non-zero composition offsets/.test(error.message)
+    && /B-slice NAL/.test(error.message),
+);
+pass('Multi-GOP pic_order_cnt_type 0 with true B-frame reordering still fails loudly');
+
+const poc0AInput = new Uint8Array(readFileSync(multiGopFixtures.poc0A));
+const poc0BInput = new Uint8Array(readFileSync(multiGopFixtures.poc0B));
+const poc0AParsed = parseMp4(poc0AInput);
+const poc0BParsed = parseMp4(poc0BInput);
+for (const [label, bytes, parsed] of [['A', poc0AInput, poc0AParsed], ['B', poc0BInput, poc0BParsed]]) {
+  const config = parseAvcConfig(bytes, parsed.videoTrack.avcC);
+  const sps = parseSps(config.sps[0]);
+  assert.equal(sps.picOrderCntType, 0, `POC0 fixture ${label} must declare pic_order_cnt_type 0`);
+  assert.equal(parsed.videoTrack.ctts, null, `POC0 fixture ${label} must not contain composition reordering`);
+}
+const poc0Compatibility = await checkCompatibility(poc0AInput, poc0BInput, poc0AParsed, poc0BParsed);
+assert.equal(poc0Compatibility.compatible, true);
+const poc0Merge = await mergeMoshH264(poc0AInput, poc0BInput, poc0AParsed, poc0BParsed);
+assert.equal(poc0Merge.report.frameAlignment.applied, true);
+assert.equal(poc0Merge.report.frameAlignment.picOrderCntType, 0);
+assert.equal(poc0Merge.report.frameAlignment.pictureReordering.noReordering, true);
+assert.equal(poc0Merge.report.frameAlignment.pictureReordering.bSliceCount, 0);
+assert.equal(poc0Merge.report.frameAlignment.pictureReordering.compositionReordered, false);
+assert.equal(poc0Merge.report.frameAlignment.pictureOrderCountPatch.aLastPicOrderCntLsb, 8);
+assert.equal(poc0Merge.report.frameAlignment.pictureOrderCountPatch.log2MaxPicOrderCntLsb, 4);
+assert.equal(poc0Merge.report.bIdrCountRemaining, 2);
+pass('Multi-GOP pic_order_cnt_type 0 without B-frames merges with frame_num alignment applied');
+
+writeFileSync(multiGopPoc0MergedPath, poc0Merge.output);
+const poc0Probe = command('ffprobe', [
+  '-v', 'error', '-select_streams', 'v:0', '-count_frames',
+  '-show_entries', 'stream=codec_name,width,height,nb_read_frames,has_b_frames',
+  '-of', 'default=noprint_wrappers=1', multiGopPoc0MergedPath,
+], 'POC0 multi-GOP merged-file decode probe');
+const poc0DecodedFrames = Number(/nb_read_frames=(\d+)/.exec(poc0Probe.stdout)?.[1] ?? 0);
+assert.equal(poc0DecodedFrames, poc0AParsed.videoTrack.samples.length + poc0BParsed.videoTrack.samples.length - 1);
+assert.match(poc0Probe.stdout, /has_b_frames=0/);
+const poc0MergedParsed = parseMp4(poc0Merge.output);
+const poc0MergedIdrs = [...new Set(extractNals(poc0Merge.output, poc0MergedParsed.videoTrack)
+  .filter(nal => nal.type === 5).map(nal => nal.sampleIndex))];
+assert.deepEqual(poc0MergedIdrs, [0, 49, 74]);
+pass(`POC0 multi-GOP merged export decodes all ${poc0DecodedFrames} frames and retains later B IDR anchors`);
 
 console.log(`All tests passed. Phase A: ${input.byteLength} B → ${result.output.byteLength} B; Phase B: ${phaseAInput.byteLength} B + ${phaseBInput.byteLength} B → ${mergeResult.output.byteLength} B.`);

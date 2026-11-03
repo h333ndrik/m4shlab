@@ -77,8 +77,8 @@ Native Tier-1 clips may contain B-frames; their `ctts` composition offsets are p
 1. Parses SPS and PPS from each `avcC` and compares the payload bytes. It also parses profile, constraints, level, chroma format, bit depth, and coded resolution from SPS.
 2. Requires matching resolution, profile, level, chroma, bit depth, NAL length size, PPS, and video `mdhd` timescale. A differing SPS is accepted only when those core fields match; the report marks it as a warning and the merge uses A's parameters.
 3. Keeps A's sample description, samples, and timing as the base. It skips B's initial IDR sample and removes SPS/PPS/SEI units from later samples, but preserves B's later IDR samples as reference anchors.
-4. For a multi-GOP B whose first frame after the removed IDR cannot continue A's `frame_num`, it parses the first B-GOP slice headers and patches `frame_num` modulo `2^log2_max_frame_num`. This alignment requires `pic_order_cnt_type=2`, so it applies to the no-reordering conversion path rather than arbitrary B-frame streams.
-5. The patcher unescapes emulation-prevention bytes to RBSP, changes the fixed-width `frame_num` bits, then regenerates the EBSP. It therefore remains safe if the original or patched bits span positions where an emulation-prevention byte was present.
+4. For a multi-GOP B whose first frame after the removed IDR cannot continue A's `frame_num`, it parses the first B-GOP slice headers and patches `frame_num` modulo `2^log2_max_frame_num`. Type 2 POC streams are always eligible. Type 0/1 streams are accepted only when B has no B-slices and its `ctts` has no non-zero composition offsets; for type 0, `pic_order_cnt_lsb` is aligned as well.
+5. The patcher unescapes emulation-prevention bytes to RBSP, changes the fixed-width `frame_num` and optional POC bits, then regenerates the EBSP. It therefore remains safe if the original or patched bits span positions where an emulation-prevention byte was present.
 6. Appends B's remaining crop of samples and rebuilds the video sample tables, composition offsets, chunk offsets, and container durations. Later B IDRs reset `frame_num` normally and need no patch.
 7. Reports every compatibility criterion, the removed B units, output duration, sample counts, retained B IDRs, the frame-number patch, and the leading IDR frame. Incompatible pairs are blocked loudly instead of producing a broken file.
 
@@ -100,6 +100,7 @@ npm run test:webcodecs
 - a 256×240 resolution mismatch;
 - a 320×240 clip with a different `mdhd` timescale;
 - a matching 25-frame A plus 75-frame multi-GOP B with B IDRs at samples 0, 25, and 50;
+- Safari-style POC type 0 multi-GOP clips with IDRs at samples 0, 25, and 50 and no B-frames;
 - native H.264 clips at 1440×1920 and 768×1024 for the capped auto-normalization path;
 - a QuickTime H.264 MOV with a `wide` placeholder;
 - HEVC MOV fixtures, including a different-resolution pair;
@@ -115,6 +116,8 @@ The tests assert:
 - `stsz` sum equals mdat content, sample offsets are monotonic, and timing/durations agree;
 - the merged stream starts with an IDR frame and retains B's later IDR anchors;
 - a multi-GOP B keeps its later IDR anchors, aligns the first B GOP with a safe RBSP/EBSP frame-number patch, and decodes as many frames as its sample table declares;
+- a POC type 0, no-B-frame multi-GOP pair merges with frame-number and POC-LSB alignment and decodes all 99 frames;
+- POC type 0 with true B-frame reordering remains rejected with an explicit message;
 - Cut is byte-identical to A;
 - both exports decode with `ffprobe`;
 - the truncated Phase A file is rejected;
@@ -125,7 +128,7 @@ The tests assert:
 - the 1440×1920 + 768×1024 native pair auto-normalizes to 540×720, exposes `normalizing clips…`, re-checks compatibility, and merges;
 - ffmpeg.wasm decode + WebCodecs encode and the full-WASM fallback both name the encoder that ran.
 
-Current local results (2026-11-03, Node 26.13.0, FFmpeg 9.0.2, Google Chrome 156): all 27 Node checks pass. Phase A removes 11,468 bytes and decodes 73 frames. Phase B merges 25 A samples plus 24 retained B samples, decodes 49 frames, and produces the same 67,893-byte export. The multi-GOP regression merges 25 A + 75 B samples, retains two later B IDRs, patches 24 first-GOP slice headers, and decodes all 99 expected frames with three keyframes. The WebCodecs muxer test emits 8 samples with a 14,984-byte mdat payload and 4,096 duration units. Tier-1 fixtures additionally verify a QuickTime H.264 MOV (25 samples / 26 NALs), a size-zero mdat, standalone `wide`, a 64-bit mdat, the exact HEVC error, and the exact fragmented-MP4 error.
+Current local results (2026-11-03, Node 26.13.0, FFmpeg 9.0.2, Google Chrome 156): all 30 Node checks pass. Phase A removes 11,468 bytes and decodes 73 frames. Phase B merges 25 A samples plus 24 retained B samples, decodes 49 frames, and produces the same 67,893-byte export. The multi-GOP regression merges 25 A + 75 B samples, retains two later B IDRs, patches 24 first-GOP slice headers, and decodes all 99 expected frames with three keyframes. A Safari-shaped POC type 0 pair also merges with POC-LSB alignment and decodes 99/99 frames; a genuinely reordered type 0 multi-GOP stream remains rejected. The WebCodecs muxer test emits 8 samples with a 14,984-byte mdat payload and 4,096 duration units. Tier-1 fixtures additionally verify a QuickTime H.264 MOV (25 samples / 26 NALs), a size-zero mdat, standalone `wide`, a 64-bit mdat, the exact HEVC error, and the exact fragmented-MP4 error.
 
 The real `IMG_1993.MOV` + `IMG_3339.MOV` verification converted both HEVC originals with ffmpeg.wasm decode plus WebCodecs encode to 540×720. Conversion took 5.7 s and 5.8 s versus 19.8 s and 33.6 s for the earlier full-resolution WASM run. The 112 + 177 source samples merged to 288/288 decoded frames. All later B IDRs were retained, the first B GOP required 32 slice patches across 16 samples, and strict decode exited 0.
 
@@ -134,6 +137,7 @@ The real `IMG_1993.MOV` + `IMG_3339.MOV` verification converted both HEVC origin
 ```text
 PASS WebCodecs decoded and normalized both clips with one leading IDR each; 53018 B / 52775 B
 PASS WebCodecs emitted keyframes at samples 1, 31, and 61; the multi-GOP merge retained two later IDRs and decoded all 149 frames
+PASS Safari-style POC type 0 multi-GOP pair merges in the browser and clears stale errors
 PASS large native mismatch auto-normalized to 540x720; UI showed normalizing before compatible and merge produced 49 samples
 PASS WebCodecs pair merged in the browser: 49 samples, one leading IDR, preview 320x240
 PASS merged export decodes: 49 frames, H.264 320x240 yuv420p/tv, SHA-256 b4bb6c4827b2f7a8fe6d93777ff63f4491dd0b8eb497148dd3b2d07da1666bef
@@ -146,6 +150,8 @@ The same test asserts the normalized A/B streams parse via `parser/nal.js` with 
 `npm run test:conversion` remains the optional Playwright test for the HEVC ffmpeg.wasm path. It exits with a clear skip when Playwright or the CDN is unavailable.
 
 Verification includes synthetic fixtures, two real iPhone MOVs, and headless Chrome. A physical iPhone acceptance run is still separate: Safari/WebCodecs behavior, thermal throttling, and device memory cannot be inferred from desktop Chrome.
+
+The reported `IMG_4767.mov` and `final_0.mov` were not available in this workspace, so the Safari encoder shape is covered by a generated POC type 0 fixture. The actual pair still needs a final iPhone retest.
 
 ## Honest limits
 
@@ -161,7 +167,7 @@ The 720-pixel long-side cap is intentional and lossy for larger sources. It subs
 
 The ffmpeg.wasm fallback depends on downloading the pinned core from jsDelivr. Parallel pair conversion deliberately starts up to two WASM workers, so peak memory is higher than a single-worker run even though each target is capped. It may still exhaust memory or fail on iOS Safari with large inputs. The 100 MB limit is a soft product limit for both paths, not a guarantee that a file below it will fit available device memory. No conversion is attempted for encrypted media.
 
-Phase B's direct merge supports compatible pairs only. Resolution, profile, level, chroma, bit depth, PPS, and video timescale must match; differing SPS payloads require equivalent parsed core fields. Phase C can normalize native H.264 mismatches to a common target first. The merged A→B export still has no audio; audio is not part of this phase. Normalized clips also drop audio before moshing. Multi-GOP B is supported: the mosh targets B's first GOP, then the retained B IDRs act as clean recovery anchors, so later B GOPs should play normally after the intended boundary corruption. Frame-number alignment currently requires `pic_order_cnt_type=2`; other reordered multi-GOP streams fail explicitly instead of silently producing a short decode. WebCodecs normalization is video-only and intentionally removes B-frames; it is not a general-purpose transcoder.
+Phase B's direct merge supports compatible pairs only. Resolution, profile, level, chroma, bit depth, PPS, and video timescale must match; differing SPS payloads require equivalent parsed core fields. Phase C can normalize native H.264 mismatches to a common target first. The merged A→B export still has no audio; audio is not part of this phase. Normalized clips also drop audio before moshing. Multi-GOP B is supported: the mosh targets B's first GOP, then the retained B IDRs act as clean recovery anchors, so later B GOPs should play normally after the intended boundary corruption. Type 0/1 POC alignment is limited to streams with no B-slices and no composition reordering; genuinely reordered multi-GOP streams fail explicitly instead of silently producing a short decode. WebCodecs normalization is video-only and intentionally removes B-frames; it is not a general-purpose transcoder.
 
 Native parsing is not HEVC, fragmented-MP4, encrypted-media, or multi-video-track capable; those unsupported local files must go through Tier 2 conversion where applicable.
 

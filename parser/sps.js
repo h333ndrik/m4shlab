@@ -101,8 +101,9 @@ export function parseSps(nalBytes) {
 
   const log2MaxFrameNumMinus4 = reader.readUnsignedExpGolomb();
   const picOrderCountType = reader.readUnsignedExpGolomb();
+  let log2MaxPicOrderCntLsb = null;
   if (picOrderCountType === 0) {
-    reader.readUnsignedExpGolomb();
+    log2MaxPicOrderCntLsb = reader.readUnsignedExpGolomb() + 4;
   } else if (picOrderCountType === 1) {
     reader.readBit();
     reader.readSignedExpGolomb();
@@ -147,6 +148,7 @@ export function parseSps(nalBytes) {
     bitDepthChroma,
     log2MaxFrameNum: log2MaxFrameNumMinus4 + 4,
     picOrderCntType: picOrderCountType,
+    log2MaxPicOrderCntLsb,
     maxNumRefFrames,
     width,
     height,

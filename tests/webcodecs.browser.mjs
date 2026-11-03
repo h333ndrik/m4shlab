@@ -14,6 +14,8 @@ const fixtures = {
   b: join(projectRoot, 'testmedia', 'synthetic-b-mismatch.mp4'),
   largeA: join(projectRoot, 'testmedia', 'synthetic-native-large-a.mp4'),
   largeB: join(projectRoot, 'testmedia', 'synthetic-native-large-b.mp4'),
+  poc0A: join(projectRoot, 'testmedia', 'synthetic-multigop-poc0-a.mp4'),
+  poc0B: join(projectRoot, 'testmedia', 'synthetic-multigop-poc0-b.mp4'),
 };
 const normalizedPaths = {
   a: join(projectRoot, 'testmedia', 'webcodecs-browser-normalized-a.mp4'),
@@ -281,6 +283,34 @@ try {
   assert.match(longGopProbe.stdout, /nb_read_frames=149/);
   command('ffmpeg', ['-v', 'error', '-i', multiGopMergedPath, '-f', 'null', '-'], 'WebCodecs multi-GOP strict decode');
   console.log('PASS WebCodecs emitted keyframes at samples 1, 31, and 61; the multi-GOP merge retained two later IDRs and decoded all 149 frames');
+
+  await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?safari-poc0=1'});
+  await client.waitFor("document.querySelector('#file-input-a') !== null", 10000);
+  await client.setFile('#file-input-a', fixtures.poc0A);
+  await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 15000);
+  await client.evaluate(`(() => {
+    const error = document.querySelector('#error');
+    error.textContent = 'stale pre-merge error';
+    error.hidden = false;
+  })()`);
+  await client.setFile('#file-input-b', fixtures.poc0B);
+  await client.waitFor("document.querySelector('#status').textContent.includes('samples') || /failed/i.test(document.querySelector('#status').textContent)", 30000);
+  const poc0Pair = await client.evaluate(`(() => {
+    const reportNode = document.querySelector('#report');
+    return {
+      status: document.querySelector('#status').textContent,
+      error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
+      compatibility: document.querySelector('#compatibility-status').textContent,
+      report: reportNode.textContent ? JSON.parse(reportNode.textContent) : null,
+    };
+  })()`);
+  assert.equal(poc0Pair.compatibility, 'compatible', poc0Pair.error || 'POC0 pair was not compatible');
+  assert.equal(poc0Pair.error, null, 'A successful merge must clear stale errors');
+  assert.equal(poc0Pair.report.merge.mergedSamples, 99);
+  assert.equal(poc0Pair.report.merge.frameAlignment.applied, true);
+  assert.equal(poc0Pair.report.merge.frameAlignment.picOrderCntType, 0);
+  assert.equal(poc0Pair.report.merge.frameAlignment.pictureReordering.noReordering, true);
+  console.log('PASS Safari-style POC type 0 multi-GOP pair merges in the browser and clears stale errors');
 
   await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?large-native=1'});
   await client.waitFor("document.querySelector('#file-input-a') !== null", 10000);
