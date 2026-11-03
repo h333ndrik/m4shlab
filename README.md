@@ -6,11 +6,13 @@ Phase A MVP: one H.264 clip, IDR removal produces visible moshing in the preview
 
 Phase B MVP: two compatible H.264 clips, Classic A→B merge in the browser, export decodes as video.
 
-Multi-clip timeline: import up to 12 clips, arrange them on one horizontal timeline, choose Cut, Classic Mosh, Melt or Loop Release at every boundary, and export the complete chained sequence. The two-clip flow remains the N=2 case.
+Multi-clip timeline: import up to 12 clips, arrange them on one horizontal timeline, choose Cut, Classic Mosh, Melt, Loop Release or Reset Pulse at every boundary, and export the complete chained sequence. The two-clip flow remains the N=2 case.
 
 Classic Mosh duration + ending: each boundary has a frame-quantized duration and an ending mode. **Restore clear image** re-inserts the original boundary IDR after the effect window; **Continue motion** preserves the previous full-length IDR-free chain.
 
 Melt and Loop Release: Melt repeats every non-IDR sample after the incoming first GOP boundary, with a repeat factor from 2 to 12. Loop Release takes a 2–48-frame group, repeats it 3×, repeats a second timeline-aligned group 2× when space permits, then rejoins the donor timeline for the chronological tail. Both methods retain later IDRs and patch fresh `frame_num` and type-0 POC-LSB values per emitted sample.
+
+Reset Pulse: each frame-quantized interval starts by re-inserting B's original first IDR sample, then fills the interval with repeated consecutive B P-samples. The interval is 4–48 frames and the P-sample repeat is 2–12. Restore/Continue tail behavior matches Classic Mosh.
 
 Phase D PWA shell: m4shlab is installable and its app shell works offline after the first successful load. ffmpeg.wasm is cached on first use, not precached.
 
@@ -28,7 +30,7 @@ Automatic sequence normalization starts as soon as native compatibility fails. I
 npm start
 ```
 
-Open `http://127.0.0.1:4173`, choose up to 12 clips with **Import clips**, or drop them onto the timeline. Use the card arrows to reorder, the remove buttons to edit the sequence, and undo/redo for timeline changes. Click each dashed connector to choose **Cut**, **Classic Mosh**, **Melt** or **Loop Release**. Classic Mosh exposes duration and ending controls; Melt exposes a repeat factor and Loop Release a group length. Switch between the first-clip cut and the full merged sequence; validation and normalization happen in the background, and only a blocking error is surfaced. Play from the start for the clearest result. Export downloads `m4shlab-merge.mp4` with the full sequence and source audio when available.
+Open `http://127.0.0.1:4173`, choose up to 12 clips with **Import clips**, or drop them onto the timeline. Use the card arrows to reorder, the remove buttons to edit the sequence, and undo/redo for timeline changes. Click each dashed connector to choose **Cut**, **Classic Mosh**, **Melt**, **Loop Release** or **Reset Pulse**. Classic Mosh and Reset Pulse expose duration and ending controls; Melt exposes a repeat factor, Loop Release a group length, and Reset Pulse its interval and P-repeat. Switch between the first-clip cut and the full merged sequence; validation and normalization happen in the background, and only a blocking error is surfaced. Play from the start for the clearest result. Export downloads `m4shlab-merge.mp4` with the full sequence and source audio when available.
 
 The Phase A single-clip transfer remains available through `mosh.js` and its unchanged test chain.
 
@@ -44,7 +46,7 @@ Service workers require HTTPS or `localhost`; GitHub Pages provides HTTPS automa
 
 The first load must reach the network so the manifest and versioned app shell can be cached. After that the UI starts offline. Import, Classic Mosh, preview, and export are local operations and continue to work without a network. New-format conversion needs the ffmpeg.wasm core; the first conversion downloads it, then `converter-worker.js`, `ffmpeg-core.js`, and `ffmpeg-core.wasm` stay in the runtime cache. The OS may evict that cache under storage pressure, in which case conversion needs network again.
 
-The current cache version is `v5` (`m4shlab-v5` plus `m4shlab-runtime-v5`). Bump `VERSION` in `sw.js` whenever app-shell or conversion-worker files change. Activation deletes older versioned caches, including the old runtime cache, so the worker cannot run stale code.
+The current cache version is `v6` (`m4shlab-v6` plus `m4shlab-runtime-v6`). Bump `VERSION` in `sw.js` whenever app-shell or conversion-worker files change. Activation deletes older versioned caches, including the old runtime cache, so the worker cannot run stale code.
 
 ## Supported formats
 
@@ -59,9 +61,19 @@ Normalization produces conventional faststart MP4 with H.264 baseline or main pr
 
 Native Tier-1 clips may contain B-frames; their `ctts` composition offsets are preserved during merge. Converted clips deliberately have no B-frames.
 
+### Boundary methods
+
+| Method | Behavior |
+| --- | --- |
+| Cut | Append the incoming clip completely and byte-identically. |
+| Classic Mosh | Remove only the incoming first IDR, align the first GOP, and optionally restore an IDR after a frame-quantized window. |
+| Melt | Repeat every incoming non-IDR sample 2–12 times after the first GOP boundary. |
+| Loop Release | Repeat the first donor group 3×, a second timeline-aligned group 2×, then rejoin consecutive donors at the matching output index. |
+| Reset Pulse | Re-insert the incoming original first IDR every 4–48 frames, fill each interval with repeated consecutive P-samples, and continue with the selected ending. |
+
 ## Interface
 
-The page follows the h4moshlab visual language: a light radial-gradient background, centered 1000px layout, compact bordered controls, a large dark preview well, and a horizontal clip timeline. Clip cards show a thumbnail, filename, duration, format status, active reorder arrows, and a remove button; undo/redo restores timeline edits. Each dashed connector names its boundary method and opens a dialog with **Cut**, **Classic Mosh**, **Melt** and **Loop Release**. Classic Mosh adds duration and ending controls; Melt adds a 2–12 repeat slider and Loop Release a 2–48-frame group slider. The first card is the preview cut; the export is the full chained result. Compatibility criteria, badges, and SPS/PPS hashes are not rendered. Under 600px the header and preview actions stack and touch controls meet the 44px target.
+The page follows the h4moshlab visual language: a light radial-gradient background, centered 1000px layout, compact bordered controls, a large dark preview well, and a horizontal clip timeline. Clip cards show a thumbnail, filename, duration, format status, active reorder arrows, and a remove button; undo/redo restores timeline edits. Each dashed connector names its boundary method and opens a dialog with **Cut**, **Classic Mosh**, **Melt**, **Loop Release** and **Reset Pulse**. Classic Mosh and Reset Pulse add duration and ending controls; Melt adds a 2–12 repeat slider, Loop Release a 2–48-frame group slider, and Reset Pulse 4–48-frame interval plus 2–12 P-repeat sliders. The first card is the preview cut; the export is the full chained result. Compatibility criteria, badges, and SPS/PPS hashes are not rendered. Under 600px the header and preview actions stack and touch controls meet the 44px target.
 
 ## What it does
 
@@ -116,16 +128,16 @@ The page follows the h4moshlab visual language: a light radial-gradient backgrou
 1. Clip 1 contributes every sample. Each **Cut** boundary appends the complete incoming clip with byte-identical sample/NAL data.
 2. Each **Classic Mosh** boundary removes the incoming first IDR sample and retained SPS/PPS/SEI units, then aligns the first incoming GOP's `frame_num` and type-0 POC LSB against the already merged stream. Alignment therefore continues from the running chain position, not from the original first clip.
 3. **Restore clear image** ends that boundary after its own duration by inserting the original first IDR before frame N+1. **Continue motion** keeps the full-length chain. Settings travel with each boundary through reorder/undo and are reported independently.
-4. **Melt** skips the incoming first IDR sample, repeats every non-IDR sample 2–12 times, and keeps later IDRs as single recovery anchors. **Loop Release** repeats its first 2–48-frame group three times, repeats a second timeline-aligned group twice if the first half has room, then continues with consecutive donor samples from the release index. Donor frames are skipped where the repeated blocks consumed output time, so the stream rejoins the original timeline without a new IDR.
-5. Melt/Loop Release reschedule complete samples, then renumber non-IDR slice headers sequentially with RBSP/EBSP-safe writes. `frame_num` resets after retained IDRs; type-0 POC-LSB values advance per emitted sample and avoid a POC collision at restart.
-6. Later IDRs in every appended clip remain as reference anchors and reset local GOP numbering naturally. Melt and Loop Release require both adjacent clips to be free of B-frame reordering; the app normalizes native B-frame sources first.
+4. **Melt** skips the incoming first IDR sample, repeats every non-IDR sample 2–12 times, and keeps later IDRs as single recovery anchors. **Loop Release** repeats its first 2–48-frame group three times, repeats a second timeline-aligned group twice if the first half has room, then continues with consecutive donor samples from the release index. Donor frames are skipped where the repeated blocks consumed output time, so the stream rejoins the original timeline without a new IDR. **Reset Pulse** fills each 4–48-frame interval with a byte-identical reinsertion of B's original first IDR sample followed by consecutive non-IDR donors, each repeated 2–12 times.
+5. Melt/Loop Release/Reset Pulse reschedule complete samples, then renumber non-IDR slice headers sequentially with RBSP/EBSP-safe writes. `frame_num` resets after retained IDRs; type-0 POC-LSB values advance per emitted sample and avoid a POC collision at restart.
+6. Later IDRs in every appended clip remain as reference anchors and reset local GOP numbering naturally. Melt, Loop Release and Reset Pulse require both adjacent clips to be free of B-frame reordering; the app normalizes native B-frame sources first.
 7. The sample table is rebuilt once per boundary from the running sequence. `stsz`, `stco`, `stsc`, `stts`, `ctts`, and track/movie durations describe the final chain.
 8. The report records clip count, per-boundary methods, effect schedules, duration frames, ending, clamped values, reinserted IDR positions, source and merged sample counts, expected decoded frames, retained NAL identity, and normalization paths. The preview cut shows clip 1 only; the merged preview and export contain the full sequence.
 
 ### Audio in merged exports
 
 1. The first audio track of every original source file is decoded locally to PCM. Web Audio resamples and pads/trims it to 48 kHz stereo on the clip's normalized video timeline; ffmpeg.wasm is the fallback when Web Audio cannot decode the format.
-2. Audio segments follow timeline order. Classic Mosh and Loop Release start the incoming audio one video frame late, mirroring the removed first IDR sample. Cut keeps the full segment. Melt uses the linear picture timeline and pads extra picture-only frames with exact silence.
+2. Audio segments follow timeline order. Classic Mosh, Loop Release and Reset Pulse start the incoming audio one video frame late, mirroring the removed first IDR sample. Cut keeps the full segment. Melt uses the linear picture timeline and pads extra picture-only frames with exact silence.
 3. The assembled PCM length must equal `merged video frames × (48000 / fps)` exactly. A mismatch raises `RuntimeError` before export instead of writing a misaligned file.
 4. WebCodecs `AudioEncoder` produces AAC-LC at 48 kHz stereo when available; ffmpeg.wasm encodes the same PCM as the fallback. ffmpeg.wasm muxes the AAC and merged video, and the report names both the encode and mux paths.
 5. AAC packets are 1024-sample units, so the MP4 edit list preserves encoder delay and trims the presentation duration to the exact merged sample count. This is container timing, not audio moshing.
@@ -148,6 +160,7 @@ npm run test:pwa
 - a 256×240 resolution mismatch;
 - a 320×240 clip with a different `mdhd` timescale;
 - a matching 25-frame A plus 75-frame multi-GOP B with B IDRs at samples 0, 25, and 50;
+- Reset Pulse fixtures reuse those clips with a 12-frame effect window, 4–48-frame pulse intervals, and repeat endpoints 2/12;
 - Safari-style POC type 0 multi-GOP clips with IDRs at samples 0, 25, and 50 and no B-frames, plus a 32-frame C fixture;
 - native H.264 clips at 1440×1920 and 768×1024 for the capped auto-normalization path;
 - a QuickTime H.264 MOV with a `wide` placeholder;
@@ -174,9 +187,11 @@ The tests assert:
 - chained rendering carries independent restore/continue settings at each Classic Mosh boundary;
 - Melt repeat=4 emits 315 samples and decodes 315/315, with only frame/POC header bits changing outside otherwise identical slice payloads;
 - Loop Release loop_frames=4 emits [1,2,3,4] three times, [13,14,15,16] twice, then donors 21–74, and decodes 99/99;
+- Reset Pulse interval=6/repeat=2 emits IDRs at merged samples 25/31, donor tables [1,1,2,2,3] per interval, tail donor 13, and decodes 99/99; interval 4, repeats 2/12, Restore tail IDR, duration clamping, and interval >= duration rejection are covered;
+- Reset Pulse POC type 0 restarts frame_num and POC-LSB at 1 per pulse segment and decodes 99/99; Reset Pulse→Cut and Reset Pulse→Classic Mosh decode 124/124 and 123/123;
 - POC type 0 Melt repeat=2 renumbers both counters and decodes 171/171; a three-clip Melt→Loop Release chain decodes 195/195 and a Loop Release→Cut chain decodes 124/124;
-- native B-frame inputs reject Melt/Loop Release loudly, while the browser normalizes native B-frame clips before retrying automatically;
-- Classic Mosh and Loop Release drop exactly the first incoming frame while preserving the remaining PCM; a silent clip contributes exact stereo silence; Melt uses linear audio plus sample-exact silence for extra picture frames;
+- native B-frame inputs reject Melt/Loop Release/Reset Pulse loudly, while the browser normalizes native B-frame clips before retrying automatically;
+- Classic Mosh, Loop Release and Reset Pulse drop exactly the first incoming frame while preserving the remaining PCM; a silent clip contributes exact stereo silence; Melt uses linear audio plus sample-exact silence for extra picture frames;
 - malformed PCM lengths and audio/video sample mismatches raise `RuntimeError`; WAV and ADTS headers have exact sizes; muxed AAC preserves encoder delay while the edit list presents the exact requested sample count;
 - original audio fixture hashes remain unchanged after timeline, WAV, ADTS, and retiming operations;
 - a three-clip Classic Mosh chain keeps later B/C IDRs, aligns both first GOPs against the running chain, preserves all unpatched NAL bytes, and decodes 130/130 expected frames;
@@ -199,7 +214,7 @@ The tests assert:
 - Chrome reports no manifest or installability errors, activates `beforeinstallprompt`, and the activate handler removes an older versioned cache;
 - an offline reload serves the complete shell, after which previously cached ffmpeg.wasm converts and merges HEVC inputs locally and the exported MP4 decodes.
 
-Current local results (2026-11-03, Node 26.13.0, FFmpeg 9.0.2, Google Chrome 156): all 61 Node checks pass. Phase A removes 11,468 bytes and decodes 73 frames. The multi-slice fixture keeps both initial IDR slices, starts at sample 25, removes four later slices, and decodes 73/73 retained frames. Phase B merges 25 A samples plus 24 retained B samples, decodes 49 frames, and produces the same 67,893-byte export. Melt repeat=4 emits and decodes 315 samples; Loop Release with a four-frame group emits and decodes 99, with donor blocks starting at source samples 1 and 13 and a release tail at 21. The multi-GOP regression merges 25 A + 75 B samples, retains two later B IDRs, patches 24 first-GOP slice headers, and decodes all 99 expected frames with three keyframes. A Safari-shaped POC type 0 pair also merges with POC-LSB alignment and decodes 99/99 frames; a genuinely reordered type 0 multi-GOP stream remains rejected. The WebCodecs muxer test emits 8 samples with a 14,984-byte mdat payload and 4,096 duration units. Tier-1 fixtures additionally verify a QuickTime H.264 MOV (25 samples / 26 NALs), a size-zero mdat, standalone `wide`, a 64-bit mdat, the exact HEVC error, and the exact fragmented-MP4 error. The Block F merge produces a 49-frame, 1.960-second AAC-LC track at 48 kHz stereo from 94,080 expected sample frames; the WebCodecs encode plus ffmpeg.wasm mux path preserves the 1,024-sample encoder delay and reports exact presentation timing.
+Current local results (2026-11-03, Node 26.13.0, FFmpeg 9.0.2, Google Chrome 156): all 65 Node checks pass. Phase A removes 11,468 bytes and decodes 73 frames. The multi-slice fixture keeps both initial IDR slices, starts at sample 25, removes four later slices, and decodes 73/73 retained frames. Phase B merges 25 A samples plus 24 retained B samples, decodes 49 frames, and produces the same 67,893-byte export. Melt repeat=4 emits and decodes 315 samples; Loop Release with a four-frame group emits and decodes 99, with donor blocks starting at source samples 1 and 13 and a release tail at 21. Reset Pulse interval=6/repeat=2 re-inserts the boundary IDR at merged samples 25 and 31, reports donor tables [1,1,2,2,3], and decodes 99/99; its POC type 0 variant also decodes 99/99. The multi-GOP regression merges 25 A + 75 B samples, retains two later B IDRs, patches 24 first-GOP slice headers, and decodes all 99 expected frames with three keyframes. A Safari-shaped POC type 0 pair also merges with POC-LSB alignment and decodes 99/99 frames; a genuinely reordered type 0 multi-GOP stream remains rejected. The WebCodecs muxer test emits 8 samples with a 14,984-byte mdat payload and 4,096 duration units. Tier-1 fixtures additionally verify a QuickTime H.264 MOV (25 samples / 26 NALs), a size-zero mdat, standalone `wide`, a 64-bit mdat, the exact HEVC error, and the exact fragmented-MP4 error. The Block F merge produces a 49-frame, 1.960-second AAC-LC track at 48 kHz stereo from 94,080 expected sample frames; the WebCodecs encode plus ffmpeg.wasm mux path preserves the 1,024-sample encoder delay and reports exact presentation timing.
 
 Classic Mosh restore was verified at a 10-frame duration. Phase A removes the sample-25 boundary sample, inserts the byte-identical boundary sample before source frame 36, retains the later sample-50 IDR, and decodes 75/75 source frames without an empty sample entry. The 10-frame Phase B restore inserts B's original IDR at merged sample 35 and decodes 50/50. Continue mode remains byte-identical to the prior full-length joins.
 
@@ -216,11 +231,11 @@ PASS Safari-style POC type 0 multi-GOP pair merges in the browser and clears sta
 PASS mobile layout stacks under 600px and keeps 44px touch targets on the scrolling timeline
 PASS blocking merge errors stay short and do not render a compatibility panel
 PASS large native mismatch auto-normalized to 540x720; UI showed the normalizing state and merge produced 49 samples
-PASS transition dialog exposes Classic duration/ending plus bounded Melt and Loop controls, and hides method-specific controls appropriately
+PASS transition dialog exposes Classic/Reset duration, Melt/Loop, and Reset Pulse interval/repeat controls
 PASS multi-file import normalized 3 clips to 540x720, exposed two Cut/Classic Mosh boundary dialogs, and merged 74 samples
 PASS timeline reorder, remove, and full undo restores the three-clip order and merged preview
 PASS full three-clip export decodes 74 frames at 540x720; Cut + Classic Mosh NAL sequence and preview are intact
-PASS browser Melt and Loop Release controls produce 315- and 99-sample sequences with fresh slice numbering and decodable preview
+PASS browser Melt, Loop Release, and Reset Pulse produce 315-, 99-, and 99-sample decodable sequences
 PASS selecting Melt on native B-frame clips auto-normalizes both sources before applying the NAL effect
 PASS audio merge exports AAC 48000 Hz/2ch, 94080 expected samples, runtime-matched duration, encode=WebCodecs, mux=ffmpeg.wasm
 PASS AudioEncoder unavailable: PCM encoded in ffmpeg.wasm and merged audio reports delay=1024 samples
@@ -265,11 +280,11 @@ The 720-pixel long-side cap is intentional and lossy for larger sources. It subs
 
 The ffmpeg.wasm fallback depends on downloading the pinned core from jsDelivr. Parallel sequence conversion deliberately starts up to two WASM workers, so peak memory is higher than a single-worker run even though each target is capped. It may still exhaust memory or fail on iOS Safari with large inputs. The 100 MB limit is a soft product limit for both paths, not a guarantee that a file below it will fit available device memory. No conversion is attempted for encrypted media.
 
-Direct merging supports compatible sequence members only. Resolution, profile, level, chroma, bit depth, PPS, and video timescale must match; differing SPS payloads require equivalent parsed core fields. Phase C can normalize native H.264 mismatches to a common target first. The sequence itself is capped at 12 clips. Merged audio is aligned to the video timeline but is not moshed: Classic Mosh drops one incoming frame, while Loop Release drops one incoming audio frame; Melt adds silence for extra picture frames. Sources without an audio track contribute silence when another source supplies audio. Multi-GOP B is supported: the mosh targets B's first GOP, then the retained B IDRs act as clean recovery anchors, so later B GOPs should play normally after the intended boundary corruption. Type 0/1 POC alignment is limited to streams with no B-slices and no composition reordering; genuinely reordered multi-GOP streams fail explicitly instead of silently producing a short decode. Audio handling is limited to the first track, 48 kHz stereo, and AAC-LC export; very long sequences, memory pressure, or browser codec gaps can still block audio preparation. WebCodecs video normalization is video-only and intentionally removes B-frames; it is not a general-purpose transcoder. Audio is taken from the original files rather than the normalized video.
+Direct merging supports compatible sequence members only. Resolution, profile, level, chroma, bit depth, PPS, and video timescale must match; differing SPS payloads require equivalent parsed core fields. Phase C can normalize native H.264 mismatches to a common target first. The sequence itself is capped at 12 clips. Merged audio is aligned to the video timeline but is not moshed: Classic Mosh, Loop Release and Reset Pulse drop one incoming frame; Melt adds silence for extra picture frames. Sources without an audio track contribute silence when another source supplies audio. Multi-GOP B is supported: the mosh targets B's first GOP, then the retained B IDRs act as clean recovery anchors, so later B GOPs should play normally after the intended boundary corruption. Type 0/1 POC alignment is limited to streams with no B-slices and no composition reordering; genuinely reordered multi-GOP streams fail explicitly instead of silently producing a short decode. Audio handling is limited to the first track, 48 kHz stereo, and AAC-LC export; very long sequences, memory pressure, or browser codec gaps can still block audio preparation. WebCodecs video normalization is video-only and intentionally removes B-frames; it is not a general-purpose transcoder. Audio is taken from the original files rather than the normalized video.
 
 Native parsing is not HEVC, fragmented-MP4, encrypted-media, or multi-video-track capable; those unsupported local files must go through Tier 2 conversion where applicable.
 
-Classic Mosh duration is bounded by the frames available after the incoming clip's first GOP boundary. Restore inserts the original boundary IDR at frame N+1; it does not blend frames or guarantee smooth motion through the recovery jump. Continue deliberately ignores the shortened window and retains the full prediction chain. Full-length defaults preserve legacy output behavior. Melt and Loop Release are decode-order bitstream effects: they do not blend pixels beyond the repeated slices and can look different across device decoders.
+Classic Mosh and Reset Pulse duration are bounded by the frames available after the incoming clip's first GOP boundary. Reset Pulse requires its interval to fit inside that duration and uses a hard IDR reset at each interval; repeated P-samples are not a blend or a smoothness guarantee. Restore inserts the original boundary IDR at frame N+1; it does not blend frames or guarantee smooth motion through the recovery jump. Continue deliberately ignores the shortened window and retains the full prediction chain. Full-length defaults preserve legacy output behavior. Melt, Loop Release and Reset Pulse are decode-order bitstream effects: they do not blend pixels beyond the repeated slices and can look different across device decoders.
 
 The PWA cache is not a persistence guarantee. First load needs network; a browser may evict Cache Storage, `file://` cannot register a service worker, and iOS may reclaim storage or terminate a large wasm conversion under memory pressure. The service worker deliberately does not cache source media or generated exports outside the page's in-memory Blob URLs.
 

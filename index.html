@@ -86,6 +86,7 @@
           <label><input type="radio" name="transition-method" value="classic-mosh" checked> <span><strong>Classic Mosh</strong><small>Remove the incoming first IDR and continue its references.</small></span></label>
           <label><input type="radio" name="transition-method" value="melt"> <span><strong>Melt</strong><small>Repeat every non-IDR sample after the first GOP boundary.</small></span></label>
           <label><input type="radio" name="transition-method" value="loop"> <span><strong>Loop Release</strong><small>Repeat motion 3×, then 2×, and rejoin the donor timeline.</small></span></label>
+          <label><input type="radio" name="transition-method" value="reset-pulse"> <span><strong>Reset Pulse</strong><small>Reset the reference on an interval while repeating the following motion.</small></span></label>
         </fieldset>
         <div id="classic-mosh-options" class="classic-mosh-options">
           <div class="mosh-control-heading">
@@ -114,7 +115,25 @@
             <output id="effect-parameter-value" for="effect-parameter">4×</output>
             <span id="effect-parameter-max">12 max</span>
           </div>
-          <p class="mosh-control-note">Melt and Loop renumber slice headers so each emitted sample has fresh frame and POC counters. B-frame sources are normalized first.</p>
+          <p class="mosh-control-note">Melt, Loop Release and Reset Pulse renumber slice headers so each emitted prediction has fresh frame and POC counters. B-frame sources are normalized first.</p>
+        </div>
+        <div id="reset-pulse-options" class="classic-mosh-options" hidden>
+          <div class="mosh-control-heading">
+            <label for="reset-interval">reset interval</label>
+            <span class="mosh-mode">pulse</span>
+          </div>
+          <input id="reset-interval" type="range" min="4" max="48" step="1" value="12">
+          <div class="mosh-control-meta">
+            <output id="reset-interval-value" for="reset-interval">12 frames</output>
+            <span id="reset-interval-max">48 max</span>
+          </div>
+          <label class="mosh-ending-label" for="reset-repeat">P-frame repeat</label>
+          <input id="reset-repeat" type="range" min="2" max="12" step="1" value="4">
+          <div class="mosh-control-meta">
+            <output id="reset-repeat-value" for="reset-repeat">4×</output>
+            <span>12 max</span>
+          </div>
+          <p class="mosh-control-note">Each interval starts with B's original first IDR, then repeats consecutive P samples until the interval is full. B-frame sources are normalized first.</p>
         </div>
         <div class="dialog-actions">
           <button type="submit" value="cancel">cancel</button>
@@ -124,7 +143,7 @@
     </dialog>
 
     <footer class="limits" aria-labelledby="limits-heading">
-      <p id="limits-heading">Real H.264 bitstream editing · normalized to max 720px long side · 30 fps · merged exports are video-only. Up to 12 clips, 128 MiB per clip. Originals stay untouched.</p>
+      <p id="limits-heading">Real H.264 bitstream editing · normalized to max 720px long side · 30 fps · merged exports keep source audio when present. Up to 12 clips, 128 MiB per clip. Originals stay untouched.</p>
     </footer>
   </main>
   <script type="module" src="./app.js"></script>

@@ -455,7 +455,7 @@ try {
     };
   })()`);
   assert.equal(dialogMethods.open, true);
-  assert.deepEqual(dialogMethods.methods, ['cut', 'classic-mosh', 'melt', 'loop']);
+  assert.deepEqual(dialogMethods.methods, ['cut', 'classic-mosh', 'melt', 'loop', 'reset-pulse']);
   assert.equal(dialogMethods.classicHidden, false);
   assert.equal(dialogMethods.effectHidden, true);
   assert.deepEqual(dialogMethods.endingOptions, ['Restore clear image', 'Continue motion']);
@@ -492,6 +492,20 @@ try {
       value: Number(effect.value),
       valueText: document.querySelector('#effect-parameter-value').textContent,
     };
+    const reset = document.querySelector('#transition-dialog input[value="reset-pulse"]');
+    reset.checked = true;
+    reset.dispatchEvent(new Event('change', {bubbles: true}));
+    const resetState = {
+      classicHidden: document.querySelector('#classic-mosh-options').hidden,
+      effectHidden: document.querySelector('#nal-effect-options').hidden,
+      resetHidden: document.querySelector('#reset-pulse-options').hidden,
+      intervalMin: Number(document.querySelector('#reset-interval').min),
+      intervalMax: Number(document.querySelector('#reset-interval').max),
+      intervalValue: Number(document.querySelector('#reset-interval').value),
+      repeatMin: Number(document.querySelector('#reset-repeat').min),
+      repeatMax: Number(document.querySelector('#reset-repeat').max),
+      repeatValue: Number(document.querySelector('#reset-repeat').value),
+    };
     const cut = document.querySelector('#transition-dialog input[value="cut"]');
     cut.checked = true;
     cut.dispatchEvent(new Event('change', {bubbles: true}));
@@ -500,14 +514,17 @@ try {
       mode: document.querySelector('#transition-duration-mode').textContent,
       classicHiddenForCut: document.querySelector('#classic-mosh-options').hidden,
       effectHiddenForCut: document.querySelector('#nal-effect-options').hidden,
+      resetHiddenForCut: document.querySelector('#reset-pulse-options').hidden,
       meltState,
       loopState,
+      resetState,
     };
   })()`);
   assert.match(durationControls.valueText, /5 frames/);
   assert.equal(durationControls.mode, 'custom');
   assert.equal(durationControls.classicHiddenForCut, true);
   assert.equal(durationControls.effectHiddenForCut, true);
+  assert.equal(durationControls.resetHiddenForCut, true);
   assert.equal(durationControls.meltState.classicHidden, true);
   assert.equal(durationControls.meltState.effectHidden, false);
   assert.equal(durationControls.meltState.label, 'repeat');
@@ -519,7 +536,16 @@ try {
   assert.equal(durationControls.loopState.max, 48);
   assert.equal(durationControls.loopState.value, 4);
   assert.match(durationControls.loopState.valueText, /4 frames/);
-  console.log('PASS transition dialog exposes Classic duration/ending plus bounded Melt and Loop controls, and hides method-specific controls appropriately');
+  assert.equal(durationControls.resetState.classicHidden, false);
+  assert.equal(durationControls.resetState.effectHidden, true);
+  assert.equal(durationControls.resetState.resetHidden, false);
+  assert.equal(durationControls.resetState.intervalMin, 4);
+  assert.ok(durationControls.resetState.intervalMax >= 4);
+  assert.ok(durationControls.resetState.intervalValue >= 4);
+  assert.equal(durationControls.resetState.repeatMin, 2);
+  assert.equal(durationControls.resetState.repeatMax, 12);
+  assert.equal(durationControls.resetState.repeatValue, 4);
+  console.log('PASS transition dialog exposes Classic/Reset duration, Melt/Loop, and Reset Pulse interval/repeat controls');
   await client.evaluate("document.querySelector('#transition-apply').click()");
   await client.waitFor("JSON.parse(document.querySelector('#report').textContent).transitions?.[0]?.method === 'cut' && document.querySelector('#status').textContent.includes('samples')", 30000);
   const mixedTimeline = await client.evaluate(`(() => ({
@@ -599,15 +625,31 @@ try {
   await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 15000);
   await client.setFile('#file-input-b', fixtures.effectB);
   await client.waitFor("document.querySelector('#status').textContent.includes('samples') || !document.querySelector('#error').hidden", 30000);
-  const applyEffect = async (method, value) => {
+  const applyEffect = async (method, value, options = {}) => {
     await client.evaluate(`(() => {
       document.querySelector('.connector').click();
       const radio = document.querySelector('#transition-dialog input[value="${method}"]');
       radio.checked = true;
       radio.dispatchEvent(new Event('change', {bubbles: true}));
-      const parameter = document.querySelector('#effect-parameter');
-      parameter.value = '${value}';
-      parameter.dispatchEvent(new Event('input', {bubbles: true}));
+      if (${JSON.stringify(method)} === 'melt' || ${JSON.stringify(method)} === 'loop') {
+        const parameter = document.querySelector('#effect-parameter');
+        parameter.value = '${value}';
+        parameter.dispatchEvent(new Event('input', {bubbles: true}));
+      }
+      if (${JSON.stringify(method)} === 'reset-pulse') {
+        const duration = document.querySelector('#transition-duration');
+        duration.value = '${options.durationFrames ?? 12}';
+        duration.dispatchEvent(new Event('input', {bubbles: true}));
+        const ending = document.querySelector('#transition-ending');
+        ending.value = '${options.ending ?? 'continue'}';
+        ending.dispatchEvent(new Event('change', {bubbles: true}));
+        const interval = document.querySelector('#reset-interval');
+        interval.value = '${options.interval ?? 6}';
+        interval.dispatchEvent(new Event('input', {bubbles: true}));
+        const repeat = document.querySelector('#reset-repeat');
+        repeat.value = '${options.repeat ?? 2}';
+        repeat.dispatchEvent(new Event('input', {bubbles: true}));
+      }
       document.querySelector('#transition-apply').click();
     })()`);
     await client.waitFor(`(() => {
@@ -623,6 +665,7 @@ try {
         mergedSamples: report.merge.mergedSamples,
         method: report.transitions[0].method,
         effect: report.merge.effect,
+        resetPulse: report.merge.resetPulse,
         patchedSamples: report.merge.frameAlignment.patchedSamples,
         previewEnabled: !document.querySelector('#show-modified').disabled,
       };
@@ -646,6 +689,15 @@ try {
   assert.equal(loopUi.effect.loopSchedule.tailDonorStart, 21);
   assert.equal(loopUi.effect.scheduledSourceSamples.length, 74);
   assert.equal(loopUi.patchedSamples, 72);
+  const resetUi = await applyEffect('reset-pulse', null, {durationFrames: 12, interval: 6, repeat: 2});
+  assert.equal(resetUi.error, null, resetUi.error);
+  assert.equal(resetUi.method, 'reset-pulse');
+  assert.equal(resetUi.mergedSamples, 99);
+  assert.deepEqual(resetUi.resetPulse.resetOutputPositions, [25, 31]);
+  assert.deepEqual(resetUi.resetPulse.patchCounts, [5, 5]);
+  assert.equal(resetUi.resetPulse.tail.donorStartSample, 13);
+  assert.equal(resetUi.patchedSamples, 70);
+  assert.equal(resetUi.previewEnabled, true);
   await client.evaluate("document.querySelector('#show-modified').click()");
   await client.waitFor("document.querySelector('#preview-video').readyState >= 2 || document.querySelector('#preview-video').error", 15000);
   const effectPlayback = await client.evaluate(`({
@@ -656,7 +708,7 @@ try {
   assert.equal(effectPlayback.error, null);
   assert.equal(effectPlayback.width, 320);
   assert.equal(effectPlayback.height, 240);
-  console.log('PASS browser Melt and Loop Release controls produce 315- and 99-sample sequences with fresh slice numbering and decodable preview');
+  console.log('PASS browser Melt, Loop Release, and Reset Pulse produce 315-, 99-, and 99-sample decodable sequences');
 
   await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?normalize-effect=1'});
   await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);

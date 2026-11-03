@@ -49,6 +49,11 @@ const multiGopPoc0MergedPath = join(projectRoot, 'testmedia', 'synthetic-multigo
 const meltOutputPath = join(projectRoot, 'testmedia', 'synthetic-melt-test-output.mp4');
 const loopOutputPath = join(projectRoot, 'testmedia', 'synthetic-loop-test-output.mp4');
 const poc0MeltOutputPath = join(projectRoot, 'testmedia', 'synthetic-poc0-melt-test-output.mp4');
+const resetPulseOutputPath = join(projectRoot, 'testmedia', 'synthetic-reset-pulse-test-output.mp4');
+const resetPulsePoc0OutputPath = join(projectRoot, 'testmedia', 'synthetic-reset-pulse-poc0-test-output.mp4');
+const resetPulseRestoreOutputPath = join(projectRoot, 'testmedia', 'synthetic-reset-pulse-restore-test-output.mp4');
+const resetPulseCutOutputPath = join(projectRoot, 'testmedia', 'synthetic-reset-pulse-cut-test-output.mp4');
+const resetPulseMoshOutputPath = join(projectRoot, 'testmedia', 'synthetic-reset-pulse-mosh-test-output.mp4');
 const sequenceMoshPath = join(projectRoot, 'testmedia', 'synthetic-sequence-mosh-test-output.mp4');
 const sequenceMixedPath = join(projectRoot, 'testmedia', 'synthetic-sequence-mixed-test-output.mp4');
 const normalizedMuxPath = join(projectRoot, 'testmedia', 'synthetic-webcodecs-mux-output.mp4');
@@ -99,6 +104,40 @@ function skipUnsignedExpGolomb(bytes, state) {
   state.bit += 1 + zeros;
 }
 
+function readFixedBitsTest(bytes, state, count) {
+  let value = 0;
+  for (let index = 0; index < count; index += 1) {
+    value = value * 2 + readBitAt(bytes, state.bit);
+    state.bit += 1;
+  }
+  return value;
+}
+
+function readUnsignedExpGolombTest(bytes, state) {
+  let zeros = 0;
+  while (readBitAt(bytes, state.bit) === 0) {
+    zeros += 1;
+    state.bit += 1;
+    if (zeros > 31) throw new Error('Invalid Exp-Golomb value in test slice header');
+  }
+  state.bit += 1;
+  return (2 ** zeros) - 1 + (zeros === 0 ? 0 : readFixedBitsTest(bytes, state, zeros));
+}
+
+function readSliceCounters(nalData, sps) {
+  const rbsp = unescapeRbspPayload(nalData);
+  const state = {bit: 0};
+  readUnsignedExpGolombTest(rbsp, state);
+  readUnsignedExpGolombTest(rbsp, state);
+  readUnsignedExpGolombTest(rbsp, state);
+  const frameNumber = readFixedBitsTest(rbsp, state, sps.log2MaxFrameNum);
+  if ((nalData[0] & 0x1f) === 5) readUnsignedExpGolombTest(rbsp, state);
+  const picOrderCntLsb = sps.picOrderCntType === 0
+    ? readFixedBitsTest(rbsp, state, sps.log2MaxPicOrderCntLsb)
+    : null;
+  return {frameNumber, picOrderCntLsb};
+}
+
 function slicePatchBitRange(nalData, sps) {
   const rbsp = unescapeRbspPayload(nalData);
   const state = {bit: 0};
@@ -110,10 +149,10 @@ function slicePatchBitRange(nalData, sps) {
   return {rbsp, start, end};
 }
 
-function assertEffectNalPayloads(outputNals, aNalCount, sourceNals, scheduledSources, sps, label) {
+function assertEffectNalPayloads(outputNals, aNalCount, sourceNals, scheduledSources, sps, label, options = {}) {
   const expected = scheduledSources.flatMap(sampleIndex => sourceNals
     .filter(nal => nal.sampleIndex === sampleIndex)
-    .filter(nal => nal.type === 5 || ![6, 7, 8].includes(nal.type)));
+    .filter(nal => options.preserveAllSampleNals || nal.type === 5 || ![6, 7, 8].includes(nal.type)));
   const actual = outputNals.slice(aNalCount);
   assert.equal(actual.length, expected.length, `${label} NAL count`);
   assert.deepEqual(actual.map(nal => nal.type), expected.map(nal => nal.type), `${label} NAL order`);
@@ -693,6 +732,180 @@ assert.equal(loopDecodedFrames, loopMerge.report.mergedSamples);
 command('ffmpeg', ['-v', 'error', '-i', loopOutputPath, '-f', 'null', '-'], 'Loop strict decode');
 pass(`Loop Release loop_frames=4 emits 3× and 2× donor blocks, rejoins at donor 21, renumbers ${loopMerge.report.frameAlignment.patchedSamples} non-IDR samples, and decodes ${loopDecodedFrames}/${loopMerge.report.mergedSamples} frames`);
 
+const expectedResetSchedule = [
+  0, 1, 1, 2, 2, 3,
+  0, 1, 1, 2, 2, 3,
+  ...Array.from({length: 62}, (_, index) => index + 13),
+];
+const resetPulse = await mergeEffectH264(multiGopAInput, multiGopBInput, multiGopAParsed, multiGopBParsed, {
+  method: 'reset-pulse',
+  durationFrames: 12,
+  resetInterval: 6,
+  repeat: 2,
+  ending: 'continue',
+});
+assert.equal(resetPulse.report.method, 'reset-pulse');
+assert.equal(resetPulse.report.effect.method, 'reset-pulse');
+assert.deepEqual(resetPulse.report.effect.scheduledSourceSamples, expectedResetSchedule);
+assert.equal(resetPulse.report.mergedSamples, 99);
+assert.equal(resetPulse.report.bScheduledSamples, 74);
+assert.equal(resetPulse.report.frameAlignment.patchedSamples, 70);
+assert.equal(resetPulse.report.frameAlignment.gopResets, 4);
+assert.deepEqual(resetPulse.report.resetPulse.resetOutputPositions, [25, 31]);
+assert.deepEqual(resetPulse.report.resetPulse.patchCounts, [5, 5]);
+assert.deepEqual(resetPulse.report.resetPulse.intervals.map(interval => interval.donorSamples), [
+  [1, 1, 2, 2, 3],
+  [1, 1, 2, 2, 3],
+]);
+assert.deepEqual(resetPulse.report.resetPulse.tail, {
+  outputStart: 37,
+  donorStartSample: 13,
+  restoreResetPosition: null,
+});
+assert.deepEqual(resetPulse.report.reInsertedIdrPositions, [25, 31]);
+const resetParsed = parseMp4(resetPulse.output);
+const resetNals = extractNals(resetPulse.output, resetParsed.videoTrack);
+const resetBoundarySample = multiGopBParsed.videoTrack.samples[0];
+const resetBoundaryBytes = multiGopBInput.subarray(resetBoundarySample.offset, resetBoundarySample.offset + resetBoundarySample.size);
+for (const outputIndex of resetPulse.report.resetPulse.resetOutputPositions) {
+  const sample = resetParsed.videoTrack.samples[outputIndex];
+  assert.deepEqual(resetPulse.output.subarray(sample.offset, sample.offset + sample.size), resetBoundaryBytes);
+}
+assertEffectNalPayloads(
+  resetNals,
+  extractNals(multiGopAInput, multiGopAParsed.videoTrack).length,
+  multiGopBNals,
+  resetPulse.report.effect.scheduledSourceSamples,
+  meltSps,
+  'reset-pulse',
+  {preserveAllSampleNals: true},
+);
+assert.equal(resetParsed.videoTrack.sampleSizes.sizes.reduce((total, value) => total + value, 0),
+  resetParsed.mdatRanges.reduce((total, box) => total + box.payloadEnd - box.payloadStart, 0));
+assert.ok(resetParsed.videoTrack.samples.every((sample, index, samples) => index === 0 || sample.offset > samples[index - 1].offset));
+writeFileSync(resetPulseOutputPath, resetPulse.output);
+const resetProbe = command('ffprobe', [
+  '-v', 'error', '-select_streams', 'v:0', '-count_frames',
+  '-show_entries', 'stream=codec_name,nb_frames,nb_read_frames,has_b_frames',
+  '-of', 'default=noprint_wrappers=1', resetPulseOutputPath,
+], 'Reset Pulse decode probe');
+assert.match(resetProbe.stdout, /nb_frames=99/);
+assert.match(resetProbe.stdout, /nb_read_frames=99/);
+assert.match(resetProbe.stdout, /has_b_frames=0/);
+command('ffmpeg', ['-v', 'error', '-i', resetPulseOutputPath, '-f', 'null', '-'], 'Reset Pulse strict decode');
+pass('Reset Pulse emits exact IDR/repeat intervals, byte-identical boundary samples, and decodes 99/99 frames');
+
+const resetRestore = await mergeEffectH264(multiGopAInput, multiGopBInput, multiGopAParsed, multiGopBParsed, {
+  method: 'reset-pulse',
+  durationFrames: 12,
+  resetInterval: 6,
+  repeat: 2,
+  ending: 'restore',
+});
+assert.equal(resetRestore.report.mergedSamples, 100);
+assert.deepEqual(resetRestore.report.reInsertedIdrPositions, [25, 31, 37]);
+assert.equal(resetRestore.report.resetPulse.tail.restoreResetPosition, 37);
+writeFileSync(resetPulseRestoreOutputPath, resetRestore.output);
+const resetRestoreProbe = command('ffprobe', [
+  '-v', 'error', '-select_streams', 'v:0', '-count_frames',
+  '-show_entries', 'stream=nb_read_frames', '-of', 'default=noprint_wrappers=1', resetPulseRestoreOutputPath,
+], 'Reset Pulse restore decode probe');
+assert.match(resetRestoreProbe.stdout, /nb_read_frames=100/);
+pass('Reset Pulse Restore inserts the boundary IDR before the chronological tail and decodes 100/100 frames');
+
+await assert.rejects(
+  () => mergeEffectH264(multiGopAInput, multiGopBInput, multiGopAParsed, multiGopBParsed, {
+    method: 'reset-pulse', durationFrames: 8, resetInterval: 8, repeat: 2, ending: 'continue',
+  }),
+  error => /must be smaller than the 8-frame/.test(error.message),
+);
+const intervalFour = await mergeEffectH264(multiGopAInput, multiGopBInput, multiGopAParsed, multiGopBParsed, {
+  method: 'reset-pulse', durationFrames: 12, resetInterval: 4, repeat: 2, ending: 'continue',
+});
+assert.deepEqual(intervalFour.report.resetPulse.resetOutputPositions, [25, 29, 33]);
+assert.equal(intervalFour.report.mergedSamples, 99);
+const repeatTwelve = await mergeEffectH264(multiGopAInput, multiGopBInput, multiGopAParsed, multiGopBParsed, {
+  method: 'reset-pulse', durationFrames: 12, resetInterval: 6, repeat: 12, ending: 'continue',
+});
+assert.deepEqual(repeatTwelve.report.resetPulse.intervals[0].donorSamples, [1, 1, 1, 1, 1]);
+const clampedReset = await mergeEffectH264(multiGopAInput, multiGopBInput, multiGopAParsed, multiGopBParsed, {
+  method: 'reset-pulse', durationFrames: 999, resetInterval: 12, repeat: 4, ending: 'continue',
+});
+assert.equal(clampedReset.report.resetPulse.durationFrames, 74);
+assert.equal(clampedReset.report.resetPulse.clamped, true);
+pass('Reset Pulse rejects interval >= duration, accepts interval 4 and repeat endpoints 2/12, and reports duration clamping');
+
+const poc0Reset = await mergeEffectH264(poc0AInput, poc0BInput, poc0AParsed, poc0BParsed, {
+  method: 'reset-pulse',
+  durationFrames: 12,
+  resetInterval: 6,
+  repeat: 2,
+  ending: 'continue',
+});
+assert.equal(poc0Reset.report.frameAlignment.picOrderCntType, 0);
+assert.equal(poc0Reset.report.frameAlignment.patchedIdrNals, 2);
+assert.equal(poc0Reset.report.resetPulse.patchedIdrNals, 2);
+assert.equal(poc0Reset.report.frameAlignment.segments[0].firstFrameNumber, 1);
+assert.equal(poc0Reset.report.frameAlignment.segments[0].firstPicOrderCntLsb, 1);
+assert.equal(poc0Reset.report.frameAlignment.segments[0].lastPicOrderCntLsb, 5);
+assert.equal(poc0Reset.report.frameAlignment.segments[1].firstPicOrderCntLsb, 1);
+writeFileSync(resetPulsePoc0OutputPath, poc0Reset.output);
+const poc0ResetParsed = parseMp4(poc0Reset.output);
+const poc0ResetNals = extractNals(poc0Reset.output, poc0ResetParsed.videoTrack);
+const poc0Sps = parseSps(parseAvcConfig(poc0BInput, poc0BParsed.videoTrack.avcC).sps[0]);
+const segmentCounterExpectations = [
+  [26, 1, 1], [27, 2, 2], [28, 3, 3], [29, 4, 4], [30, 5, 5],
+  [32, 1, 1], [33, 2, 2], [34, 3, 3], [35, 4, 4], [36, 5, 5],
+];
+for (const [sampleIndex, frameNumber, picOrderCntLsb] of segmentCounterExpectations) {
+  const nal = poc0ResetNals.find(candidate => candidate.sampleIndex === sampleIndex && candidate.type === 1);
+  assert.ok(nal, `missing P slice at output sample ${sampleIndex}`);
+  assert.deepEqual(readSliceCounters(nal.data, poc0Sps), {frameNumber, picOrderCntLsb});
+}
+const poc0ResetProbe = command('ffprobe', [
+  '-v', 'error', '-select_streams', 'v:0', '-count_frames',
+  '-show_entries', 'stream=nb_frames,nb_read_frames,has_b_frames',
+  '-of', 'default=noprint_wrappers=1', resetPulsePoc0OutputPath,
+], 'Reset Pulse POC0 decode probe');
+assert.match(poc0ResetProbe.stdout, /nb_read_frames=99/);
+assert.match(poc0ResetProbe.stdout, /has_b_frames=0/);
+pass('Reset Pulse POC type 0 slices restart frame_num/POC-LSB at 1 in each pulse segment and decode 99/99 frames');
+
+const resetThenCut = await mergeSequenceH264(
+  [
+    {bytes: multiGopAInput, parsed: multiGopAParsed},
+    {bytes: multiGopBInput, parsed: multiGopBParsed},
+    {bytes: multiGopAInput, parsed: multiGopAParsed},
+  ],
+  [
+    {method: 'reset-pulse', durationFrames: 12, resetInterval: 6, repeat: 2, ending: 'continue'},
+    {method: 'cut'},
+  ],
+);
+assert.deepEqual(resetThenCut.report.methods, ['reset-pulse', 'cut']);
+assert.equal(resetThenCut.report.mergedSamples, 124);
+writeFileSync(resetPulseCutOutputPath, resetThenCut.output);
+command('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-count_frames',
+  '-show_entries', 'stream=nb_read_frames', '-of', 'default=noprint_wrappers=1', resetPulseCutOutputPath], 'Reset Pulse then Cut probe');
+const resetThenMosh = await mergeSequenceH264(
+  [
+    {bytes: multiGopAInput, parsed: multiGopAParsed},
+    {bytes: multiGopBInput, parsed: multiGopBParsed},
+    {bytes: multiGopAInput, parsed: multiGopAParsed},
+  ],
+  [
+    {method: 'reset-pulse', durationFrames: 12, resetInterval: 6, repeat: 2, ending: 'continue'},
+    {method: 'classic-mosh'},
+  ],
+);
+assert.deepEqual(resetThenMosh.report.methods, ['reset-pulse', 'classic-mosh']);
+assert.equal(resetThenMosh.report.mergedSamples, 123);
+writeFileSync(resetPulseMoshOutputPath, resetThenMosh.output);
+const resetMoshProbe = command('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-count_frames',
+  '-show_entries', 'stream=nb_read_frames', '-of', 'default=noprint_wrappers=1', resetPulseMoshOutputPath], 'Reset Pulse then Classic Mosh probe');
+assert.match(resetMoshProbe.stdout, /nb_read_frames=123/);
+pass('chained Reset Pulse then Cut/Classic Mosh sequences use the pulse IDRs as anchors and decode 124/124 and 123/123 frames');
+
 const poc0Melt = await mergeEffectH264(poc0AInput, poc0BInput, poc0AParsed, poc0BParsed, {
   method: 'melt',
   repeat: 2,
@@ -840,6 +1053,17 @@ assert.equal(loopAudio.segments[1].paddedFrames, 0);
 assert.equal(loopAudio.expectedSamples, 49 * 1920);
 pass('Loop Release drops the incoming audio frame paired with the removed first IDR sample');
 
+const resetAudio = assembleAudioTimeline({
+  clips: [audioA, audioB],
+  methods: ['reset-pulse'],
+  videoSampleCounts: [25, 49],
+  fps: 25,
+});
+assert.equal(resetAudio.segments[1].dropFrames, 1);
+assert.equal(resetAudio.segments[1].availableFrames, 24);
+assert.equal(resetAudio.segments[1].paddedFrames, 0);
+pass('Reset Pulse Continue keeps incoming audio aligned after the removed first IDR frame');
+
 assert.throws(
   () => assembleAudioTimeline({
     clips: [audioA, testClipAudio(26, 9000)],
@@ -906,7 +1130,14 @@ await assert.rejects(
     && /Normalize the sequence first/.test(error.message)
     && /Cut\/Classic Mosh/.test(error.message),
 );
-pass('Melt/Loop fail loudly on native B-frame clips with an actionable normalization message');
+await assert.rejects(
+  () => mergeEffectH264(phaseAInput, phaseBInput, phaseAParsed, phaseBParsed, {
+    method: 'reset-pulse', durationFrames: 12, resetInterval: 4, repeat: 2, ending: 'continue',
+  }),
+  error => /Reset Pulse requires clips without B-frames/.test(error.message)
+    && /Normalize the sequence first/.test(error.message),
+);
+pass('Melt/Loop Release/Reset Pulse fail loudly on native B-frame clips with actionable normalization guidance');
 
 
 function bytesEqual(left, right) {

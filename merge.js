@@ -8,11 +8,13 @@ const SEI_NAL_TYPE = 6;
 const SPS_NAL_TYPE = 7;
 const PPS_NAL_TYPE = 8;
 const REMOVED_B_NAL_TYPES = new Set([IDR_NAL_TYPE, SEI_NAL_TYPE, SPS_NAL_TYPE, PPS_NAL_TYPE]);
-const TRANSITION_METHODS = new Set(['cut', 'classic-mosh', 'melt', 'loop']);
+const TRANSITION_METHODS = new Set(['cut', 'classic-mosh', 'melt', 'loop', 'reset-pulse']);
 const MELT_REPEAT_MIN = 2;
 const MELT_REPEAT_MAX = 12;
 const LOOP_FRAMES_MIN = 2;
 const LOOP_FRAMES_MAX = 48;
+const RESET_INTERVAL_MIN = 4;
+const RESET_INTERVAL_MAX = 48;
 
 export class CompatibilityError extends Error {
   constructor(report) {
@@ -633,7 +635,7 @@ function loopReleaseSchedule(count, loopFrames) {
     blocks.push({emittedStart, donorPositions, length, repeats});
   }
   if (blocks.length === 0) {
-    throw new Mp4Error(`Loop Release needs at least ${loopFrames * 2 * 3} frames to repeat a ${loopFrames}-frame group three times. Choose a shorter loop or normalize the clip.`);
+    throw new Mp4Error(`Loop Release does not have enough frames to repeat a group three times with a ${loopFrames}-frame maximum. Choose a shorter loop or normalize the clip.`);
   }
   const tailStart = positions.length;
   for (let position = tailStart; position < count; position += 1) positions.push(position);
@@ -659,7 +661,15 @@ function effectParameters(method, options = {}) {
       loopFrames: integerOption(options.loopFrames ?? options.loop_frames, 4, LOOP_FRAMES_MIN, LOOP_FRAMES_MAX, 'Loop frames'),
     };
   }
-  throw new Mp4Error(`Melt/Loop requires method "melt" or "loop", received "${method}".`);
+  if (method === 'reset-pulse') {
+    return {
+      method,
+      repeat: integerOption(options.repeat, 4, MELT_REPEAT_MIN, MELT_REPEAT_MAX, 'Reset Pulse repeat'),
+      resetInterval: integerOption(options.resetInterval ?? options.reset_interval, 12, RESET_INTERVAL_MIN, RESET_INTERVAL_MAX, 'Reset interval'),
+      loopFrames: null,
+    };
+  }
+  throw new Mp4Error(`Effect requires method "melt", "loop", or "reset-pulse", received "${method}".`);
 }
 
 export function inspectEffectEligibility(input, parsed = parseMp4(input)) {
@@ -690,8 +700,14 @@ export function inspectEffectEligibility(input, parsed = parseMp4(input)) {
   }
 }
 
+function effectDisplayName(method) {
+  if (method === 'melt') return 'Melt';
+  if (method === 'loop') return 'Loop Release';
+  return 'Reset Pulse';
+}
+
 function effectEligibilityError(method, label, eligibility) {
-  const effects = method === 'melt' ? 'Melt' : 'Loop';
+  const effects = effectDisplayName(method);
   if (eligibility.error) return `${effects} could not inspect clip ${label}: ${eligibility.error}`;
   if (eligibility.bSliceCount || eligibility.compositionReordered) {
     const evidence = [
@@ -782,8 +798,55 @@ function prepareEffectB(inputB, parsedB, method, options = {}) {
   const repeatedSourceSamples = new Set();
   let skippedPrefix = 0;
   let skippedEmpty = 0;
+  let resetPulse = null;
 
-  const schedule = (source, copyIndex) => {
+  if (effect.method === 'reset-pulse') {
+    const settings = resolveClassicMoshSettings(track, firstIdr.sampleIndex, options);
+    if (settings.durationFrames < 1) throw new Mp4Error('Reset Pulse needs a non-empty Classic Mosh duration window.');
+    if (effect.resetInterval >= settings.durationFrames) {
+      throw new Mp4Error(`Reset interval ${effect.resetInterval} must be smaller than the ${settings.durationFrames}-frame Reset Pulse duration.`);
+    }
+    const boundarySample = track.samples[firstIdr.sampleIndex];
+    const boundarySource = {
+      ...sourceByIndex.get(firstIdr.sampleIndex),
+      data: inputB.subarray(boundarySample.offset, boundarySample.offset + boundarySample.size),
+      retainedNals: bySample.get(firstIdr.sampleIndex) ?? [],
+      idr: true,
+    };
+    const donorPool = sourceSamples.filter(source => source.sample.index > firstIdr.sampleIndex
+      && source.picture && !source.idr && source.data);
+    const intervals = [];
+    for (let outputStart = 0; outputStart < settings.durationFrames; outputStart += effect.resetInterval) {
+      const outputEnd = Math.min(settings.durationFrames, outputStart + effect.resetInterval);
+      const donorSources = [];
+      for (let position = outputStart + 1; position < outputEnd; position += 1) {
+        const k = position - outputStart;
+        const donorOrdinal = Math.floor((k - 1) / effect.repeat);
+        const donor = donorPool[donorOrdinal];
+        if (!donor) {
+          throw new Mp4Error(`Reset Pulse interval ${intervals.length + 1} needs donor sample ${firstIdr.sampleIndex + 1 + donorOrdinal}, but clip B has only ${donorPool.length} non-IDR donors.`);
+        }
+        donorSources.push(donor);
+      }
+      intervals.push({intervalIndex: intervals.length, outputStart, outputEnd, donorSources});
+    }
+    const tailStartSample = firstIdr.sampleIndex + settings.durationFrames + 1;
+    const tailSources = sourceSamples.filter(source => source.sample.index >= tailStartSample && source.data);
+    resetPulse = {
+      settings,
+      boundarySource,
+      donorPool,
+      intervals,
+      tailStartSample,
+      tailSources,
+      restoreAtTail: settings.ending === 'restore' && tailStartSample < track.samples.length,
+      resetPositions: [],
+      intervalReports: [],
+      tailResetPosition: null,
+    };
+  }
+
+  const schedule = (source, copyIndex, extra = {}) => {
     if (!source.data) return false;
     scheduled.push({
       sourceSampleIndex: source.sample.index,
@@ -793,6 +856,7 @@ function prepareEffectB(inputB, parsedB, method, options = {}) {
       compositionOffset: source.compositionOffset,
       retainedNals: source.retainedNals,
       isIdr: source.idr,
+      ...extra,
     });
     return true;
   };
@@ -807,6 +871,36 @@ function prepareEffectB(inputB, parsedB, method, options = {}) {
       occurrences.set(source.sample.index, occurrence + 1);
       if (occurrence > 0) repeatedSourceSamples.add(source.sample.index);
     }
+    skippedPrefix = 1;
+    skippedEmpty = sourceSamples.filter(source => source.sample.index > firstIdr.sampleIndex && !source.data).length;
+  } else if (effect.method === 'reset-pulse') {
+    for (const interval of resetPulse.intervals) {
+      const resetPosition = scheduled.length;
+      resetPulse.resetPositions.push(resetPosition);
+      schedule(resetPulse.boundarySource, interval.intervalIndex, {reInsertedIdr: true});
+      const occurrences = new Map();
+      const donorSamples = [];
+      for (const donor of interval.donorSources) {
+        const occurrence = occurrences.get(donor.sample.index) ?? 0;
+        schedule(donor, occurrence);
+        occurrences.set(donor.sample.index, occurrence + 1);
+        donorSamples.push(donor.sample.index);
+        if (occurrence > 0) repeatedSourceSamples.add(donor.sample.index);
+      }
+      resetPulse.intervalReports.push({
+        intervalIndex: interval.intervalIndex,
+        outputStart: interval.outputStart,
+        outputEnd: interval.outputEnd,
+        resetPosition,
+        donorSamples,
+        patchedSamples: donorSamples.length,
+      });
+    }
+    if (resetPulse.restoreAtTail) {
+      resetPulse.tailResetPosition = scheduled.length;
+      schedule(resetPulse.boundarySource, -1, {reInsertedIdr: true, tailReset: true});
+    }
+    for (const source of resetPulse.tailSources) schedule(source, 0);
     skippedPrefix = 1;
     skippedEmpty = sourceSamples.filter(source => source.sample.index > firstIdr.sampleIndex && !source.data).length;
   } else {
@@ -835,20 +929,47 @@ function prepareEffectB(inputB, parsedB, method, options = {}) {
   }
 
   const pictureSamples = scheduled.filter(sample => sample.retainedNals.some(nal => nal.type === 1 || nal.type === IDR_NAL_TYPE)).length;
+  const idrSamples = [...new Set(nals.filter(nal => nal.type === IDR_NAL_TYPE).map(nal => nal.sampleIndex))].sort((a, b) => a - b);
+  const originalScheduled = new Set(scheduled.filter(sample => !sample.reInsertedIdr).map(sample => sample.sourceSampleIndex));
+  const reInsertedIdrPositions = resetPulse
+    ? [...resetPulse.resetPositions, ...(resetPulse.tailResetPosition === null ? [] : [resetPulse.tailResetPosition])]
+    : [];
   return {
     method: effect.method,
     effect,
     firstIdrSample: firstIdr.sampleIndex,
-    idrSamples: [...new Set(nals.filter(nal => nal.type === IDR_NAL_TYPE).map(nal => nal.sampleIndex))].sort((a, b) => a - b),
+    idrSamples,
     skippedPrefix,
     skippedEmpty,
     removedCounts,
-    removedIdrSamples: [firstIdr.sampleIndex],
-    laterIdrCount: scheduled.reduce((total, sample) => total + sample.retainedNals.filter(nal => nal.type === IDR_NAL_TYPE).length, 0),
+    removedIdrSamples: resetPulse
+      ? idrSamples.filter(sampleIndex => !originalScheduled.has(sampleIndex))
+      : [firstIdr.sampleIndex],
+    reInsertedIdrPositions,
+    laterIdrCount: scheduled.reduce((total, sample) => total
+      + (sample.reInsertedIdr ? 0 : sample.retainedNals.filter(nal => nal.type === IDR_NAL_TYPE).length), 0),
     pictureSamples,
     loopWindow,
     loopSecondWindow,
     loopSchedule,
+    resetPulse: resetPulse ? {
+      resetInterval: effect.resetInterval,
+      repeat: effect.repeat,
+      durationFrames: resetPulse.settings.durationFrames,
+      requestedDurationFrames: resetPulse.settings.requestedFrames,
+      maximumDurationFrames: resetPulse.settings.maximumFrames,
+      ending: resetPulse.settings.ending,
+      clamped: resetPulse.settings.clamped,
+      resetOutputPositions: resetPulse.resetPositions,
+      intervals: resetPulse.intervalReports,
+      tail: {
+        outputStart: resetPulse.settings.durationFrames,
+        donorStartSample: resetPulse.tailSources[0]?.sample.index ?? null,
+        restoreResetPosition: resetPulse.tailResetPosition,
+      },
+      donorPoolSize: resetPulse.donorPool.length,
+      patchCounts: resetPulse.intervalReports.map(interval => interval.patchedSamples),
+    } : null,
     repeatedSourceSamples: [...repeatedSourceSamples].sort((a, b) => a - b),
     samples: scheduled,
   };
@@ -876,15 +997,15 @@ function renumberEffectSamples(inputA, parsedA, inputB, parsedB, preparedB) {
   const bSps = bConfig.sps.length ? parseSps(bConfig.sps[0]) : null;
   const aConfig = parseAvcConfig(inputA, parsedA.videoTrack.avcC);
   const aSps = aConfig.sps.length ? parseSps(aConfig.sps[0]) : null;
-  if (!bSps || !aSps) throw new Mp4Error('Melt/Loop require SPS data for both clips');
+  if (!bSps || !aSps) throw new Mp4Error('Timeline effects require SPS data for both clips');
   if (aSps.log2MaxFrameNum !== bSps.log2MaxFrameNum) {
-    throw new Mp4Error(`Melt/Loop requires matching log2_max_frame_num (${aSps.log2MaxFrameNum} ≠ ${bSps.log2MaxFrameNum}).`);
+    throw new Mp4Error(`Timeline effects require matching log2_max_frame_num (${aSps.log2MaxFrameNum} ≠ ${bSps.log2MaxFrameNum}).`);
   }
   if (aSps.picOrderCntType !== bSps.picOrderCntType) {
-    throw new Mp4Error(`Melt/Loop cannot combine pic_order_cnt_type ${aSps.picOrderCntType} with ${bSps.picOrderCntType}.`);
+    throw new Mp4Error(`Timeline effects cannot combine pic_order_cnt_type ${aSps.picOrderCntType} with ${bSps.picOrderCntType}.`);
   }
   if (bSps.picOrderCntType === 0 && aSps.log2MaxPicOrderCntLsb !== bSps.log2MaxPicOrderCntLsb) {
-    throw new Mp4Error(`Melt/Loop requires matching log2_max_pic_order_cnt_lsb (${aSps.log2MaxPicOrderCntLsb} ≠ ${bSps.log2MaxPicOrderCntLsb}).`);
+    throw new Mp4Error(`Timeline effects require matching log2_max_pic_order_cnt_lsb (${aSps.log2MaxPicOrderCntLsb} ≠ ${bSps.log2MaxPicOrderCntLsb}).`);
   }
 
   const lastA = readLastPictureState(inputA, parsedA, bSps);
@@ -897,15 +1018,37 @@ function renumberEffectSamples(inputA, parsedA, inputB, parsedB, preparedB) {
   let patchedSamples = 0;
   let patchedNals = 0;
   let gopResets = 0;
+  let patchedIdrNals = 0;
+  const resetPositions = [];
+  const segments = [];
+  let segment = null;
 
-  for (const sample of preparedB.samples) {
+  for (let outputIndex = 0; outputIndex < preparedB.samples.length; outputIndex += 1) {
+    const sample = preparedB.samples[outputIndex];
     if (sample.isIdr) {
       gopResets += 1;
+      resetPositions.push(outputIndex);
       frameNumber = 1;
       if (bSps.picOrderCntType === 0) {
         const previousPicOrderCntLsb = (picOrderCntLsb + pocModulo - 1) % pocModulo;
         picOrderCntLsb = previousPicOrderCntLsb === 0 ? 2 : 1;
+        if (preparedB.method === 'reset-pulse' && !sample.reInsertedIdr) {
+          const patchedIdr = patchIdrPictureOrderCount(sample.data, parsedB.videoTrack.lengthSize, bSps.log2MaxFrameNum, bSps.log2MaxPicOrderCntLsb);
+          sample.data = patchedIdr.data;
+          patchedIdrNals += patchedIdr.patchedNals;
+        }
       }
+      segment = {
+        outputStart: outputIndex,
+        reInsertedIdr: sample.reInsertedIdr === true,
+        firstFrameNumber: 1,
+        firstPicOrderCntLsb: bSps.picOrderCntType === 0 ? picOrderCntLsb : null,
+        lastFrameNumber: 1,
+        lastPicOrderCntLsb: bSps.picOrderCntType === 0 ? picOrderCntLsb : null,
+        patchedSamples: 0,
+        patchedNals: 0,
+      };
+      segments.push(segment);
       continue;
     }
     if (!sample.retainedNals.some(nal => nal.type === 1)) continue;
@@ -919,15 +1062,21 @@ function renumberEffectSamples(inputA, parsedA, inputB, parsedB, preparedB) {
         log2MaxPicOrderCntLsb: bSps.log2MaxPicOrderCntLsb,
       } : null,
     );
-    if (patched.patchedNals === 0) throw new Mp4Error('Melt/Loop scheduled a sample without a patchable non-IDR slice');
+    if (patched.patchedNals === 0) throw new Mp4Error('A timeline effect scheduled a sample without a patchable non-IDR slice');
     sample.data = patched.data;
     patchedSamples += 1;
     patchedNals += patched.patchedNals;
+    if (segment) {
+      segment.patchedSamples += 1;
+      segment.patchedNals += patched.patchedNals;
+      segment.lastFrameNumber = frameNumber;
+      segment.lastPicOrderCntLsb = bSps.picOrderCntType === 0 ? picOrderCntLsb : null;
+    }
     frameNumber = (frameNumber + 1) % frameModulo;
     if (bSps.picOrderCntType === 0) picOrderCntLsb = (picOrderCntLsb + 1) % pocModulo;
   }
 
-  if (patchedSamples === 0) throw new Mp4Error('Melt/Loop scheduled no non-IDR samples to renumber');
+  if (patchedSamples === 0) throw new Mp4Error('A timeline effect scheduled no non-IDR samples to renumber');
   return {
     applied: true,
     method: preparedB.method,
@@ -936,7 +1085,10 @@ function renumberEffectSamples(inputA, parsedA, inputB, parsedB, preparedB) {
     firstEmittedPicOrderCntLsb: firstPicOrderCntLsb,
     patchedSamples,
     patchedNals,
+    patchedIdrNals,
     gopResets,
+    resetPositions,
+    segments,
     log2MaxFrameNum: bSps.log2MaxFrameNum,
     picOrderCntType: bSps.picOrderCntType,
     pictureOrderCountPatch: bSps.picOrderCntType === 0 ? {
@@ -993,6 +1145,43 @@ function writeLengthPrefix(length, width) {
     view.setUint16(1, length & 0xffff);
   } else view.setUint32(0, length);
   return output;
+}
+
+function patchIdrPictureOrderCount(sampleData, lengthSize, log2MaxFrameNum, log2MaxPicOrderCntLsb) {
+  const view = new DataView(sampleData.buffer, sampleData.byteOffset, sampleData.byteLength);
+  const parts = [];
+  let patchedNals = 0;
+  let offset = 0;
+  while (offset < sampleData.byteLength) {
+    if (offset + lengthSize > sampleData.byteLength) throw new Mp4Error('Encoded sample has a truncated NAL length prefix');
+    const length = lengthSize === 1 ? view.getUint8(offset)
+      : lengthSize === 2 ? view.getUint16(offset)
+        : lengthSize === 3 ? ((view.getUint8(offset) << 16) | view.getUint16(offset + 1))
+          : view.getUint32(offset);
+    const start = offset + lengthSize;
+    const end = start + length;
+    if (length === 0 || end > sampleData.byteLength) throw new Mp4Error('Encoded sample contains an invalid NAL length');
+    const nal = sampleData.subarray(start, end);
+    let patched = nal;
+    if ((nal[0] & 0x1f) === IDR_NAL_TYPE) {
+      const state = sliceHeaderState(nal);
+      state.bits.readBits(log2MaxFrameNum);
+      state.bits.readUnsignedExpGolomb();
+      const position = state.bits.bit;
+      if (position + log2MaxPicOrderCntLsb > state.rbsp.byteLength * 8) {
+        throw new Mp4Error('H.264 IDR slice is too short to patch pic_order_cnt_lsb');
+      }
+      writeFixedBits(state.rbsp, position, log2MaxPicOrderCntLsb, 0);
+      const escaped = escapeRbsp(state.rbsp);
+      patched = new Uint8Array(escaped.byteLength + 1);
+      patched[0] = nal[0];
+      patched.set(escaped, 1);
+      patchedNals += 1;
+    }
+    parts.push(writeLengthPrefix(patched.byteLength, lengthSize), patched);
+    offset = end;
+  }
+  return {data: concatBytes(parts), patchedNals};
 }
 
 function patchSampleFrameNumber(sampleData, lengthSize, log2MaxFrameNum, frameNumber, pictureOrderCount = null) {
@@ -1185,7 +1374,7 @@ export async function mergeMoshH264(inputA, inputB, parsedA = parseMp4(inputA), 
 export async function mergeEffectH264(inputA, inputB, parsedA = parseMp4(inputA), parsedB = parseMp4(inputB), options = {}) {
   if (!(inputA instanceof Uint8Array) || !(inputB instanceof Uint8Array)) throw new TypeError('mergeEffectH264 expects two Uint8Array clips');
   const method = options.method ?? options.effect;
-  if (method !== 'melt' && method !== 'loop') throw new TypeError('mergeEffectH264 expects method "melt" or "loop"');
+  if (!['melt', 'loop', 'reset-pulse'].includes(method)) throw new TypeError('mergeEffectH264 expects method "melt", "loop", or "reset-pulse"');
   const compatibility = await checkCompatibility(inputA, inputB, parsedA, parsedB);
   if (!compatibility.compatible) throw new CompatibilityError(compatibility);
   if (!parsedA.mvhd || !parsedA.videoTrack.tkhd || !parsedA.videoTrack.mdhd) throw new Mp4Error('Clip A is missing required duration metadata');
@@ -1211,6 +1400,24 @@ export async function mergeEffectH264(inputA, inputB, parsedA = parseMp4(inputA)
   const firstSampleNals = outputNals.filter(nal => nal.sampleIndex === 0);
   const leadingIdrNalCount = firstSampleNals.filter(nal => nal.type === IDR_NAL_TYPE).length;
   const leadingIdrSampleCount = leadingIdrNalCount > 0 ? 1 : 0;
+  const mergedResetPulse = preparedB.resetPulse ? {
+    ...preparedB.resetPulse,
+    resetOutputPositions: preparedB.resetPulse.resetOutputPositions.map(position => aSamples.length + position),
+    intervals: preparedB.resetPulse.intervals.map(interval => ({
+      ...interval,
+      resetPosition: aSamples.length + interval.resetPosition,
+    })),
+    tail: {
+      ...preparedB.resetPulse.tail,
+      outputStart: aSamples.length + preparedB.resetPulse.tail.outputStart,
+      restoreResetPosition: preparedB.resetPulse.tail.restoreResetPosition === null
+        ? null
+        : aSamples.length + preparedB.resetPulse.tail.restoreResetPosition,
+    },
+  } : null;
+  const mergedReInsertedPositions = preparedB.resetPulse
+    ? preparedB.reInsertedIdrPositions.map(position => aSamples.length + position)
+    : preparedB.reInsertedIdrPositions;
 
   return {
     output,
@@ -1223,6 +1430,7 @@ export async function mergeEffectH264(inputA, inputB, parsedA = parseMp4(inputA)
         loopWindow: preparedB.loopWindow,
         loopSecondWindow: preparedB.loopSecondWindow,
         loopSchedule: preparedB.loopSchedule,
+        resetPulse: preparedB.resetPulse,
         repeatedSourceSamples: preparedB.repeatedSourceSamples,
         scheduledSourceSamples: preparedB.samples.map(sample => sample.sourceSampleIndex),
       },
@@ -1242,6 +1450,13 @@ export async function mergeEffectH264(inputA, inputB, parsedA = parseMp4(inputA)
       bRemovedIdrSamples: preparedB.removedIdrSamples,
       bPictureSamples: preparedB.pictureSamples,
       bIdrCountRemaining: preparedB.laterIdrCount,
+      reInsertedIdrPositions: mergedReInsertedPositions,
+      resetPulse: mergedResetPulse ? {
+        ...mergedResetPulse,
+        patchedSamples: frameAlignment.patchedSamples,
+        patchedNals: frameAlignment.patchedNals,
+        patchedIdrNals: frameAlignment.patchedIdrNals,
+      } : null,
       mergedSamples: sampleParts.length,
       mergedDurationUnits: mergedDuration,
       mergedDurationSeconds: mergedDuration / parsedA.videoTrack.mdhd.timescale,
@@ -1350,9 +1565,10 @@ export async function mergeSequenceH264(clips, methods = []) {
       ending: value.ending ?? 'restore',
       repeat: value.repeat,
       loopFrames: value.loopFrames ?? value.loop_frames,
+      resetInterval: value.resetInterval ?? value.reset_interval,
     };
   });
-  if (transitions.some(transition => transition === null)) throw new TypeError('Transition methods must be cut, classic-mosh, melt, or loop');
+  if (transitions.some(transition => transition === null)) throw new TypeError('Transition methods must be cut, classic-mosh, melt, loop, or reset-pulse');
   for (const clip of clips) {
     if (!(clip?.bytes instanceof Uint8Array)) throw new TypeError('mergeSequenceH264 clips require bytes');
   }
@@ -1375,11 +1591,15 @@ export async function mergeSequenceH264(clips, methods = []) {
     let step;
     if (method === 'cut') {
       step = await appendCutH264(currentBytes, incoming.bytes, currentParsed, incomingParsed);
-    } else if (method === 'melt' || method === 'loop') {
+    } else if (method === 'melt' || method === 'loop' || method === 'reset-pulse') {
       step = await mergeEffectH264(currentBytes, incoming.bytes, currentParsed, incomingParsed, {
         method,
         repeat: transition.repeat,
         loopFrames: transition.loopFrames,
+        resetInterval: transition.resetInterval,
+        durationFrames: transition.durationFrames,
+        durationSeconds: transition.durationSeconds,
+        ending: transition.ending,
       });
     } else {
       step = await mergeMoshH264(currentBytes, incoming.bytes, currentParsed, incomingParsed, {
@@ -1393,7 +1613,7 @@ export async function mergeSequenceH264(clips, methods = []) {
     if (method === 'classic-mosh') {
       moshBoundaries += 1;
       expectedDecodedFrames += step.report.bPictureSamples;
-    } else if (method === 'melt' || method === 'loop') {
+    } else if (method === 'melt' || method === 'loop' || method === 'reset-pulse') {
       effectBoundaries += 1;
       expectedDecodedFrames += step.report.bPictureSamples;
     } else {
@@ -1446,6 +1666,7 @@ export async function mergeSequenceH264(clips, methods = []) {
         ending: boundary.report.ending ?? null,
         clamped: boundary.report.clamped ?? false,
         effect: boundary.report.effect ?? null,
+        resetPulse: boundary.report.resetPulse ?? null,
         reInsertedIdrPositions: boundary.report.reInsertedIdrPositions ?? [],
         re_inserted_idr_positions: boundary.report.re_inserted_idr_positions ?? [],
         frameAlignment: boundary.report.frameAlignment,

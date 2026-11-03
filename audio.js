@@ -105,7 +105,7 @@ export function assembleAudioTimeline({clips, methods = [], videoSampleCounts, f
     appendSegment({
       entry: clips[index + 1],
       target,
-      dropFrames: method === 'classic-mosh' || method === 'loop' ? 1 : 0,
+      dropFrames: method === 'classic-mosh' || method === 'loop' || method === 'reset-pulse' ? 1 : 0,
       method,
       boundaryIndex: index + 1,
     });
