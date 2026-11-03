@@ -24,7 +24,12 @@ const phaseBFixtures = {
   mismatch: join(projectRoot, 'testmedia', 'synthetic-b-mismatch.mp4'),
   timescale: join(projectRoot, 'testmedia', 'synthetic-b-timescale.mp4'),
 };
+const multiGopFixtures = {
+  a: join(projectRoot, 'testmedia', 'synthetic-multigop-a.mp4'),
+  b: join(projectRoot, 'testmedia', 'synthetic-multigop-b.mp4'),
+};
 const mergedPath = join(projectRoot, 'testmedia', 'synthetic-b-merged-test-output.mp4');
+const multiGopMergedPath = join(projectRoot, 'testmedia', 'synthetic-multigop-merged-test-output.mp4');
 const normalizedMuxPath = join(projectRoot, 'testmedia', 'synthetic-webcodecs-mux-output.mp4');
 
 function command(program, args, label) {
@@ -40,7 +45,7 @@ function pass(message) {
   console.log(`PASS ${message}`);
 }
 
-const requiredFixtures = [fixturePath, ...Object.values(tierOneFixtures), ...Object.values(phaseBFixtures)];
+const requiredFixtures = [fixturePath, ...Object.values(tierOneFixtures), ...Object.values(phaseBFixtures), ...Object.values(multiGopFixtures)];
 if (requiredFixtures.some(path => !existsSync(path))) {
   console.log('One or more fixtures are missing; generating local test media with ffmpeg.');
   command('bash', ['testmedia/generate.sh'], 'fixture generation');
@@ -349,5 +354,62 @@ const streamTypes = command('ffprobe', [
 ], 'merged stream inventory');
 assert.equal(streamTypes.stdout.trim(), 'video');
 pass(`merged export decodes as H.264 320x240 with exactly ${expectedFrames} frames and no audio stream`);
+
+const multiGopAInput = new Uint8Array(readFileSync(multiGopFixtures.a));
+const multiGopBInput = new Uint8Array(readFileSync(multiGopFixtures.b));
+const multiGopAParsed = parseMp4(multiGopAInput);
+const multiGopBParsed = parseMp4(multiGopBInput);
+const multiGopBNals = extractNals(multiGopBInput, multiGopBParsed.videoTrack);
+const multiGopBIdrSamples = [...new Set(multiGopBNals.filter(nal => nal.type === 5).map(nal => nal.sampleIndex))];
+assert.equal(multiGopAParsed.videoTrack.samples.length, 25);
+assert.equal(multiGopBParsed.videoTrack.samples.length, 75);
+assert.deepEqual(multiGopBIdrSamples, [0, 25, 50]);
+
+const multiGopCompatibility = await checkCompatibility(multiGopAInput, multiGopBInput, multiGopAParsed, multiGopBParsed);
+assert.equal(multiGopCompatibility.compatible, true);
+const multiGopMerge = await mergeMoshH264(multiGopAInput, multiGopBInput, multiGopAParsed, multiGopBParsed);
+assert.equal(multiGopMerge.report.bSamplesKept, 74);
+assert.equal(multiGopMerge.report.bSkippedEmptySamples, 0);
+assert.equal(multiGopMerge.report.bRemovedNals.idr, 1);
+assert.equal(multiGopMerge.report.bIdrCountRemaining, 2);
+assert.deepEqual(multiGopMerge.report.bIdrSamples, [0, 25, 50]);
+assert.equal(multiGopMerge.report.frameAlignment.applied, true);
+assert.equal(multiGopMerge.report.frameAlignment.patchedSamples, 24);
+assert.equal(multiGopMerge.report.frameAlignment.patchedNals, 24);
+assert.match(multiGopMerge.report.frameAlignment.emulationPrevention, /unescaped.*re-escaped/i);
+assert.equal(multiGopMerge.report.mergedSamples, multiGopAParsed.videoTrack.samples.length + multiGopBParsed.videoTrack.samples.length - 1);
+assert.equal(multiGopMerge.report.startsWithSingleIdr, true);
+
+const multiGopMergedParsed = parseMp4(multiGopMerge.output);
+const multiGopMergedNals = extractNals(multiGopMerge.output, multiGopMergedParsed.videoTrack);
+const multiGopMergedIdrSamples = [...new Set(multiGopMergedNals.filter(nal => nal.type === 5).map(nal => nal.sampleIndex))];
+assert.deepEqual(multiGopMergedIdrSamples, [0, 49, 74]);
+const sourceBIdrsAfterFirst = multiGopBNals.filter(nal => nal.type === 5 && nal.sampleIndex > 0);
+const mergedBIdrs = multiGopMergedNals.filter(nal => nal.type === 5 && nal.sampleIndex > 0);
+assert.equal(mergedBIdrs.length, sourceBIdrsAfterFirst.length);
+for (let i = 0; i < sourceBIdrsAfterFirst.length; i += 1) {
+  assert.deepEqual(mergedBIdrs[i].data, sourceBIdrsAfterFirst[i].data, `Later B IDR ${i} bytes changed`);
+}
+
+const multiGopStszSum = multiGopMergedParsed.videoTrack.sampleSizes.sizes.reduce((total, value) => total + value, 0);
+const multiGopMdatLength = multiGopMergedParsed.mdatRanges.reduce((total, box) => total + box.payloadEnd - box.payloadStart, 0);
+assert.equal(multiGopStszSum, multiGopMdatLength);
+assert.ok(multiGopMergedParsed.videoTrack.samples.every((sample, index, samples) => index === 0 || sample.offset > samples[index - 1].offset));
+assert.equal(multiGopMergedParsed.videoTrack.stts.durations.reduce((total, value) => total + value, 0), multiGopMergedParsed.videoTrack.mdhd.duration);
+pass('Multi-GOP B keeps two later IDR anchors, patches the first 24 B sample headers, and emits 99 samples with EP-safe frame_num handling');
+
+writeFileSync(multiGopMergedPath, multiGopMerge.output);
+const multiGopProbe = command('ffprobe', [
+  '-v', 'error', '-select_streams', 'v:0', '-count_frames',
+  '-show_entries', 'stream=codec_name,width,height,nb_read_frames,has_b_frames',
+  '-of', 'default=noprint_wrappers=1', multiGopMergedPath,
+], 'multi-GOP merged-file decode probe');
+const multiGopDecodedFrames = Number(/nb_read_frames=(\d+)/.exec(multiGopProbe.stdout)?.[1] ?? 0);
+assert.equal(multiGopDecodedFrames, multiGopAParsed.videoTrack.samples.length + multiGopBParsed.videoTrack.samples.length - 1);
+const multiGopKeyFrames = command('ffprobe', [
+  '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'frame=key_frame', '-of', 'csv=p=0', multiGopMergedPath,
+], 'multi-GOP keyframe inventory').stdout.split(/\s+/).filter(value => value.startsWith('1')).length;
+assert.equal(multiGopKeyFrames, 3);
+pass(`Multi-GOP merged export decodes all ${multiGopDecodedFrames} frames with three keyframe anchors (A plus two retained B IDRs)`);
 
 console.log(`All tests passed. Phase A: ${input.byteLength} B → ${result.output.byteLength} B; Phase B: ${phaseAInput.byteLength} B + ${phaseBInput.byteLength} B → ${mergeResult.output.byteLength} B.`);

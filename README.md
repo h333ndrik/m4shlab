@@ -50,7 +50,7 @@ Native Tier-1 clips may contain B-frames; their `ctts` composition offsets are p
 2. Decode the source in sample order, draw each frame into one common even-sized canvas, and letterbox without changing aspect ratio.
 3. Convert the canvas to explicit BT.709 limited-range I420 and encode H.264 with a keyframe every 30 frames, starting at frame 0. The output is video-only.
 4. Mux encoded chunks into `ftyp`/`moov`/`mdat` faststart MP4 with `stts`, `stss`, `stsc`, `stsz`, and `stco`/`co64`.
-5. Align B's non-key H.264 `frame_num` values to its absolute merged timestamp position. Without this, a decoder can discard most of B after the removed IDR because separately encoded clips both start at frame number zero.
+5. Align B's first-GOP non-key H.264 `frame_num` values so they continue after A. Without this, a decoder can discard early B frames after the removed IDR because separately encoded clips both start at frame number zero. Later B GOPs keep their local numbering and recover at their retained IDRs.
 6. Validate that the normalized output parses, starts with one IDR, and contains no IDR in a delta chunk before running the unchanged Phase B merge.
 
 ### Phase A: single-clip Classic Mosh
@@ -67,9 +67,11 @@ Native Tier-1 clips may contain B-frames; their `ctts` composition offsets are p
 
 1. Parses SPS and PPS from each `avcC` and compares the payload bytes. It also parses profile, constraints, level, chroma format, bit depth, and coded resolution from SPS.
 2. Requires matching resolution, profile, level, chroma, bit depth, NAL length size, PPS, and video `mdhd` timescale. A differing SPS is accepted only when those core fields match; the report marks it as a warning and the merge uses A's parameters.
-3. Keeps A's sample description, samples, and timing as the base. It skips B's initial IDR sample and removes B's SPS, PPS, SEI, and later IDR units.
-4. Appends B's remaining slice data byte-for-byte and rebuilds the video sample tables, composition offsets, chunk offsets, and container durations.
-5. Reports every compatibility criterion, the removed B units, output duration, sample counts, and the single leading IDR. Incompatible pairs are blocked loudly instead of producing a broken file.
+3. Keeps A's sample description, samples, and timing as the base. It skips B's initial IDR sample and removes SPS/PPS/SEI units from later samples, but preserves B's later IDR samples as reference anchors.
+4. For a multi-GOP B whose first frame after the removed IDR cannot continue A's `frame_num`, it parses the first B-GOP slice headers and patches `frame_num` modulo `2^log2_max_frame_num`. This alignment requires `pic_order_cnt_type=2`, so it applies to the no-reordering conversion path rather than arbitrary B-frame streams.
+5. The patcher unescapes emulation-prevention bytes to RBSP, changes the fixed-width `frame_num` bits, then regenerates the EBSP. It therefore remains safe if the original or patched bits span positions where an emulation-prevention byte was present.
+6. Appends B's remaining crop of samples and rebuilds the video sample tables, composition offsets, chunk offsets, and container durations. Later B IDRs reset `frame_num` normally and need no patch.
+7. Reports every compatibility criterion, the removed B units, output duration, sample counts, retained B IDRs, the frame-number patch, and the single leading IDR. Incompatible pairs are blocked loudly instead of producing a broken file.
 
 The **A cut** preview is the untouched input A. The merged export is video-only in Phase B.
 
@@ -88,6 +90,7 @@ npm run test:webcodecs
 - matching 1-second 320×240 A/B clips with identical High-profile settings and timescale;
 - a 256×240 resolution mismatch;
 - a 320×240 clip with a different `mdhd` timescale;
+- a matching 25-frame A plus 75-frame multi-GOP B with B IDRs at samples 0, 25, and 50;
 - a QuickTime H.264 MOV with a `wide` placeholder;
 - HEVC MOV fixtures, including a different-resolution pair;
 - a fragmented MP4.
@@ -100,7 +103,8 @@ The tests assert:
 - the merged NAL sequence is A plus B after its first IDR;
 - every retained merge NAL is byte-identical to its source;
 - `stsz` sum equals mdat content, sample offsets are monotonic, and timing/durations agree;
-- the merged stream starts with one IDR and retains no B IDR;
+- the merged stream starts with exactly one IDR and retains B's later IDR anchors;
+- a multi-GOP B keeps its later IDR anchors, aligns the first B GOP with a safe RBSP/EBSP frame-number patch, and decodes as many frames as its sample table declares;
 - Cut is byte-identical to A;
 - both exports decode with `ffprobe`;
 - the truncated Phase A file is rejected;
@@ -109,7 +113,7 @@ The tests assert:
 - the WebCodecs muxer's `stsz`/`mdat` sizes, sample offsets, `stss`, and `stts` duration agree;
 - normalization chooses one identical even target from differently sized pair members.
 
-Current local results (2026-11-03, Node 26.13.0, FFmpeg 9.0.2, Google Chrome 156): all 25 Node checks pass. Phase A removes 11,468 bytes and decodes 73 frames. Phase B merges 25 A samples plus 24 retained B samples, decodes 49 frames, and produces the same 67,893-byte export. The WebCodecs muxer test emits 8 samples with a 14,984-byte mdat payload and 4,096 duration units. Tier-1 fixtures additionally verify a QuickTime H.264 MOV (25 samples / 26 NALs), a size-zero mdat, standalone `wide`, a 64-bit mdat, the exact HEVC error, and the exact fragmented-MP4 error.
+Current local results (2026-11-03, Node 26.13.0, FFmpeg 9.0.2, Google Chrome 156): all 27 Node checks pass. Phase A removes 11,468 bytes and decodes 73 frames. Phase B merges 25 A samples plus 24 retained B samples, decodes 49 frames, and produces the same 67,893-byte export. The multi-GOP regression merges 25 A + 75 B samples, retains two later B IDRs, patches 24 first-GOP slice headers, and decodes all 99 expected frames with three keyframes. The WebCodecs muxer test emits 8 samples with a 14,984-byte mdat payload and 4,096 duration units. Tier-1 fixtures additionally verify a QuickTime H.264 MOV (25 samples / 26 NALs), a size-zero mdat, standalone `wide`, a 64-bit mdat, the exact HEVC error, and the exact fragmented-MP4 error.
 
 The browser conversion run loaded two HEVC MOVs (320×240 and 256×240), normalized both to H.264 High profile at 320×240 / 30 fps / 15,360 timescale, merged 59 samples into a 1.97-second video-only file, and downloaded a 65,228-byte MP4. A VP9 WebM also converted and merged successfully with an HEVC MOV. Chrome played the merged Blob without a media error. Probe results: H.264, 320×240, 30/1 fps, `has_b_frames=0`, 47 decodable frames after the intended IDR removal; strict FFmpeg decode exited 0. The report marked both sources as Tier 2 `converted via ffmpeg.wasm`.
 
@@ -117,7 +121,7 @@ The browser conversion run loaded two HEVC MOVs (320×240 and 256×240), normali
 
 ```text
 PASS WebCodecs decoded and normalized both clips with one leading IDR each; 53018 B / 52775 B
-PASS WebCodecs emitted keyframes at samples 1, 31, and 61 for a 75-frame clip (30-frame closed GOP)
+PASS WebCodecs emitted keyframes at samples 1, 31, and 61; the multi-GOP merge retained two later IDRs and decoded all 149 frames
 PASS WebCodecs pair merged in the browser: 49 samples, one leading IDR, preview 320x240
 PASS merged export decodes: 49 frames, H.264 320x240 yuv420p/tv, SHA-256 b4bb6c4827b2f7a8fe6d93777ff63f4491dd0b8eb497148dd3b2d07da1666bef
 PASS WebCodecs stubbed unavailable: ffmpeg.wasm fallback ran and the report identifies it
@@ -135,13 +139,13 @@ Phase A and Phase B edit H.264 NAL units without blending frames. Phase C decode
 
 The effect depends on the source GOP structure. Decode behavior is device-dependent: some sources may refuse to play after IDR removal, show black frames, or hold the last decodable frame, especially when seeking directly into a modified GOP. Different browsers and hardware decoders can show different results. This is expected behavior, not a bug.
 
-Phase A handles a single H.264 video track in a conventional (non-fragmented) MP4. Interleaved audio sample offsets are adjusted when present.
+Phase A handles a single H.264 video track in a conventional (non-fragmented) MP4. Interleaved audio sample offsets are adjusted when present. On multi-GOP sources, removing later IDRs can make the decoder discard dependent pictures, so the decoded frame count can be lower than the MP4 sample/packet count; that is the intended mosh behavior, not a parse failure.
 
 WebCodecs availability does not guarantee hardware acceleration, a particular profile, or support at every resolution; the browser chooses the implementation. If its H.264 decoder/encoder configuration, I420 frame construction, or frame-number alignment is unsupported, the app falls back to ffmpeg.wasm. Current normalizing support is limited to natively parsed H.264 sources because the demuxer is H.264-only; HEVC and other codecs go directly to ffmpeg.wasm.
 
 The ffmpeg.wasm fallback depends on downloading the pinned core from jsDelivr. It is slow on large files, may exhaust wasm memory, and can still fail on iOS Safari with very large inputs. The 100 MB limit is a soft product limit for both paths, not a guarantee that a file below it will fit available device memory. No conversion is attempted for encrypted media.
 
-Phase B's direct merge supports compatible pairs only. Resolution, profile, level, chroma, bit depth, PPS, and video timescale must match; differing SPS payloads require equivalent parsed core fields. Phase C can normalize native H.264 mismatches to a common target first. The merged A→B export still has no audio; audio is not part of this phase. Normalized clips also drop audio before moshing. If B contains repeated GOPs, their later IDR/parameter/SEI units are removed and any sample left empty is skipped, so B's emitted sample count can be lower than the simple one-IDR fixture case. WebCodecs normalization is also video-only and intentionally removes B-frames; it is not a general-purpose transcoder.
+Phase B's direct merge supports compatible pairs only. Resolution, profile, level, chroma, bit depth, PPS, and video timescale must match; differing SPS payloads require equivalent parsed core fields. Phase C can normalize native H.264 mismatches to a common target first. The merged A→B export still has no audio; audio is not part of this phase. Normalized clips also drop audio before moshing. Multi-GOP B is supported: the mosh targets B's first GOP, then the retained B IDRs act as clean recovery anchors, so later B GOPs should play normally after the intended boundary corruption. Frame-number alignment currently requires `pic_order_cnt_type=2`; other reordered multi-GOP streams fail explicitly instead of silently producing a short decode. WebCodecs normalization is video-only and intentionally removes B-frames; it is not a general-purpose transcoder.
 
 Native parsing is not HEVC, fragmented-MP4, encrypted-media, or multi-video-track capable; those unsupported local files must go through Tier 2 conversion where applicable.
 

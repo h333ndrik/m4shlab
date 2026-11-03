@@ -288,8 +288,10 @@ function alignFrameNumbers(chunks, description, frameNumberBase) {
   if (sps.picOrderCntType !== 2) {
     throw new WebCodecsError('The browser encoder emitted picture-order counts that cannot be aligned across clips. ffmpeg.wasm fallback is required.');
   }
+  const nextKeyframe = chunks.findIndex((chunk, index) => index > 0 && chunk.key);
+  const firstGopEnd = nextKeyframe === -1 ? chunks.length : nextKeyframe;
   let patched = 0;
-  for (let index = 0; index < chunks.length; index += 1) {
+  for (let index = 1; index < firstGopEnd; index += 1) {
     if (chunks[index].key) continue;
     chunks[index] = {
       ...chunks[index],

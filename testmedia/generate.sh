@@ -31,6 +31,25 @@ encode synthetic-b-b.mp4 320x240 1 "testsrc2=size=320x240:rate=25,hue=h=90"
 encode synthetic-b-mismatch.mp4 256x240 1 "testsrc2=size=256x240:rate=25"
 encode synthetic-b-timescale.mp4 320x240 1 "testsrc2=size=320x240:rate=25,hue=h=180" 25600
 
+encode_multigop() {
+  local output="$1"
+  local size="$2"
+  local seconds="$3"
+  local source="$4"
+  ffmpeg -hide_banner -loglevel error -y \
+    -f lavfi -i "$source" \
+    -t "$seconds" \
+    -c:v libx264 -preset medium -profile:v high -pix_fmt yuv420p \
+    -g 25 -keyint_min 25 -sc_threshold 0 -bf 0 \
+    -video_track_timescale 12800 \
+    -movflags +faststart -an \
+    "$root/testmedia/$output"
+  printf 'Generated %s\n' "$root/testmedia/$output"
+}
+
+encode_multigop synthetic-multigop-a.mp4 320x240 1 "testsrc2=size=320x240:rate=25"
+encode_multigop synthetic-multigop-b.mp4 320x240 3 "testsrc2=size=320x240:rate=25,hue=h=90"
+
 ffmpeg -hide_banner -loglevel error -y \
   -f lavfi -i "testsrc2=size=320x240:rate=25" \
   -t 1 \

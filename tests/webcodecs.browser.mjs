@@ -19,6 +19,7 @@ const normalizedPaths = {
 };
 const downloadDir = join(projectRoot, 'testmedia', 'webcodecs-browser-downloads');
 const mergedPath = join(downloadDir, 'm4shlab-merge.mp4');
+const multiGopMergedPath = join(projectRoot, 'testmedia', 'webcodecs-browser-multigop-merged.mp4');
 const chromeCandidates = [
   process.env.CHROME_BIN,
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -248,14 +249,35 @@ try {
 
   const longGop = await client.evaluate(`(async () => {
     const {normalizeWithWebCodecs} = await import('./webcodecs.js');
+    const {mergeMoshH264} = await import('./merge.js');
     const input = new Uint8Array(await (await fetch('/testmedia/synthetic-h264.mp4')).arrayBuffer());
-    const result = await normalizeWithWebCodecs(input, {target: {width: 320, height: 240}});
-    return {samples: result.outputSamples, keyframes: result.keyframes, idrCount: result.idrCount};
+    const target = {width: 320, height: 240};
+    const a = await normalizeWithWebCodecs(input, {target});
+    const b = await normalizeWithWebCodecs(input, {target, frameNumberBase: a.outputSamples - 1});
+    const merged = await mergeMoshH264(a.bytes, b.bytes);
+    return {
+      samples: a.outputSamples,
+      keyframes: a.keyframes,
+      idrCount: a.idrCount,
+      mergeReport: merged.report,
+      mergedBytes: Array.from(merged.output),
+    };
   })()`);
   assert.equal(longGop.samples, 75);
   assert.deepEqual(longGop.keyframes, [1, 31, 61]);
   assert.equal(longGop.idrCount, 3);
-  console.log('PASS WebCodecs emitted keyframes at samples 1, 31, and 61 for a 75-frame clip (30-frame closed GOP)');
+  assert.equal(longGop.mergeReport.mergedSamples, 149);
+  assert.equal(longGop.mergeReport.bIdrCountRemaining, 2);
+  assert.equal(longGop.mergeReport.frameAlignment.applied, true);
+  assert.equal(longGop.mergeReport.frameAlignment.nextIdrSample, 30);
+  writeFileSync(multiGopMergedPath, Uint8Array.from(longGop.mergedBytes));
+  const longGopProbe = command('ffprobe', [
+    '-v', 'error', '-select_streams', 'v:0', '-count_frames',
+    '-show_entries', 'stream=nb_read_frames', '-of', 'default=noprint_wrappers=1', multiGopMergedPath,
+  ], 'WebCodecs multi-GOP merge probe');
+  assert.match(longGopProbe.stdout, /nb_read_frames=149/);
+  command('ffmpeg', ['-v', 'error', '-i', multiGopMergedPath, '-f', 'null', '-'], 'WebCodecs multi-GOP strict decode');
+  console.log('PASS WebCodecs emitted keyframes at samples 1, 31, and 61; the multi-GOP merge retained two later IDRs and decoded all 149 frames');
 
   await client.setFile('#file-input-a', fixtures.a);
   await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 15000);

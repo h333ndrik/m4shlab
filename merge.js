@@ -444,7 +444,7 @@ function prepareB(inputB, parsedB) {
   let skippedEmpty = 0;
   for (const sample of track.samples) {
     const sampleNals = bySample.get(sample.index) ?? [];
-    if (sample.index <= firstIdr.sampleIndex) {
+    if (sample.index === firstIdr.sampleIndex) {
       skippedPrefix += 1;
       for (const nal of sampleNals) {
         if (nal.type === IDR_NAL_TYPE) removedCounts.idr += 1;
@@ -456,8 +456,8 @@ function prepareB(inputB, parsedB) {
     }
 
     const retained = sampleNals.filter(nal => {
+      if (nal.type === IDR_NAL_TYPE) return true;
       if (!REMOVED_B_NAL_TYPES.has(nal.type)) return true;
-      if (nal.type === IDR_NAL_TYPE) removedCounts.idr += 1;
       if (nal.type === SEI_NAL_TYPE) removedCounts.sei += 1;
       if (nal.type === SPS_NAL_TYPE) removedCounts.sps += 1;
       if (nal.type === PPS_NAL_TYPE) removedCounts.pps += 1;
@@ -477,10 +477,185 @@ function prepareB(inputB, parsedB) {
   }
   return {
     firstIdrSample: firstIdr.sampleIndex,
+    idrSamples: [...new Set(nals.filter(nal => nal.type === IDR_NAL_TYPE).map(nal => nal.sampleIndex))].sort((a, b) => a - b),
     skippedPrefix,
     skippedEmpty,
     removedCounts,
+    laterIdrCount: samples.reduce((total, sample) => total + sample.retainedNals.filter(nal => nal.type === IDR_NAL_TYPE).length, 0),
     samples,
+  };
+}
+
+function unescapeRbsp(bytes) {
+  const output = new Uint8Array(bytes.byteLength);
+  let length = 0;
+  let zeros = 0;
+  for (const value of bytes) {
+    if (zeros >= 2 && value === 3) {
+      zeros = 0;
+      continue;
+    }
+    output[length++] = value;
+    zeros = value === 0 ? zeros + 1 : 0;
+  }
+  return output.subarray(0, length);
+}
+
+function escapeRbsp(bytes) {
+  const parts = [];
+  let zeros = 0;
+  for (const value of bytes) {
+    if (zeros >= 2 && value <= 3) {
+      parts.push(3);
+      zeros = 0;
+    }
+    parts.push(value);
+    zeros = value === 0 ? zeros + 1 : 0;
+  }
+  return Uint8Array.from(parts);
+}
+
+class SliceHeaderBits {
+  constructor(bytes) {
+    this.bytes = bytes;
+    this.bit = 0;
+  }
+
+  readBit() {
+    if (this.bit >= this.bytes.byteLength * 8) throw new Mp4Error('Truncated H.264 slice header');
+    const value = (this.bytes[this.bit >> 3] >> (7 - (this.bit & 7))) & 1;
+    this.bit += 1;
+    return value;
+  }
+
+  readBits(count) {
+    let value = 0;
+    for (let i = 0; i < count; i += 1) value = (value * 2) + this.readBit();
+    return value;
+  }
+
+  readUnsignedExpGolomb() {
+    let zeros = 0;
+    while (this.readBit() === 0) {
+      zeros += 1;
+      if (zeros > 31) throw new Mp4Error('Invalid Exp-Golomb value in H.264 slice header');
+    }
+    return (2 ** zeros) - 1 + (zeros === 0 ? 0 : this.readBits(zeros));
+  }
+}
+
+function sliceHeaderState(nalData) {
+  const rbsp = unescapeRbsp(nalData.subarray(1));
+  const bits = new SliceHeaderBits(rbsp);
+  bits.readUnsignedExpGolomb();
+  bits.readUnsignedExpGolomb();
+  bits.readUnsignedExpGolomb();
+  return {rbsp, bits, frameNumberBit: bits.bit};
+}
+
+function readSliceFrameNumber(nalData, log2MaxFrameNum) {
+  const {rbsp, bits, frameNumberBit} = sliceHeaderState(nalData);
+  if (frameNumberBit + log2MaxFrameNum > rbsp.byteLength * 8) throw new Mp4Error('H.264 slice is too short to read frame_num');
+  return bits.readBits(log2MaxFrameNum);
+}
+
+function patchSliceFrameNumber(nalData, log2MaxFrameNum, frameNumber) {
+  const {rbsp, frameNumberBit} = sliceHeaderState(nalData);
+  if (frameNumberBit + log2MaxFrameNum > rbsp.byteLength * 8) throw new Mp4Error('H.264 slice is too short to patch frame_num');
+  const value = frameNumber % (2 ** log2MaxFrameNum);
+  for (let i = 0; i < log2MaxFrameNum; i += 1) {
+    const position = frameNumberBit + i;
+    if ((value >> (log2MaxFrameNum - 1 - i)) & 1) rbsp[position >> 3] |= 1 << (7 - (position & 7));
+    else rbsp[position >> 3] &= ~(1 << (7 - (position & 7)));
+  }
+  const escaped = escapeRbsp(rbsp);
+  const output = new Uint8Array(escaped.byteLength + 1);
+  output[0] = nalData[0];
+  output.set(escaped, 1);
+  return output;
+}
+
+function writeLengthPrefix(length, width) {
+  const output = new Uint8Array(width);
+  const view = new DataView(output.buffer);
+  if (width === 1) view.setUint8(0, length);
+  else if (width === 2) view.setUint16(0, length);
+  else if (width === 3) {
+    view.setUint8(0, (length >>> 16) & 0xff);
+    view.setUint16(1, length & 0xffff);
+  } else view.setUint32(0, length);
+  return output;
+}
+
+function patchSampleFrameNumber(sampleData, lengthSize, log2MaxFrameNum, frameNumber) {
+  const view = new DataView(sampleData.buffer, sampleData.byteOffset, sampleData.byteLength);
+  const parts = [];
+  let patchedNals = 0;
+  let offset = 0;
+  while (offset < sampleData.byteLength) {
+    if (offset + lengthSize > sampleData.byteLength) throw new Mp4Error('Encoded sample has a truncated NAL length prefix');
+    const length = lengthSize === 1 ? view.getUint8(offset)
+      : lengthSize === 2 ? view.getUint16(offset)
+        : lengthSize === 3 ? ((view.getUint8(offset) << 16) | view.getUint16(offset + 1))
+          : view.getUint32(offset);
+    const start = offset + lengthSize;
+    const end = start + length;
+    if (length === 0 || end > sampleData.byteLength) throw new Mp4Error('Encoded sample contains an invalid NAL length');
+    const nal = sampleData.subarray(start, end);
+    const patched = (nal[0] & 0x1f) === 1 ? patchSliceFrameNumber(nal, log2MaxFrameNum, frameNumber) : nal;
+    if (patched !== nal) patchedNals += 1;
+    parts.push(writeLengthPrefix(patched.byteLength, lengthSize), patched);
+    offset = end;
+  }
+  const output = concatBytes(parts);
+  return {data: output, patchedNals};
+}
+
+function alignFirstBGop(inputA, parsedA, inputB, parsedB, preparedB) {
+  if (preparedB.idrSamples.length < 2) return {applied: false, reason: 'single-gop'};
+
+  const bConfig = parseAvcConfig(inputB, parsedB.videoTrack.avcC);
+  const bSps = bConfig.sps.length ? parseSps(bConfig.sps[0]) : null;
+  const aConfig = parseAvcConfig(inputA, parsedA.videoTrack.avcC);
+  const aSps = aConfig.sps.length ? parseSps(aConfig.sps[0]) : null;
+  if (!bSps) throw new Mp4Error('Clip B has no SPS for frame-number alignment');
+  if (!aSps) throw new Mp4Error('Clip A has no SPS for frame-number alignment');
+  if (aSps.log2MaxFrameNum !== bSps.log2MaxFrameNum) {
+    throw new Mp4Error(`Multi-GOP B frame-number alignment requires matching log2_max_frame_num (${aSps.log2MaxFrameNum} ≠ ${bSps.log2MaxFrameNum}).`);
+  }
+  if (bSps.picOrderCntType !== 2) {
+    throw new Mp4Error('Multi-GOP B frame-number alignment requires pic_order_cnt_type 2 (no picture-order reordering).');
+  }
+
+  const aSlices = extractNals(inputA, parsedA.videoTrack).filter(nal => nal.type === 1 || nal.type === IDR_NAL_TYPE);
+  const lastASlice = aSlices[aSlices.length - 1];
+  if (!lastASlice) throw new Mp4Error('Clip A has no slice for frame-number alignment');
+  const aLastFrameNum = readSliceFrameNumber(lastASlice.data, bSps.log2MaxFrameNum);
+  const modulo = 2 ** bSps.log2MaxFrameNum;
+  const nextIdrSample = preparedB.idrSamples[1];
+  let patchedSamples = 0;
+  let patchedNals = 0;
+
+  for (const sample of preparedB.samples) {
+    if (sample.sourceSampleIndex >= nextIdrSample) break;
+    const frameNumber = (aLastFrameNum + (sample.sourceSampleIndex - preparedB.firstIdrSample)) % modulo;
+    const patched = patchSampleFrameNumber(sample.data, parsedB.videoTrack.lengthSize, bSps.log2MaxFrameNum, frameNumber);
+    if (patched.patchedNals === 0) continue;
+    sample.data = patched.data;
+    patchedSamples += 1;
+    patchedNals += patched.patchedNals;
+  }
+  if (patchedNals === 0) throw new Mp4Error('Multi-GOP B has no first-GOP slices to align');
+
+  return {
+    applied: true,
+    aLastFrameNum,
+    nextIdrSample,
+    patchedSamples,
+    patchedNals,
+    log2MaxFrameNum: bSps.log2MaxFrameNum,
+    picOrderCntType: bSps.picOrderCntType,
+    emulationPrevention: 'RBSP bytes are unescaped, patched, then re-escaped with fresh emulation-prevention bytes',
   };
 }
 
@@ -492,6 +667,7 @@ export async function mergeMoshH264(inputA, inputB, parsedA = parseMp4(inputA), 
   if (parsedA.videoTrack.stts.durations.length !== parsedA.videoTrack.samples.length) throw new Mp4Error('A stts sample count does not match its sample table');
 
   const preparedB = prepareB(inputB, parsedB);
+  const frameAlignment = alignFirstBGop(inputA, parsedA, inputB, parsedB, preparedB);
   const aSamples = parsedA.videoTrack.samples.map(sample => inputA.subarray(sample.offset, sample.offset + sample.size));
   const bSamples = preparedB.samples.map(sample => sample.data);
   const sampleParts = [...aSamples, ...bSamples];
@@ -547,6 +723,7 @@ export async function mergeMoshH264(inputA, inputB, parsedA = parseMp4(inputA), 
       bSkippedEmptySamples: preparedB.skippedEmpty,
       bFirstIdrSample: preparedB.firstIdrSample,
       bRemovedNals: preparedB.removedCounts,
+      bIdrSamples: preparedB.idrSamples,
       mergedSamples: sizes.length,
       mergedDurationUnits: mergedDuration,
       mergedDurationSeconds: mergedDuration / parsedA.videoTrack.mdhd.timescale,
@@ -555,7 +732,8 @@ export async function mergeMoshH264(inputA, inputB, parsedA = parseMp4(inputA), 
       mdatPayloadBytes: sampleParts.reduce((total, sample) => total + sample.byteLength, 0),
       sampleSizeSum: sizes.reduce((total, value) => total + value, 0),
       idrCount: idrNals.length,
-      bIdrCountRemaining: 0,
+      bIdrCountRemaining: preparedB.laterIdrCount,
+      frameAlignment,
       startsWithSingleIdr,
       audio: 'omitted in Phase B',
     },
