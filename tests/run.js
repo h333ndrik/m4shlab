@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { childBoxes, parseBoxes, parseMp4 } from '../parser/mp4.js';
 import { extractNals } from '../parser/nal.js';
+import { HEVC_IRAP_MAX, HEVC_IRAP_MIN, extractHevcNals, parseHevcConfig } from '../parser/hevc.js';
 import { moshH264 } from '../mosh.js';
 import { CompatibilityError, appendCutH264, checkCompatibility, mergeEffectH264, mergeMoshH264, mergeSequenceH264, parseAvcConfig } from '../merge.js';
 import { buildNormalizedMp4, chooseNormalizationTarget } from '../webcodecs-muxer.js';
@@ -420,6 +421,25 @@ assert.throws(
   error => error.code === 'UNSUPPORTED_CODEC' && error.message === 'This file contains HEVC (hvc1). Convert to H.264 or use convert-on-load.',
 );
 pass('HEVC input reports the actionable codec error instead of a box-walk error');
+
+const hevcParsed = parseMp4(hevcInput, {allowHevc: true});
+const hevcTrack = hevcParsed.videoTrack;
+assert.equal(hevcTrack.codecFamily, 'hevc');
+assert.equal(hevcTrack.codecType, 'hvc1');
+assert.equal(hevcTrack.samples.length, 25);
+assert.equal(hevcTrack.width, 320);
+assert.equal(hevcTrack.height, 240);
+const hevcConfig = parseHevcConfig(hevcInput, hevcTrack.hvcC, hevcTrack.codecType);
+assert.equal(hevcConfig.lengthSize, 4);
+assert.equal(hevcConfig.profileIdc, 1);
+assert.equal(hevcConfig.levelIdc, 60);
+assert.match(hevcConfig.codecString, /^hvc1\.1\.6\.L60(?:\.90)?$/);
+assert.ok(hevcConfig.arrays.length > 0);
+const hevcNals = extractHevcNals(hevcInput, hevcTrack);
+assert.ok(hevcNals.length >= 25);
+assert.ok(hevcNals.every(nal => Number.isInteger(nal.unitType) && nal.unitType >= 0 && nal.unitType <= 63));
+assert.ok(hevcNals.some(nal => nal.sampleIndex === 0 && nal.unitType >= HEVC_IRAP_MIN && nal.unitType <= HEVC_IRAP_MAX));
+pass(`HEVC hvcC and ${hevcNals.length} length-prefixed NAL units parse behind an explicit option without entering the H.264 NAL parser`);
 
 assert.throws(
   () => parseMp4(fragmentedInput),

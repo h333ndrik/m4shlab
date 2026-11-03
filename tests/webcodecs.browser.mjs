@@ -145,7 +145,7 @@ class CdpClient {
   }
 }
 
-async function launchChrome() {
+async function launchChrome({disableGpu = true} = {}) {
   const chrome = chromeCandidates.find(candidate => existsSync(candidate));
   if (!chrome) return null;
   const profile = mkdtempSync(join(tmpdir(), 'm4shlab-webcodecs-'));
@@ -155,7 +155,7 @@ async function launchChrome() {
     `--user-data-dir=${profile}`,
     '--no-first-run',
     '--no-default-browser-check',
-    '--disable-gpu',
+    ...(disableGpu ? ['--disable-gpu'] : []),
     '--autoplay-policy=no-user-gesture-required',
     'about:blank',
   ], {stdio: ['ignore', 'ignore', 'pipe']});
@@ -1203,6 +1203,7 @@ try {
       const reportNode = document.querySelector('#report');
       return {
         conversionStatus: document.querySelector('#conversion-status').textContent,
+        conversionMessage: document.querySelector('#conversion-message').textContent,
         error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
         progressA: document.querySelector('#conversion-progress').value,
         progressB: document.querySelector('#conversion-progress-b').value,
@@ -1211,10 +1212,22 @@ try {
       };
     })()`);
     assert.equal(hybrid.error, null, hybrid.error || 'hybrid pair was not compatible');
-    assert.match(hybrid.conversionStatus, /ffmpeg\.wasm \+ WebCodecs/);
-    assert.equal(hybrid.report.sources.a.conversion.decodeEngine, 'ffmpeg.wasm');
-    assert.equal(hybrid.report.sources.a.conversion.encodeEngine, 'WebCodecs');
-    assert.equal(hybrid.report.sources.b.conversion.encodeEngine, 'WebCodecs');
+    const sourceConversionA = hybrid.report.sources.a.conversion.origin ?? hybrid.report.sources.a.conversion;
+    const sourceConversionB = hybrid.report.sources.b.conversion.origin ?? hybrid.report.sources.b.conversion;
+    assert.equal(sourceConversionA.sourceCodec, 'HEVC');
+    assert.equal(sourceConversionB.sourceCodec, 'HEVC');
+    assert.ok(['WebCodecs (HEVC)', 'ffmpeg.wasm'].includes(sourceConversionA.decodeEngine));
+    assert.ok(['WebCodecs (HEVC)', 'ffmpeg.wasm'].includes(sourceConversionB.decodeEngine));
+    if (sourceConversionA.decodeEngine === 'ffmpeg.wasm') {
+      assert.match(sourceConversionA.hevcWebCodecsFallbackReason, /HEVC configuration/i);
+      assert.match(hybrid.conversionMessage, /decoded via ffmpeg\.wasm/);
+    } else {
+      assert.match(hybrid.conversionMessage, /decoded via WebCodecs \(HEVC\)/);
+    }
+    assert.equal(hybrid.report.normalization.engines[0].sourceCodec, 'HEVC');
+    assert.equal(hybrid.report.normalization.engines[1].sourceCodec, 'HEVC');
+    assert.equal(hybrid.report.normalization.engines[0].decode, sourceConversionA.decodeEngine);
+    assert.equal(hybrid.report.normalization.engines[1].decode, sourceConversionB.decodeEngine);
     assert.equal(hybrid.report.normalization.autoNormalized, true);
     assert.equal(hybrid.report.normalization.parallel, true);
     assert.ok(Math.max(hybrid.report.normalization.target.width, hybrid.report.normalization.target.height) <= 720);
@@ -1233,11 +1246,79 @@ try {
     ], 'hybrid conversion export probe');
     assert.match(hybridProbe.stdout, /codec_name=h264/);
     assert.ok(Number(/nb_read_frames=(\d+)/.exec(hybridProbe.stdout)?.[1] ?? 0) > 0);
-    console.log(`PASS ffmpeg.wasm decode + WebCodecs encode: ${hybrid.report.normalization.target.width}x${hybrid.report.normalization.target.height}, both progress bars completed, export decoded`);
+    console.log(`PASS HEVC import ran ${sourceConversionA.decodeEngine} decode plus WebCodecs H.264 encode at ${hybrid.report.normalization.target.width}x${hybrid.report.normalization.target.height}; both progress bars completed and export decoded`);
+
+    const nativeChrome = await launchChrome({disableGpu: false});
+    if (nativeChrome) {
+      let nativeClient = null;
+      try {
+        nativeClient = await pageTarget(nativeChrome.endpoint);
+        await nativeClient.send('Page.enable');
+        await nativeClient.send('Runtime.enable');
+        await nativeClient.send('DOM.enable');
+        await nativeClient.send('Emulation.setDeviceMetricsOverride', {width: 1200, height: 1600, deviceScaleFactor: 1, mobile: false});
+        await nativeClient.send('Page.navigate', {url: 'http://127.0.0.1:4182/?hevc-native=1'});
+        await nativeClient.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 15000);
+        await nativeClient.setFile('#file-input-a', join(projectRoot, 'testmedia', 'synthetic-hevc.mov'));
+        await nativeClient.waitFor("document.querySelector('#status').textContent.includes('clip A') || !document.querySelector('#error').hidden", 60000);
+        await nativeClient.setFile('#file-input-b', join(projectRoot, 'testmedia', 'synthetic-hevc.mov'));
+        await nativeClient.waitFor("document.querySelector('#status').textContent.includes('samples') || !document.querySelector('#error').hidden", 120000);
+        const nativeHevc = await nativeClient.evaluate(`(() => {
+          const report = JSON.parse(document.querySelector('#report').textContent);
+          const source = report.sources.a.conversion.origin ?? report.sources.a.conversion;
+          return {
+            error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
+            sourceCodec: source.sourceCodec,
+            decodeEngine: source.decodeEngine,
+            encodeEngine: source.encodeEngine,
+            decoderCodec: source.decoderCodec,
+            fallbackReason: source.hevcWebCodecsFallbackReason ?? null,
+            status: document.querySelector('#conversion-status').textContent,
+            message: document.querySelector('#conversion-message').textContent,
+            mergedSamples: report.merge.mergedSamples,
+          };
+        })()`);
+        assert.equal(nativeHevc.error, null, nativeHevc.error);
+        if (nativeHevc.decodeEngine === 'WebCodecs (HEVC)') {
+          assert.equal(nativeHevc.sourceCodec, 'HEVC');
+          assert.equal(nativeHevc.encodeEngine, 'WebCodecs');
+          assert.match(nativeHevc.decoderCodec, /^hvc1\.|^hev1\./);
+          assert.equal(nativeHevc.fallbackReason, null);
+          assert.match(nativeHevc.message, /decoded via WebCodecs \(HEVC\)/);
+          assert.ok(nativeHevc.mergedSamples > 0);
+          console.log(`PASS native HEVC decoded via WebCodecs and merged ${nativeHevc.mergedSamples} samples through the unchanged H.264 path`);
+        } else {
+          assert.equal(nativeHevc.decodeEngine, 'ffmpeg.wasm');
+          assert.match(nativeHevc.fallbackReason, /HEVC configuration/i);
+          console.log('SKIP native HEVC WebCodecs: this Chrome build exposed no HEVC decoder; the named ffmpeg.wasm path was verified.');
+        }
+      } finally {
+        nativeClient?.close();
+        nativeChrome.process.kill('SIGTERM');
+        await new Promise(resolveWait => setTimeout(resolveWait, 250));
+        try { rmSync(nativeChrome.profile, {recursive: true, force: true, maxRetries: 5, retryDelay: 100}); } catch {}
+      }
+    }
 
     await client.send('Page.addScriptToEvaluateOnNewDocument', {
       source: "Object.defineProperty(globalThis, 'VideoDecoder', {value: undefined, configurable: true}); Object.defineProperty(globalThis, 'VideoEncoder', {value: undefined, configurable: true});",
     });
+    await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?hevc-fallback=1'});
+    await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
+    assert.equal(await client.evaluate("typeof VideoDecoder + '/' + typeof VideoEncoder"), 'undefined/undefined');
+    await client.setFile('#file-input-a', join(projectRoot, 'testmedia', 'synthetic-hevc.mov'));
+    await client.waitFor("document.querySelector('#status').textContent.includes('clip A') || !document.querySelector('#error').hidden", 300000);
+    const forcedHevcFallback = await client.evaluate(`({
+      error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
+      status: document.querySelector('#conversion-status').textContent,
+      message: document.querySelector('#conversion-message').textContent,
+      clipPath: document.querySelector('.clip-card .clip-detail')?.title ?? null,
+    })`);
+    assert.equal(forcedHevcFallback.error, null, forcedHevcFallback.error);
+    assert.match(forcedHevcFallback.status, /ffmpeg\.wasm/);
+    assert.match(forcedHevcFallback.message, /decoded via ffmpeg\.wasm/);
+    assert.match(forcedHevcFallback.clipPath, /decoded via ffmpeg\.wasm/);
+    console.log('PASS WebCodecs unavailable: HEVC import names the ffmpeg.wasm decode fallback and produces a playable converted clip');
     await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?fallback=1'});
     await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
     assert.equal(await client.evaluate("typeof VideoDecoder + '/' + typeof VideoEncoder"), 'undefined/undefined');

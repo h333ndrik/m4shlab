@@ -55,8 +55,8 @@ The current cache version is `v10` (`m4shlab-v10` plus `m4shlab-runtime-v10`). B
 | Tier | Inputs | Behavior |
 | --- | --- | --- |
 | 1 — native parse | Conventional non-fragmented MP4/MOV with an H.264 `avc1`/`avc3` video track, including top-level size-zero `mdat`, 64-bit box sizes, and QuickTime `wide` placeholders | Parsed directly; compatible sequence members merge without re-encoding. The first audio track is decoded from the original source, aligned to the normalized video timeline, and muxed into the merged export |
-| 2a — WebCodecs normalization | Native H.264 sequences whose SPS/timing details differ, when `VideoDecoder` and `VideoEncoder` can handle the required H.264 profile and size | Every clip is decoded and re-encoded locally to one shared H.264 target, then processed by the unchanged compatibility check and chained merge |
-| 2b — ffmpeg.wasm fallback | HEVC (`hvc1`/`hev1`), VP9 WebM (verified), fragmented MP4, other supported containers/codecs, and browsers or H.264 configurations without a usable WebCodecs path | Decoded locally by ffmpeg.wasm. The H.264 encode runs in WebCodecs when available, otherwise fully in the pinned WASM worker |
+| 2a — WebCodecs fast path | Native H.264 sequences whose SPS/timing details differ, plus H.264 or HEVC sources when `VideoDecoder` and `VideoEncoder` can handle the source decode and H.264 encode at the required size | Every clip is decoded and re-encoded locally to one shared H.264 target, then processed by the unchanged compatibility check and chained merge. HEVC uses the parsed `hvcC` configuration and reports `decoded via WebCodecs (HEVC)` |
+| 2b — ffmpeg.wasm fallback | HEVC (`hvc1`/`hev1`) when native WebCodecs HEVC decode is unavailable, VP9 WebM (verified), fragmented MP4, other supported containers/codecs, and H.264 configurations without a usable WebCodecs path | Decoded locally by ffmpeg.wasm and named as `decoded via ffmpeg.wasm`. The H.264 encode runs in WebCodecs when available, otherwise fully in the pinned WASM worker |
 | Not supported | DRM/encrypted media, unavailable ffmpeg.wasm assets, conversion input over 100 MB, or conversions that exceed browser wasm memory | Actionable error; no broken merge is emitted |
 
 Normalization produces conventional faststart MP4 with H.264 baseline or main profile, `yuv420p` limited range, 30 fps, a requested keyframe every 30 frames, no B-frames, and no audio. That video-only normalization output feeds the unchanged merge pipeline; the original soundtrack is extracted separately and muxed after the final video is built. Encoders may insert additional recovery IDRs. The common target is capped at **720 pixels on the long side**. Same-aspect inputs are purely scaled; different aspects are scaled proportionally and letterboxed into the shared box. The mosh effect is resolution-independent, and this cap is much faster than full-resolution software encoding, mirroring h4moshlab's deliberate 640×480 normalization.
@@ -90,8 +90,12 @@ The page follows the h4moshlab visual language: a light radial-gradient backgrou
 1. Tier 1 walks conventional MP4/MOV boxes and H.264 sample tables. Fragmented MP4 and unsupported codecs produce explicit errors.
 2. A native sequence with any incompatible or differing boundary enters a visible **normalizing clips…** state instead of showing a final incompatibility verdict. All clips are normalized to the shared capped target and checked again.
 3. Native H.264 normalization reuses parsed samples and `avcC`, decodes with `VideoDecoder`, scales/letterboxes through a canvas, converts to limited-range I420, and encodes every sequence member with `VideoEncoder` using identical settings.
-4. HEVC, WebM, fragmented MP4, and unsupported H.264 configurations use ffmpeg.wasm for decode. If WebCodecs H.264 encoding is available, ffmpeg.wasm emits a capped Y4M stream and WebCodecs performs the encode; otherwise the complete encode stays in the WASM worker.
+4. HEVC first tries a native `VideoDecoder` path using parsed `hvcC`; other codecs and unsupported HEVC configurations use ffmpeg.wasm for decode. If WebCodecs H.264 encoding is available, ffmpeg.wasm emits a capped Y4M stream and WebCodecs performs the encode; otherwise the complete encode stays in the WASM worker. Reports distinguish `decoded via WebCodecs (HEVC)` from `decoded via ffmpeg.wasm`.
 5. The UI and JSON report name decode path, encode path, target, parallel execution, fallback reason, and duration for every clip. Compatibility is checked again on the converted bytes before preview and chained merge, without rendering a criteria table.
+
+### HEVC decode path
+
+Conventional MOV/MP4 files with `hvc1` or `hev1` video sample entries are demuxed from their `hvcC` configuration and length-prefixed HEVC NAL units without sending those NALs through the H.264 NAL parser. When the browser's `VideoDecoder` accepts the HEVC codec configuration, the existing decode/scale/encode pass writes the same capped, 30 fps, B-frame-free H.264 normalization output and marks the source as `decoded via WebCodecs (HEVC)`. If HEVC decode is unsupported or the H.264 encode configuration fails, the same file goes through ffmpeg.wasm and is marked `decoded via ffmpeg.wasm`. The converted bytes then follow the unchanged compatibility and chained-merge pipeline.
 
 ### Randomize
 
@@ -217,6 +221,9 @@ The tests assert:
 - Melt/Loop duration clamps to 74 frames, accepts one frame, rejects zero, and keeps the audio timeline exactly equal to merged video frames × samples per frame;
 - speed plans map 60 frames to 30, 120, 60, and 35 output frames at 2×, 0.5×, 1×, and 1.7×; out-of-range values raise `SpeedValueError`;
 - the seeded randomizer reproduces identical settings for the same seed and validates 50 seeds × all four mosh methods (200 combinations);
+- HEVC parsing validates `hvcC`, length-prefixed NAL demuxing, 25 samples, 320×240 dimensions, and the Main/L60 codec configuration without using the H.264 NAL parser;
+- browser HEVC import reports either `decoded via WebCodecs (HEVC)` or the actual ffmpeg.wasm fallback, converts to H.264, and merges;
+- with WebCodecs deliberately unavailable, HEVC import names ffmpeg.wasm and produces a playable converted clip;
 - the browser Randomize action generates a 16-hex seed, a manual edit clears its display, and the applied seed appears as `random_seed` in the boundary report;
 - 2×, 0.5×, and 1.7× atempo chains preserve a 440 Hz tone and emit exactly 48,000, 192,000, and 56,000 samples; each stage is within 0.5–2.0×;
 - the browser merges a 2× clip plus a 0.5× clip into 150 frames with 240,000 audio samples, decodes 150/150 frames, and exports at 30 fps;
@@ -236,7 +243,8 @@ The tests assert:
 - both exports decode with `ffprobe`;
 - the truncated Phase A file is rejected;
 - QuickTime MOV, top-level size-zero `mdat`, `wide`, and 64-bit box headings parse correctly;
-- HEVC and fragmented MP4 return their documented actionable errors.
+- HEVC parses through an explicit `allowHevc` path into hvcC plus HEVC samples; the default Tier-1 parser still returns its documented H.264 conversion error.
+- fragmented MP4 returns its documented actionable error.
 - the WebCodecs muxer's `stsz`/`mdat` sizes, sample offsets, `stss`, and `stts` duration agree;
 - normalization chooses one identical even target from differently sized sequence members; 1440×1920 + 768×1024 + 320×240 becomes 540×720;
 - the 1440×1920 + 768×1024 native pair auto-normalizes to 540×720, exposes `normalizing clips…`, re-checks compatibility, and merges;
@@ -245,11 +253,11 @@ The tests assert:
 - the browser has no compatibility panel, status badge, table, or SPS/PPS hash display;
 - blocking merge errors render as a short alert rather than a compatibility panel;
 - the manifest has standalone display, the light theme, SVG/192/512/maskable icons, and a 180px Apple touch icon;
-- the service worker activates, controls the page, precaches the 25-file app shell, and excludes the conversion worker and ffmpeg core from precache;
+- the service worker activates, controls the page, precaches the 26-file app shell, and excludes the conversion worker and ffmpeg core from precache;
 - Chrome reports no manifest or installability errors, activates `beforeinstallprompt`, and the activate handler removes an older versioned cache;
 - an offline reload serves the complete shell, after which previously cached ffmpeg.wasm converts and merges HEVC inputs locally and the exported MP4 decodes.
 
-Current local results (2026-11-03, Node 26.13.0, FFmpeg 9.0.2, Google Chrome 156): all 74 Node checks pass. Phase A removes 11,468 bytes and decodes 73 frames. The multi-slice fixture keeps both initial IDR slices, starts at sample 25, removes four later slices, and decodes 73/73 retained frames. Phase B merges 25 A samples plus 24 retained B samples, decodes 49 frames, and produces the same 67,893-byte export. Melt repeat=4 emits and decodes 315 samples; Loop Release with a four-frame group emits and decodes 99, with donor blocks starting at source samples 1 and 13 and a release tail at 21. Melt duration=12/repeat=2 emits an exact 12-frame window, continues from donor 7, and decodes 105/105; its Restore form decodes 106/106. Gentler Melt uses the bounded donor schedule and decodes 99/99. Loop duration=12 emits and decodes 99/99. Reset Pulse interval=6/repeat=2 re-inserts the boundary IDR at merged samples 25 and 31, reports donor tables [1,1,2,2,3], and decodes 99/99; its POC type 0 variant also decodes 99/99. Speed plans produce 30/120/60/35 frames at 2×/0.5×/1×/1.7×; chained atempo preserves the 440 Hz tone. The multi-GOP regression merges 25 A + 75 B samples, retains two later B IDRs, patches 24 first-GOP slice headers, and decodes all 99 expected frames with three keyframes. A Safari-shaped POC type 0 pair also merges with POC-LSB alignment and decodes 99/99 frames; a genuinely reordered type 0 multi-GOP stream remains rejected. The WebCodecs muxer test emits 8 samples with a 14,984-byte mdat payload and 4,096 duration units. Tier-1 fixtures additionally verify a QuickTime H.264 MOV (25 samples / 26 NALs), a size-zero mdat, standalone `wide`, a 64-bit mdat, the exact HEVC error, and the exact fragmented-MP4 error. The Block F merge produces a 49-frame, 1.960-second AAC-LC track at 48 kHz stereo from 94,080 expected sample frames; the WebCodecs encode plus ffmpeg.wasm mux path preserves the 1,024-sample encoder delay and reports exact presentation timing.
+Current local results (2026-11-03, Node 26.13.0, FFmpeg 9.0.2, Google Chrome 156): all 76 Node checks pass. Phase A removes 11,468 bytes and decodes 73 frames. The multi-slice fixture keeps both initial IDR slices, starts at sample 25, removes four later slices, and decodes 73/73 retained frames. Phase B merges 25 A samples plus 24 retained B samples, decodes 49 frames, and produces the same 67,893-byte export. Melt repeat=4 emits and decodes 315 samples; Loop Release with a four-frame group emits and decodes 99, with donor blocks starting at source samples 1 and 13 and a release tail at 21. Melt duration=12/repeat=2 emits an exact 12-frame window, continues from donor 7, and decodes 105/105; its Restore form decodes 106/106. Gentler Melt uses the bounded donor schedule and decodes 99/99. Loop duration=12 emits and decodes 99/99. Reset Pulse interval=6/repeat=2 re-inserts the boundary IDR at merged samples 25 and 31, reports donor tables [1,1,2,2,3], and decodes 99/99; its POC type 0 variant also decodes 99/99. Speed plans produce 30/120/60/35 frames at 2×/0.5×/1×/1.7×; chained atempo preserves the 440 Hz tone. The multi-GOP regression merges 25 A + 75 B samples, retains two later B IDRs, patches 24 first-GOP slice headers, and decodes all 99 expected frames with three keyframes. A Safari-shaped POC type 0 pair also merges with POC-LSB alignment and decodes 99/99 frames; a genuinely reordered type 0 multi-GOP stream remains rejected. The WebCodecs muxer test emits 8 samples with a 14,984-byte mdat payload and 4,096 duration units. Tier-1 fixtures additionally verify a QuickTime H.264 MOV (25 samples / 26 NALs), a size-zero mdat, standalone `wide`, a 64-bit mdat, the exact HEVC error, and the exact fragmented-MP4 error. Randomize adds 200 validated method/parameter combinations, and HEVC parsing verifies 25 samples, hvcC Main/L60.90 configuration, and length-prefixed NAL demuxing. The Block F merge produces a 49-frame, 1.960-second AAC-LC track at 48 kHz stereo from 94,080 expected sample frames; the WebCodecs encode plus ffmpeg.wasm mux path preserves the 1,024-sample encoder delay and reports exact presentation timing.
 
 Classic Mosh restore was verified at a 10-frame duration. Phase A removes the sample-25 boundary sample, inserts the byte-identical boundary sample before source frame 36, retains the later sample-50 IDR, and decodes 75/75 source frames without an empty sample entry. The 10-frame Phase B restore inserts B's original IDR at merged sample 35 and decodes 50/50. Continue mode remains byte-identical to the prior full-length joins.
 
@@ -275,13 +283,15 @@ PASS selecting Melt on native B-frame clips auto-normalizes both sources before 
 PASS audio merge exports AAC 48000 Hz/2ch, 94080 expected samples, runtime-matched duration, encode=WebCodecs, mux=ffmpeg.wasm
 PASS AudioEncoder unavailable: PCM encoded in ffmpeg.wasm and merged audio reports delay=1024 samples
 PASS Randomize creates a 16-hex seed, manual edits clear it, and random_seed persists in the boundary report
+PASS HEVC import ran ffmpeg.wasm decode plus WebCodecs H.264 encode at 320x240; both progress bars completed and export decoded
+PASS native HEVC decoded via WebCodecs and merged 49 samples through the unchanged H.264 path
+PASS WebCodecs unavailable: HEVC import names the ffmpeg.wasm decode fallback and produces a playable converted clip
 PASS 2× + 0.5× clips merge to 150/150 frames and 240000 exact audio samples at 30 fps
 PASS fractional 1.7× produces 35 decodable frames with a 35-frame audio timeline
 PASS per-clip Reset restores 1.0× with 60 input and 60 output frames
 PASS single clip speed=2 and 720px normalization run in one 540×720 WebCodecs pass
 PASS WebCodecs pair merged in the browser: 49 samples, one leading IDR, preview 320x240
 PASS merged export decodes: 49 frames, H.264 320x240 yuv420p/tv, SHA-256 b4bb6c4827b2f7a8fe6d93777ff63f4491dd0b8eb497148dd3b2d07da1666bef
-PASS ffmpeg.wasm decode + WebCodecs encode: 320x240, both progress bars completed, export decoded
 PASS WebCodecs stubbed unavailable: ffmpeg.wasm fallback ran and the report identifies it
 ```
 
@@ -290,7 +300,7 @@ PASS WebCodecs stubbed unavailable: ffmpeg.wasm fallback ran and the report iden
 ```text
 PASS manifest is valid with standalone display, light theme, resolving SVG/192/512-maskable icons, and favicon plus 180px Apple links
 INFO wordmark geometry: favicon 30.3×25.0 inside 32×32; maskable corner 196.7px <= 204.8px safe radius
-PASS service worker registered, controlled the page, precached 25 shell assets, and Chrome reports no manifest/installability errors; beforeinstallprompt observed=true
+PASS service worker registered, controlled the page, precached 26 shell assets, and Chrome reports no manifest/installability errors; beforeinstallprompt observed=true
 PASS activate cleanup removed the old versioned cache and re-registered the current shell
 PASS first online conversion runtime-cached converter-worker.js, ffmpeg-core.js, and ffmpeg-core.wasm (3 runtime entries)
 PASS offline reload served the complete app shell from Cache Storage with no network

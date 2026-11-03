@@ -1,3 +1,5 @@
+import { parseHevcConfig } from './hevc.js';
+
 const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
 
 export class Mp4Error extends Error {
@@ -338,7 +340,7 @@ function parseStsd(bytes, box) {
   return entries;
 }
 
-function parseTrack(bytes, trak, mdatRanges) {
+function parseTrack(bytes, trak, mdatRanges, options = {}) {
   const trakChildren = childBoxes(bytes, trak);
   const mdia = childBox(trak, trakChildren, 'mdia');
   const mdiaChildren = childBoxes(bytes, mdia);
@@ -404,14 +406,41 @@ function parseTrack(bytes, trak, mdatRanges) {
 
   let video = null;
   if (handler === 'vide') {
-    const avcEntry = sampleEntries.find((entry) => entry.type === 'avc1' || entry.type === 'avc3');
-    if (!avcEntry) throw unsupportedCodecError(sampleEntries[0]?.type);
-    if (avcEntry.payloadStart + 78 > avcEntry.payloadEnd) throw new Mp4Error('Truncated visual sample entry');
-    const entryChildren = parseBoxes(bytes, avcEntry.payloadStart + 78, avcEntry.payloadEnd);
-    const config = parseAvcConfiguration(bytes, avcEntry, entryChildren);
-    const width = avcEntry.payloadStart + 26 <= avcEntry.payloadEnd ? (bytes[avcEntry.payloadStart + 24] << 8) | bytes[avcEntry.payloadStart + 25] : 0;
-    const height = avcEntry.payloadStart + 28 <= avcEntry.payloadEnd ? (bytes[avcEntry.payloadStart + 26] << 8) | bytes[avcEntry.payloadStart + 27] : 0;
-    video = { sampleEntry: avcEntry, lengthSize: config.lengthSize, avcC: config.avcC, width, height };
+    const h264Entry = sampleEntries.find((entry) => entry.type === 'avc1' || entry.type === 'avc3');
+    const hevcEntry = sampleEntries.find((entry) => entry.type === 'hvc1' || entry.type === 'hev1');
+    const entry = h264Entry ?? hevcEntry;
+    if (!entry) throw unsupportedCodecError(sampleEntries[0]?.type);
+    if (entry.payloadStart + 78 > entry.payloadEnd) throw new Mp4Error('Truncated visual sample entry');
+    const entryChildren = parseBoxes(bytes, entry.payloadStart + 78, entry.payloadEnd);
+    const width = entry.payloadStart + 28 <= entry.payloadEnd ? (bytes[entry.payloadStart + 24] << 8) | bytes[entry.payloadStart + 25] : 0;
+    const height = entry.payloadStart + 28 <= entry.payloadEnd ? (bytes[entry.payloadStart + 26] << 8) | bytes[entry.payloadStart + 27] : 0;
+    if (h264Entry) {
+      const config = parseAvcConfiguration(bytes, entry, entryChildren);
+      video = {
+        sampleEntry: entry,
+        codecType: entry.type,
+        codecFamily: 'h264',
+        lengthSize: config.lengthSize,
+        avcC: config.avcC,
+        width,
+        height,
+      };
+    } else {
+      if (options.allowHevc !== true) throw unsupportedCodecError(entry.type);
+      const hvcC = childBox(entry, entryChildren, 'hvcC', false);
+      if (!hvcC) throw new Mp4Error(`Video sample entry ${entry.type} has no hvcC configuration`);
+      const config = parseHevcConfig(bytes, hvcC, entry.type);
+      video = {
+        sampleEntry: entry,
+        codecType: entry.type,
+        codecFamily: 'hevc',
+        lengthSize: config.lengthSize,
+        hvcC,
+        hevcConfig: config,
+        width,
+        height,
+      };
+    }
   }
 
   return {
@@ -428,14 +457,18 @@ function parseTrack(bytes, trak, mdatRanges) {
     chunkOffsets,
     samples,
     video,
+    codecFamily: video?.codecFamily ?? null,
+    codecType: video?.codecType ?? null,
     lengthSize: video?.lengthSize,
     avcC: video?.avcC,
+    hvcC: video?.hvcC,
+    hevcConfig: video?.hevcConfig,
     width: video?.width,
     height: video?.height,
   };
 }
 
-export function parseMp4(bytes) {
+export function parseMp4(bytes, options = {}) {
   if (!(bytes instanceof Uint8Array)) throw new TypeError('parseMp4 expects a Uint8Array');
   if (bytes.byteLength < 8) throw new Mp4Error('File is too short to be an MP4');
   const boxes = parseBoxes(bytes, 0, bytes.byteLength, { allowSizeZero: true });
@@ -447,9 +480,9 @@ export function parseMp4(bytes) {
   const moovChildren = childBoxes(bytes, moov);
   const mvhdBox = childBox(moov, moovChildren, 'mvhd', false);
   const mvhd = mvhdBox ? parseTimeInfo(bytes, mvhdBox) : null;
-  const tracks = moovChildren.filter((box) => box.type === 'trak').map((trak) => parseTrack(bytes, trak, mdatRanges));
+  const tracks = moovChildren.filter((box) => box.type === 'trak').map((trak) => parseTrack(bytes, trak, mdatRanges, options));
   const videoTracks = tracks.filter((track) => track.video);
-  if (videoTracks.length === 0) throw new Mp4Error('No H.264 video track found');
+  if (videoTracks.length === 0) throw new Mp4Error('No supported video track found');
   if (videoTracks.length > 1) throw new Mp4Error('Phase A supports one video track per file');
 
   return {

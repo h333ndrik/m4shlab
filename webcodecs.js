@@ -1,5 +1,6 @@
 import { parseMp4 } from './parser/mp4.js';
 import { extractNals } from './parser/nal.js';
+import { extractHevcNals, isHevcIrap, parseHevcConfig } from './parser/hevc.js';
 import { parseSps } from './parser/sps.js';
 import { parseAvcConfig } from './merge.js';
 import { buildNormalizedMp4, chooseNormalizationTarget } from './webcodecs-muxer.js';
@@ -72,13 +73,31 @@ async function selectEncoderConfig(width, height) {
 }
 
 async function selectDecoderConfig(bytes, track) {
+  if (track.codecFamily === 'hevc') {
+    const config = track.hevcConfig ?? parseHevcConfig(bytes, track.hvcC, track.codecType);
+    const description = copyBytes(config.raw);
+    const alternatives = [config.codecString];
+    if (/^hvc1\./.test(config.codecString)) alternatives.push(config.codecString.replace(/^hvc1\./, 'hev1.'));
+    if (/^hev1\./.test(config.codecString)) alternatives.push(config.codecString.replace(/^hev1\./, 'hvc1.'));
+    for (const codec of [...new Set(alternatives)]) {
+      const candidate = {codec, description, optimizeForLatency: true};
+      try {
+        const support = await VideoDecoder.isConfigSupported(candidate);
+        if (support.supported) return {config: {...support.config, ...candidate}, codec, sourceCodec: 'HEVC'};
+      } catch {
+        // Try the alternate HEVC sample-entry tag before falling back.
+      }
+    }
+    throw new WebCodecsError(`This browser cannot decode the source HEVC configuration (${config.codecString}) with WebCodecs. ffmpeg.wasm fallback is required.`);
+  }
+
   const avc = parseAvcConfig(bytes, track.avcC);
   const description = copyBytes(avc.raw);
   const codec = `avc1.${hexByte(avc.profileIdc)}${hexByte(avc.profileCompatibility)}${hexByte(avc.levelIdc)}`;
   const config = {codec, description, optimizeForLatency: true};
   try {
     const support = await VideoDecoder.isConfigSupported(config);
-    if (support.supported) return {config, codec};
+    if (support.supported) return {config, codec, sourceCodec: 'H.264'};
   } catch {
     // The caller receives one actionable error below.
   }
@@ -86,17 +105,18 @@ async function selectDecoderConfig(bytes, track) {
 }
 
 function sourceChunks(bytes, track) {
-  const nals = extractNals(bytes, track);
-  const idrSamples = new Set(nals.filter(nal => nal.type === 5).map(nal => nal.sampleIndex));
   const durations = track.stts?.durations;
   if (!durations || durations.length !== track.samples.length) {
     throw new WebCodecsError('The source has no complete video sample timing table.');
   }
+  const keySamples = track.codecFamily === 'hevc'
+    ? new Set(extractHevcNals(bytes, track).filter(nal => isHevcIrap(nal.unitType)).map(nal => nal.sampleIndex))
+    : new Set(extractNals(bytes, track).filter(nal => nal.type === 5).map(nal => nal.sampleIndex));
   let timestamp = 0;
   return track.samples.map(sample => {
     const duration = Math.round(durations[sample.index] * 1_000_000 / track.mdhd.timescale);
     const chunk = {
-      type: idrSamples.has(sample.index) ? 'key' : 'delta',
+      type: keySamples.has(sample.index) ? 'key' : 'delta',
       timestamp,
       duration,
       data: copyBytes(bytes.subarray(sample.offset, sample.offset + sample.size)),
@@ -328,7 +348,7 @@ export async function normalizeWithWebCodecs(inputBytes, options = {}) {
 
   const started = performance.now();
   const speed = normalizeSpeed(options.speed ?? 1);
-  const parsed = parseMp4(inputBytes);
+  const parsed = parseMp4(inputBytes, {allowHevc: true});
   const target = chooseNormalizationTarget(options.target ?? parsed.videoTrack);
   const decoderSelection = await selectDecoderConfig(inputBytes, parsed.videoTrack);
   const encoderSelection = await selectEncoderConfig(target.width, target.height);
@@ -412,9 +432,10 @@ export async function normalizeWithWebCodecs(inputBytes, options = {}) {
   try {
     encoder.configure(encoderSelection.config);
     decoder.configure(decoderSelection.config);
+    const sourceLabel = parsed.videoTrack.codecFamily === 'hevc' ? 'HEVC' : 'H.264';
     options.onStatus?.(speed === 1
-      ? `Decoding H.264 and encoding a normalized ${target.width}×${target.height} stream with WebCodecs…`
-      : `Applying ${speed.toFixed(1)}× speed while decoding and encoding a normalized ${target.width}×${target.height} stream with WebCodecs…`);
+      ? `Decoding ${sourceLabel} and encoding a normalized ${target.width}×${target.height} stream with WebCodecs…`
+      : `Applying ${speed.toFixed(1)}× speed while decoding ${sourceLabel} and encoding a normalized ${target.width}×${target.height} stream with WebCodecs…`);
 
     for (const source of chunks) {
       throwIfAborted(options.signal);
@@ -478,6 +499,8 @@ export async function normalizeWithWebCodecs(inputBytes, options = {}) {
       engine: 'WebCodecs',
       elapsedMs: Math.round(performance.now() - started),
       decoderCodec: decoderSelection.codec,
+      decoderEngine: decoderSelection.sourceCodec === 'HEVC' ? 'WebCodecs (HEVC)' : 'WebCodecs (H.264)',
+      sourceCodec: decoderSelection.sourceCodec,
       encoderCodec: encoderSelection.codec,
       sourceSamples: chunks.length,
       outputSamples: encoded.length,

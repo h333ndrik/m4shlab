@@ -230,6 +230,15 @@ function encodingPath(conversion) {
   return conversion?.encodeEngine === 'WebCodecs' ? 'encoded via WebCodecs' : 'encoded in wasm';
 }
 
+function decodingPath(conversion) {
+  if (!conversion) return null;
+  const source = conversion.origin ?? conversion;
+  if (source.decodeEngine === 'WebCodecs (HEVC)') return 'decoded via WebCodecs (HEVC)';
+  if (source.decodeEngine === 'ffmpeg.wasm') return 'decoded via ffmpeg.wasm';
+  if (source.decodeEngine?.startsWith('WebCodecs')) return 'decoded via WebCodecs';
+  return null;
+}
+
 function clipMode(clip) {
   if (!clip) return '';
   if (clip.conversion) {
@@ -241,12 +250,14 @@ function clipMode(clip) {
 function conversionPath(clip) {
   const conversion = clip.conversion;
   if (!conversion) return 'native H.264';
+  const decode = decodingPath(conversion);
+  const suffix = decode ? ` · ${decode}` : '';
   if (conversion.mode === 'normalized') {
     return conversion.origin
-      ? `${conversion.origin.mode} via ${conversion.origin.engine}, then normalized via ${conversionEngine(clip)}`
-      : `normalized via ${conversionEngine(clip)}`;
+      ? `${conversion.origin.mode} via ${conversion.origin.engine}, then normalized via ${conversionEngine(clip)}${suffix}`
+      : `normalized via ${conversionEngine(clip)}${suffix}`;
   }
-  return `${conversion.mode} via ${conversionEngine(clip)}`;
+  return `${conversion.mode} via ${conversionEngine(clip)}${suffix}`;
 }
 
 function formatDuration(milliseconds) {
@@ -574,7 +585,8 @@ function finishConversionPanel() {
   conversionStatus.textContent = `${allNormalized ? 'normalized' : 'converted'} via ${engines.join(' + ')}`;
   conversionMessage.textContent = converted.map(({clip, index}) => {
     const conversion = clip.conversion;
-    return `${clipDisplayLabel(index)}: ${clip.file.name} → ${clip.mp4.videoTrack.width}×${clip.mp4.videoTrack.height} · ${encodingPath(conversion)} · ${formatDuration(conversion.elapsedMs)}`;
+    const decode = decodingPath(conversion);
+    return `${clipDisplayLabel(index)}: ${clip.file.name} → ${clip.mp4.videoTrack.width}×${clip.mp4.videoTrack.height} · ${decode ? `${decode} · ` : ''}${encodingPath(conversion)} · ${formatDuration(conversion.elapsedMs)}`;
   }).join(' · ');
   for (const {index} of converted) setConversionProgress(1, progressSlot(index));
   conversionProgressBRow.hidden = !converted.some(item => item.index === 1);
@@ -590,13 +602,18 @@ function sequenceNormalizationReport() {
       && conversions.every(conversion => reasons.has(conversion.reason)),
     parallel: conversions.length > 1 && conversions.every(conversion => conversion.parallel === true),
     target: conversions.find(conversion => conversion.target)?.target ?? null,
-    engines: clips.map((clip, index) => ({
-      index,
-      name: clip.file.name,
-      path: conversionPath(clip),
-      decode: clip.conversion?.decodeEngine ?? clip.conversion?.engine ?? null,
-      encode: clip.conversion?.encodeEngine ?? clip.conversion?.engine ?? null,
-    })).filter(entry => clips[entry.index].conversion),
+    engines: clips.map((clip, index) => {
+      const source = clip.conversion?.origin ?? clip.conversion;
+      return {
+        index,
+        name: clip.file.name,
+        path: conversionPath(clip),
+        sourceCodec: source?.sourceCodec ?? null,
+        decode: source?.decodeEngine ?? source?.engine ?? null,
+        encode: clip.conversion?.encodeEngine ?? clip.conversion?.engine ?? null,
+        hevcWebCodecsFallbackReason: source?.hevcWebCodecsFallbackReason ?? null,
+      };
+    }).filter(entry => clips[entry.index].conversion),
   };
 }
 
@@ -1072,15 +1089,66 @@ async function readClipFile(file, index, token) {
     if (sourceBytes.byteLength > MAX_CONVERSION_BYTES) {
       throw new Error(`${label} is ${formatBytes(sourceBytes.byteLength)}; convert-on-load is limited to 100 MB.`);
     }
-    showConversion(label, 'loading ffmpeg.wasm', `“${cause.message}” Loading the local converter; this can take a while on the first file.`, null, slot);
-    const converted = await convertClipSource(index, label, sourceBytes, {
-      reason: cause.code ?? 'unparseable-input',
-      isCurrent: () => token === importToken,
-    }, cause);
-    if (!converted || token !== importToken) return null;
-    bytes = converted.bytes;
-    mp4 = converted.mp4;
-    conversion = converted.conversion;
+    const hevcCodec = cause.code === 'UNSUPPORTED_CODEC' && (cause.codec === 'hvc1' || cause.codec === 'hev1');
+    let hevcFallbackReason = null;
+    if (hevcCodec && isWebCodecsAvailable()) {
+      try {
+        const hevcMp4 = parseMp4(sourceBytes, {allowHevc: true});
+        const target = chooseNormalizationTarget(hevcMp4.videoTrack);
+        showConversion(label, 'loading WebCodecs HEVC', `Trying native HEVC decode at ${target.width}×${target.height}…`, null, slot);
+        const result = await normalizeWithWebCodecs(sourceBytes, {
+          target,
+          onStatus: message => {
+            if (token === importToken) showConversion(label, 'working', message, null, slot);
+          },
+          onProgress: progress => {
+            if (token !== importToken) return;
+            const percent = Math.round(progress * 100);
+            showConversion(label, 'working', `WebCodecs HEVC · ${percent}%`, progress, slot);
+          },
+        });
+        if (token !== importToken) return null;
+        bytes = result.bytes;
+        mp4 = parseMp4(bytes);
+        conversion = {
+          converted: true,
+          engine: 'WebCodecs',
+          decodeEngine: result.decoderEngine,
+          encodeEngine: 'WebCodecs',
+          sourceCodec: result.sourceCodec,
+          inputBytes: sourceBytes.byteLength,
+          outputBytes: bytes.byteLength,
+          elapsedMs: result.elapsedMs,
+          target,
+          mode: 'converted',
+          reason: 'hevc-webcodecs',
+          sourceError: {code: cause.code ?? null, message: cause.message},
+          decoderCodec: result.decoderCodec,
+          encoderCodec: result.encoderCodec,
+          fps: result.fps,
+          outputSamples: result.outputSamples,
+        };
+      } catch (hevcCause) {
+        if (token !== importToken) return null;
+        hevcFallbackReason = hevcCause instanceof Error ? hevcCause.message : String(hevcCause);
+      }
+    }
+
+    if (!mp4) {
+      showConversion(label, 'loading ffmpeg.wasm', `“${hevcFallbackReason ?? cause.message}” Loading the local converter; this can take a while on the first file.`, null, slot);
+      const converted = await convertClipSource(index, label, sourceBytes, {
+        reason: hevcCodec ? 'hevc-webcodecs-fallback' : (cause.code ?? 'unparseable-input'),
+        isCurrent: () => token === importToken,
+      }, cause);
+      if (!converted || token !== importToken) return null;
+      bytes = converted.bytes;
+      mp4 = converted.mp4;
+      conversion = {
+        ...converted.conversion,
+        sourceCodec: hevcCodec ? 'HEVC' : null,
+        hevcWebCodecsFallbackReason: hevcFallbackReason,
+      };
+    }
   }
 
   let audio;
@@ -1307,6 +1375,8 @@ async function normalizeAllClips(token, target) {
             mode: 'normalized',
             reason: speedPreparation ? 'speed-normalization' : 'sequence-normalization',
             origin: clip.baseConversion ?? clip.conversion,
+            sourceCodec: (clip.baseConversion ?? clip.conversion)?.sourceCodec ?? null,
+            hevcWebCodecsFallbackReason: (clip.baseConversion ?? clip.conversion)?.hevcWebCodecsFallbackReason ?? null,
             decoderCodec: result.decoderCodec,
             encoderCodec: result.encoderCodec,
             fps: result.fps,

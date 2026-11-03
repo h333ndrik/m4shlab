@@ -15,7 +15,7 @@ const exportPath = join(downloadDir, 'm4shlab-merge.mp4');
 const hevcFixture = join(projectRoot, 'testmedia', 'synthetic-hevc.mov');
 const shellPaths = [
   '/', '/index.html', '/styles.css', '/app.js',
-  '/parser/mp4.js', '/parser/nal.js', '/parser/sps.js',
+  '/parser/mp4.js', '/parser/nal.js', '/parser/sps.js', '/parser/hevc.js',
   '/merge.js', '/mosh.js', '/webcodecs.js', '/webcodecs-muxer.js',
   '/converter.js', '/conversion-settings.js', '/classic-mosh.js', '/speed.js', '/randomize.js', '/audio.js', '/hybrid-encoder.js',
   '/manifest.json', '/favicon.svg', '/favicon-32.png', '/icon.svg', '/icon-192.png', '/icon-512.png', '/icon-180.png',

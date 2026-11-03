@@ -9,6 +9,7 @@ const APP_SHELL = [
   './parser/mp4.js',
   './parser/nal.js',
   './parser/sps.js',
+  './parser/hevc.js',
   './merge.js',
   './mosh.js',
   './webcodecs.js',
