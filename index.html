@@ -17,12 +17,9 @@
 <body>
   <main>
     <header>
-      <div class="brand">
-        <h1>m4shlab</h1>
-        <p>H.264 bitstream moshing, entirely in your browser.</p>
-      </div>
+      <h1>m4shlab</h1>
       <div class="file-actions" aria-label="Import clips">
-        <label class="button primary">Import clips<input id="file-input-a" type="file" multiple accept="video/*,.mp4,.mov,.m4v,.mkv,.webm,.avi"></label>
+        <label class="button">Import clips<input id="file-input-a" type="file" multiple accept="video/*,.mp4,.mov,.m4v,.mkv,.webm,.avi"></label>
         <input id="file-input-b" class="legacy-input" type="file" accept="video/*,.mp4,.mov,.m4v,.mkv,.webm,.avi" tabindex="-1" aria-hidden="true">
       </div>
     </header>
@@ -37,8 +34,8 @@
       <div class="preview-options">
         <span id="preview-label">No video selected</span>
         <div class="toggle" role="group" aria-label="Preview version">
-          <button id="show-original" type="button" aria-pressed="true" disabled>clip 1 cut</button>
-          <button id="show-modified" type="button" aria-pressed="false" disabled>merged sequence</button>
+          <button id="show-original" type="button" aria-pressed="true" disabled>A cut</button>
+          <button id="show-modified" type="button" aria-pressed="false" disabled>merged A→B</button>
         </div>
       </div>
       <button id="export-button" class="primary" type="button" disabled>export merged MP4</button>
@@ -47,7 +44,7 @@
     <section id="drop-zone" class="sequence" aria-labelledby="source-heading">
       <div class="section-label">
         <div class="section-title">
-          <h2 id="source-heading">clips</h2>
+          <h2 id="source-heading">sequence</h2>
           <span id="sequence-label">0 clips</span>
         </div>
         <div class="section-tools" aria-label="Timeline history">
@@ -96,7 +93,7 @@
     </dialog>
 
     <footer class="limits" aria-labelledby="limits-heading">
-      <p id="limits-heading">H.264 MP4/MOV parses natively. Other containers and codecs use the lazily loaded ffmpeg.wasm fallback. Sequences with incompatible parameters normalize locally to one shared target capped at 720px on the long side. Conversion is local; large files can exceed device memory or fail on iOS Safari, and hardware acceleration is not guaranteed. Merged exports have no audio.</p>
+      <p id="limits-heading">Real H.264 bitstream editing · normalized to max 720px long side · 30 fps · merged exports are video-only. Up to 12 clips, 128 MiB per clip. Originals stay untouched.</p>
     </footer>
   </main>
   <script type="module" src="./app.js"></script>

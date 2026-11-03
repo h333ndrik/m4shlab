@@ -48,13 +48,13 @@ header,
   gap: 16px;
 }
 
-header { margin-bottom: 30px; }
+header { margin-bottom: 28px; }
 
 h1 {
   margin: 0;
-  font-size: 17px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
 }
 
 h2 {
@@ -63,12 +63,6 @@ h2 {
   font-weight: 500;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-}
-
-.brand p {
-  margin: 9px 0 0;
-  color: var(--muted);
-  font-size: 12px;
 }
 
 .file-actions {
@@ -153,7 +147,7 @@ button:focus-visible,
   height: 380px;
   max-height: 50vh;
   overflow: hidden;
-  border-radius: 5px;
+  border-radius: 4px;
   background: #101010;
 }
 
@@ -533,7 +527,9 @@ progress {
 }
 
 .limits {
-  margin: 20px 0;
+  margin: 24px 0 0;
+  padding-top: 16px;
+  border-top: 1px solid #e0e0db;
   color: var(--muted);
   font-size: 11px;
   line-height: 1.6;
@@ -543,19 +539,35 @@ progress {
 
 @media (max-width: 600px) {
   main { padding: 24px 16px; }
-  header { align-items: flex-start; }
-  header { flex-direction: column; }
-  .file-actions { width: 100%; justify-content: stretch; }
-  .file-actions .button { flex: 1; text-align: center; }
+  header {
+    position: relative;
+    min-height: 44px;
+    align-items: flex-start;
+    flex-direction: column;
+    margin-bottom: 24px;
+  }
+  .file-actions {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: auto;
+    justify-content: flex-end;
+  }
+  .file-actions .button { text-align: center; }
   .viewer { height: 300px; }
   .preview-meta { align-items: flex-start; flex-direction: column; margin-bottom: 24px; }
   .preview-options { justify-content: space-between; width: 100%; }
   .preview-meta > button { width: 100%; }
-  .section-label { align-items: flex-start; flex-direction: column; }
-  .section-tools { width: 100%; }
-  .section-tools button { flex: 1; }
+  .section-label { align-items: center; flex-direction: row; }
+  .section-tools { width: auto; gap: 4px; }
+  .section-tools button { flex: 0 0 auto; }
   .conversion-heading { align-items: flex-start; flex-direction: column; gap: 6px; }
-  .limits { font-size: 10px; }
+  .limits {
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px solid #e0e0db;
+    font-size: 10px;
+  }
 }
 
 @media (pointer: coarse) {

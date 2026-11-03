@@ -367,7 +367,7 @@ function updateSingleClipState() {
   resetMerged();
   renderSourceTiers();
   finishConversionPanel();
-  originalButton.textContent = 'clip 1 cut';
+  originalButton.textContent = 'A cut';
   originalButton.disabled = clips.length === 0;
   modifiedButton.disabled = true;
 
@@ -754,7 +754,7 @@ async function refreshSequence() {
   }
 
   reportPanel.hidden = true;
-  originalButton.textContent = 'clip 1 cut';
+  originalButton.textContent = 'A cut';
   originalButton.disabled = false;
   modifiedButton.disabled = true;
   exportButton.disabled = true;
