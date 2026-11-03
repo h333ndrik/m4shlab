@@ -1,4 +1,5 @@
 import { MAX_TARGET_LONG_SIDE } from './conversion-settings.js';
+import { atempoFilter } from './speed.js';
 
 const CORE_VERSION = '0.12.10';
 const CORE_BASE = `https://cdn.jsdelivr.net/npm/@ffmpeg/core@${CORE_VERSION}/dist/esm`;
@@ -97,6 +98,18 @@ function extractPcmArgs(inputName, outputName, expectedSamples) {
   ];
 }
 
+function speedPcmArgs(inputName, outputName, expectedSamples, speed) {
+  return [
+    '-i', inputName,
+    '-vn',
+    '-ac', '2',
+    '-ar', '48000',
+    '-af', `${atempoFilter(speed)},apad=whole_len=${expectedSamples},atrim=end_sample=${expectedSamples}`,
+    '-f', 'f32le',
+    outputName,
+  ];
+}
+
 function muxAudioArgs(videoName, audioName, outputName, expectedSamples, encodeAudio) {
   return [
     '-i', videoName,
@@ -120,14 +133,14 @@ function cleanupFiles(ffmpeg, names) {
 }
 
 self.onmessage = async event => {
-  const {id, type, inputBytes, videoBytes, audioBytes, expectedSamples, target, mode = 'encode-wasm'} = event.data;
-  if (!['convert', 'extract-audio', 'mux-adts', 'mux-wav'].includes(type)) return;
+  const {id, type, inputBytes, videoBytes, audioBytes, expectedSamples, target, speed, mode = 'encode-wasm'} = event.data;
+  if (!['convert', 'extract-audio', 'speed-audio', 'mux-adts', 'mux-wav'].includes(type)) return;
   currentRequestId = id;
   currentLogs = [];
-  const inputName = type === 'convert' || type === 'extract-audio' ? 'input.bin' : 'video.mp4';
+  const inputName = type === 'convert' || type === 'extract-audio' ? 'input.bin' : type === 'speed-audio' ? 'input.wav' : 'video.mp4';
   const audioName = type === 'mux-adts' ? 'audio.aac' : 'audio.wav';
   const decodeOnly = mode === 'decode-y4m';
-  const outputName = decodeOnly ? 'output.y4m' : 'output.mp4';
+  const outputName = type === 'extract-audio' || type === 'speed-audio' ? 'output.pcm' : decodeOnly ? 'output.y4m' : 'output.mp4';
   try {
     const ffmpeg = await loadCore();
     cleanupFiles(ffmpeg, [inputName, audioName, outputName, 'output.pcm']);
@@ -157,6 +170,12 @@ self.onmessage = async event => {
       } else {
         resultBytes = ffmpeg.FS.readFile('output.pcm');
       }
+    } else if (type === 'speed-audio') {
+      post('status', {message: `Time-stretching audio to ${Number(speed).toFixed(1)}× with pitch-preserving atempo…`});
+      ffmpeg.FS.writeFile(inputName, new Uint8Array(inputBytes));
+      status = ffmpeg.exec(...speedPcmArgs(inputName, outputName, expectedSamples, speed));
+      if (status !== 0) throw new Error(`ffmpeg audio speed change exited with status ${status}`);
+      resultBytes = ffmpeg.FS.readFile(outputName);
     } else {
       post('status', {message: type === 'mux-adts' ? 'Muxing WebCodecs AAC audio and copied video…' : 'Encoding AAC and muxing merged audio…'});
       ffmpeg.FS.writeFile(inputName, new Uint8Array(videoBytes));
@@ -177,7 +196,7 @@ self.onmessage = async event => {
       type: 'done',
       requestId: id,
       output: outputCopy.buffer,
-      container: type === 'extract-audio' ? 'f32le' : decodeOnly ? 'y4m' : 'mp4',
+      container: type === 'extract-audio' || type === 'speed-audio' ? 'f32le' : decodeOnly ? 'y4m' : 'mp4',
       present: true,
     }, [outputCopy.buffer]);
   } catch (error) {

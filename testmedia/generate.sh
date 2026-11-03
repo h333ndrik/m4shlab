@@ -88,6 +88,19 @@ encode_audio_pair() {
 
 encode_audio_pair synthetic-audio-a.mp4 440
 encode_audio_pair synthetic-audio-b.mp4 880
+
+ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i "testsrc2=size=320x240:rate=30" \
+  -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=2" \
+  -frames:v 60 -t 2 \
+  -map 0:v:0 -map 1:a:0 \
+  -c:v libx264 -preset medium -profile:v high -pix_fmt yuv420p \
+  -r 30 -g 30 -keyint_min 30 -sc_threshold 0 -bf 0 \
+  -c:a aac -b:a 128k -ar 48000 -ac 2 \
+  -video_track_timescale 15360 \
+  -movflags +faststart -shortest \
+  "$root/testmedia/synthetic-speed-60.mp4"
+printf 'Generated %s\n' "$root/testmedia/synthetic-speed-60.mp4"
 encode_multigop synthetic-audio-silent-b.mp4 320x240 1 "testsrc2=size=320x240:rate=25,hue=h=180"
 
 ffmpeg -hide_banner -loglevel error -y \

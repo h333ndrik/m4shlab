@@ -15,10 +15,12 @@ import {
   MAX_CONVERSION_BYTES,
   muxAacWithFfmpeg,
   muxPcmWithFfmpeg,
+  speedAudioPcmWithFfmpeg,
 } from './converter.js';
 import { isWebCodecsAvailable, normalizeWithWebCodecs } from './webcodecs.js';
 import { chooseNormalizationTarget } from './webcodecs-muxer.js';
 import { frameRateForTrack, maxMoshFrames } from './classic-mosh.js';
+import { atempoChain, normalizeSpeed, SPEED_MAX, SPEED_MIN, SPEED_STEP } from './speed.js';
 import {
   assembleAudioTimeline,
   buildAdts,
@@ -182,6 +184,37 @@ async function extractClipAudio(sourceBytes, mp4, label) {
   };
 }
 
+async function applySpeedToClipAudio(baseAudio, outputFrames, speed, label) {
+  const resolvedSpeed = normalizeSpeed(speed);
+  const targetSamples = outputFrames * samplesPerFrame(30, AUDIO_SAMPLE_RATE);
+  if (resolvedSpeed === 1) {
+    if (!baseAudio.hasAudio) return silentClipAudio(outputFrames, baseAudio.source ?? 'silent');
+    if (baseAudio.frames !== outputFrames) {
+      throw new RuntimeError(`Speed 1.0× audio has ${baseAudio.frames} frames but normalized video has ${outputFrames}; no audio is trimmed silently.`);
+    }
+    return {...baseAudio, speed: 1, inputFrames: baseAudio.frames, outputFrames};
+  }
+  if (!baseAudio.hasAudio) return {...silentClipAudio(outputFrames, baseAudio.source ?? 'silent'), speed: resolvedSpeed, inputFrames: baseAudio.frames, outputFrames};
+  const inputSampleFrames = baseAudio.pcm.length / AUDIO_CHANNELS;
+  const wav = wavBytes(baseAudio.pcm, inputSampleFrames, AUDIO_SAMPLE_RATE, AUDIO_CHANNELS);
+  const stretched = await speedAudioPcmWithFfmpeg(wav, resolvedSpeed, targetSamples, {
+    onStatus: message => showConversion(label, 'audio speed', message),
+  });
+  return {
+    pcm: stretched.pcm,
+    frames: outputFrames,
+    hasAudio: true,
+    source: `atempo ${atempoChain(resolvedSpeed).join('·')}`,
+    decodeEngine: baseAudio.decodeEngine,
+    speedEngine: 'ffmpeg.wasm',
+    elapsedMs: stretched.elapsedMs,
+    speed: resolvedSpeed,
+    inputFrames: baseAudio.frames,
+    outputFrames,
+    expectedSamples: targetSamples,
+  };
+}
+
 function conversionEngine(clip) {
   const conversion = clip?.conversion;
   if (conversion?.engine === 'WebCodecs') return 'WebCodecs';
@@ -225,6 +258,10 @@ function clipReport(clip, index) {
     tier: clip.conversion ? 'tier-2' : 'tier-1',
     mode: clipMode(clip),
     path: conversionPath(clip),
+    speed: Number(clip.speed ?? 1),
+    input_frames: clip.baseMp4?.videoTrack.samples.length ?? clip.speedReport?.inputFrames ?? clip.mp4.videoTrack.samples.length,
+    output_frames: clip.mp4.videoTrack.samples.length,
+    speedReport: clip.speedReport ? {...clip.speedReport} : null,
     conversion: clip.conversion ? {...clip.conversion} : null,
     audio: clip.audio ? {
       frames: clip.audio.frames,
@@ -413,6 +450,38 @@ function renderClipCard(index, clip) {
   detail.textContent = `${duration === null ? 'video' : `${duration.toFixed(2)} s`} · ${clipMode(clip)}`;
   detail.title = conversionPath(clip);
 
+  const speedControl = document.createElement('div');
+  speedControl.className = 'clip-speed';
+  const speedHeading = document.createElement('div');
+  speedHeading.className = 'clip-speed-heading';
+  const speedLabel = document.createElement('label');
+  speedLabel.textContent = 'speed';
+  const speedOutput = document.createElement('output');
+  speedOutput.textContent = `${Number(clip.speed ?? 1).toFixed(1)}×`;
+  const speedReset = document.createElement('button');
+  speedReset.type = 'button';
+  speedReset.textContent = 'Reset';
+  speedReset.setAttribute('aria-label', `Reset ${clipDisplayLabel(index)} speed to 1.0×`);
+  speedReset.disabled = (clip.speed ?? 1) === 1;
+  speedReset.addEventListener('click', () => setClipSpeed(index, 1));
+  speedHeading.append(speedLabel, speedOutput, speedReset);
+  const speedRange = document.createElement('input');
+  speedRange.type = 'range';
+  speedRange.min = String(SPEED_MIN);
+  speedRange.max = String(SPEED_MAX);
+  speedRange.step = String(SPEED_STEP);
+  speedRange.value = String(Number(clip.speed ?? 1).toFixed(1));
+  speedRange.setAttribute('aria-label', `${clipDisplayLabel(index)} playback speed`);
+  speedRange.addEventListener('input', () => {
+    speedOutput.textContent = `${Number(speedRange.value).toFixed(1)}×`;
+  });
+  speedRange.addEventListener('change', () => setClipSpeed(index, speedRange.value));
+  speedLabel.htmlFor = speedRange.id = `clip-speed-${index}`;
+  speedControl.append(speedHeading, speedRange);
+  if (clip.speedReport) {
+    speedControl.title = `${clip.speedReport.inputFrames} → ${clip.speedReport.outputFrames} frames · audio ${clip.speedReport.audioFrames} frames`;
+  }
+
   const controls = document.createElement('div');
   controls.className = 'clip-controls';
   const actions = [
@@ -431,7 +500,7 @@ function renderClipCard(index, clip) {
     controls.append(button);
   }
 
-  card.append(thumb, name, detail, controls);
+  card.append(thumb, name, detail, speedControl, controls);
   return card;
 }
 
@@ -511,7 +580,7 @@ function finishConversionPanel() {
 function sequenceNormalizationReport() {
   const conversions = clips.map(clip => clip.conversion).filter(Boolean);
   if (conversions.length === 0) return null;
-  const reasons = new Set(['sequence-normalization', 'pair-normalization']);
+  const reasons = new Set(['sequence-normalization', 'pair-normalization', 'speed-normalization']);
   return {
     autoNormalized: clips.length > 1 && conversions.length === clips.length
       && conversions.every(conversion => reasons.has(conversion.reason)),
@@ -624,6 +693,23 @@ function rememberState() {
   if (undoStack.length > 50) undoStack.shift();
   redoStack = [];
   updateHistoryButtons();
+}
+
+function setClipSpeed(index, value) {
+  if (index < 0 || index >= clips.length) return;
+  let speed;
+  try {
+    speed = normalizeSpeed(value);
+  } catch (cause) {
+    setError(cause instanceof Error ? cause.message : String(cause));
+    return;
+  }
+  if ((clips[index].speed ?? 1) === speed) return;
+  rememberState();
+  clips = clips.map((clip, clipIndex) => clipIndex === index ? {...clip, speed} : clip);
+  normalizationAttempted = false;
+  setError('');
+  refreshSequence();
 }
 
 function updateHistoryButtons() {
@@ -902,8 +988,15 @@ async function readClipFile(file, index, token) {
     file,
     bytes,
     mp4,
+    baseBytes: bytes,
+    baseMp4: mp4,
+    baseAudio: audio,
+    baseConversion: conversion,
     url: URL.createObjectURL(new Blob([bytes], {type: 'video/mp4'})),
     conversion,
+    speed: 1,
+    preparedSpeed: 1,
+    speedReport: null,
     transition: 'classic-mosh',
     moshDurationFrames: null,
     moshEnding: 'restore',
@@ -1037,20 +1130,27 @@ async function mapWithConcurrency(items, limit, mapper) {
 async function normalizeAllClips(token, target) {
   const originals = clips.map(clip => ({...clip}));
   let webcodecsFallbackReason = null;
+  const speedPreparation = originals.some(clip => normalizeSpeed(clip.speed ?? 1) !== normalizeSpeed(clip.preparedSpeed ?? 1));
+  if (speedPreparation && !isWebCodecsAvailable()) {
+    throw new Error('Clip speed requires WebCodecs VideoDecoder and VideoEncoder for the one-pass frame mapping and re-encode.');
+  }
 
-  if (isWebCodecsAvailable() && originals.every(clip => !clip.conversion)) {
+  if (isWebCodecsAvailable() && (speedPreparation || originals.every(clip => !clip.conversion))) {
     try {
       for (const [index] of originals.entries()) setConversionProgress(null, progressSlot(index));
-      showConversion(`${clips.length} clips`, 'normalizing', `Normalizing clips in parallel with WebCodecs to one ${target.width}×${target.height} H.264 layout…`, null);
+      showConversion(`${clips.length} clips`, 'normalizing', `Normalizing clips in parallel with WebCodecs to one ${target.width}×${target.height}, 30 fps H.264 layout…`, null);
       const normalized = await mapWithConcurrency(originals, 2, async (clip, index) => {
         if (token !== refreshToken) return null;
         if (clip.file.size > MAX_CONVERSION_BYTES) {
           throw new Error(`${clipDisplayLabel(index)} is ${formatBytes(clip.file.size)}; conversion is limited to 100 MB.`);
         }
         const label = clipDisplayLabel(index);
-        showConversion(label, 'normalizing', `Decoding and re-encoding ${clip.file.name} with WebCodecs to ${target.width}×${target.height}…`, null, progressSlot(index));
-        const result = await normalizeWithWebCodecs(clip.bytes, {
+        const speed = normalizeSpeed(clip.speed ?? 1);
+        const sourceBytes = clip.baseBytes ?? clip.bytes;
+        showConversion(label, 'normalizing', `Applying ${speed.toFixed(1)}× speed and re-encoding ${clip.file.name} with WebCodecs at ${target.width}×${target.height}…`, null, progressSlot(index));
+        const result = await normalizeWithWebCodecs(sourceBytes, {
           target,
+          speed,
           onStatus: message => {
             if (token === refreshToken) showConversion(label, 'working', message, null, progressSlot(index));
           },
@@ -1060,16 +1160,31 @@ async function normalizeAllClips(token, target) {
             showConversion(label, 'working', `Normalizing with WebCodecs · ${percent}%`, progress, progressSlot(index));
           },
         });
-        return {result, sourceBytes: clip.bytes.byteLength};
+        const audio = await applySpeedToClipAudio(clip.baseAudio ?? clip.audio, result.outputFrames, speed, label);
+        return {result, sourceBytes: sourceBytes.byteLength, audio};
       });
       if (token !== refreshToken || normalized.some(item => !item)) return false;
       clips = originals.map((clip, index) => {
-        const {result, sourceBytes} = normalized[index];
+        const {result, sourceBytes, audio} = normalized[index];
         const mp4 = parseMp4(result.bytes);
+        const speed = normalizeSpeed(clip.speed ?? 1);
         return {
           ...clip,
           bytes: result.bytes,
           mp4,
+          audio,
+          preparedSpeed: speed,
+          speedReport: {
+            speed,
+            inputFrames: result.inputFrames,
+            outputFrames: result.outputFrames,
+            inputFps: result.sourceFps,
+            outputFps: result.fps,
+            audioFrames: audio.frames,
+            audioSamples: audio.pcm ? audio.pcm.length / AUDIO_CHANNELS : 0,
+            audioEngine: audio.speedEngine ?? null,
+            donorIndexes: result.speedFramePlan?.donorIndexes ?? null,
+          },
           conversion: {
             converted: true,
             engine: 'WebCodecs',
@@ -1082,13 +1197,16 @@ async function normalizeAllClips(token, target) {
             elapsedMs: result.elapsedMs,
             target: result.target,
             mode: 'normalized',
-            reason: 'sequence-normalization',
-            origin: clip.conversion,
+            reason: speedPreparation ? 'speed-normalization' : 'sequence-normalization',
+            origin: clip.baseConversion ?? clip.conversion,
             decoderCodec: result.decoderCodec,
             encoderCodec: result.encoderCodec,
             fps: result.fps,
             keyframes: result.keyframes,
             outputSamples: result.outputSamples,
+            speed: result.speed,
+            inputFrames: result.inputFrames,
+            outputFrames: result.outputFrames,
             frameAlignment: result.frameAlignment,
           },
         };
@@ -1101,9 +1219,14 @@ async function normalizeAllClips(token, target) {
     } catch (cause) {
       if (token !== refreshToken) return false;
       webcodecsFallbackReason = cause instanceof Error ? cause.message : String(cause);
+      if (speedPreparation) {
+        throw new Error(`Speed normalization failed in WebCodecs. ${webcodecsFallbackReason}`);
+      }
       showConversion('WebCodecs', 'falling back', `${webcodecsFallbackReason} Loading the ffmpeg.wasm fallback…`, null);
     }
   }
+
+  if (speedPreparation) throw new Error('Clip speed requires the WebCodecs normalization path; ffmpeg.wasm conversion cannot preserve the exact 30 fps speed mapping.');
 
   const converted = await Promise.all(originals.map(async (clip, index) => {
     if (token !== refreshToken) return null;
@@ -1276,6 +1399,33 @@ async function refreshSequence() {
     updateSingleClipState();
     return;
   }
+  const speedPreparationNeeded = clips.some(clip => normalizeSpeed(clip.speed ?? 1) !== normalizeSpeed(clip.preparedSpeed ?? 1));
+  if (speedPreparationNeeded) {
+    const target = chooseNormalizationTarget(...clips.map(clip => ({
+      width: clip.mp4.videoTrack.width,
+      height: clip.mp4.videoTrack.height,
+    })));
+    status.textContent = `Applying clip speed at ${target.width}×${target.height}, 30 fps…`;
+    report.textContent = JSON.stringify({
+      stage: 'speed-normalizing',
+      sources: sourcesReport(),
+      target,
+    }, null, 2);
+    reportPanel.hidden = false;
+    try {
+      const normalized = await normalizeAllClips(token, target);
+      if (!normalized || token !== refreshToken) return;
+      normalizationAttempted = true;
+      renderSourceTiers();
+    } catch (cause) {
+      if (token !== refreshToken) return;
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      report.textContent = JSON.stringify({stage: 'speed-normalization-failed', error: detail, sources: sourcesReport()}, null, 2);
+      status.textContent = 'Clip speed could not be prepared.';
+      setError(shortErrorText(detail, 'Clip speed could not be prepared.'));
+      return;
+    }
+  }
   if (clips.length === 1) {
     updateSingleClipState();
     return;
@@ -1420,6 +1570,9 @@ async function refreshSequence() {
         return {
           boundaryIndex: offset,
           method: clip.transition,
+          speed: Number(clip.speed ?? 1),
+          input_frames: clip.baseMp4?.videoTrack.samples.length ?? clip.mp4.videoTrack.samples.length,
+          output_frames: clip.mp4.videoTrack.samples.length,
           durationFrames: settings?.durationFrames ?? null,
           durationSeconds: settings?.durationSeconds ?? null,
           ending: settings?.ending ?? null,

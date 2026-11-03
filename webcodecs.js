@@ -3,6 +3,8 @@ import { extractNals } from './parser/nal.js';
 import { parseSps } from './parser/sps.js';
 import { parseAvcConfig } from './merge.js';
 import { buildNormalizedMp4, chooseNormalizationTarget } from './webcodecs-muxer.js';
+import { frameRateForTrack } from './classic-mosh.js';
+import { normalizeSpeed, speedFramePlan } from './speed.js';
 
 const OUTPUT_FPS = 30;
 const OUTPUT_DURATION_US = 1_000_000 / OUTPUT_FPS;
@@ -325,6 +327,7 @@ export async function normalizeWithWebCodecs(inputBytes, options = {}) {
   throwIfAborted(options.signal);
 
   const started = performance.now();
+  const speed = normalizeSpeed(options.speed ?? 1);
   const parsed = parseMp4(inputBytes);
   const target = chooseNormalizationTarget(options.target ?? parsed.videoTrack);
   const decoderSelection = await selectDecoderConfig(inputBytes, parsed.videoTrack);
@@ -344,8 +347,12 @@ export async function normalizeWithWebCodecs(inputBytes, options = {}) {
   let encoderError = null;
   let decoderError = null;
   let encodedFrames = 0;
+  let decodedSourceFrames = 0;
   let pendingFrames = 0;
   let processing = Promise.resolve();
+  const sourceFps = frameRateForTrack(parsed.videoTrack);
+  const speedPlan = speed === 1 ? null : speedFramePlan(chunks.length, sourceFps, speed);
+  const outputFrameTarget = speedPlan?.outputFrames ?? chunks.length;
 
   const encoder = new VideoEncoder({
     output: (chunk, metadata) => {
@@ -362,28 +369,33 @@ export async function normalizeWithWebCodecs(inputBytes, options = {}) {
   });
   const decoder = new VideoDecoder({
     output: frame => {
+      const sourceIndex = decodedSourceFrames;
+      decodedSourceFrames += 1;
       pendingFrames += 1;
       processing = processing.then(async () => {
         try {
           throwIfAborted(options.signal);
           if (encoderError) throw encoderError;
-          const scale = Math.min(target.width / frame.displayWidth, target.height / frame.displayHeight);
-          const drawWidth = Math.max(1, Math.round(frame.displayWidth * scale));
-          const drawHeight = Math.max(1, Math.round(frame.displayHeight * scale));
-          const drawX = Math.floor((target.width - drawWidth) / 2);
-          const drawY = Math.floor((target.height - drawHeight) / 2);
-          context.fillRect(0, 0, target.width, target.height);
-          context.drawImage(frame, drawX, drawY, drawWidth, drawHeight);
-          const timestamp = Math.round(encodedFrames * OUTPUT_DURATION_US);
-          const image = context.getImageData(0, 0, target.width, target.height);
-          const outputFrame = limitedI420Frame(image.data, target.width, target.height, timestamp);
-          try {
-            encoder.encode(outputFrame, {keyFrame: encodedFrames % KEYFRAME_INTERVAL === 0});
-            encodedFrames += 1;
-          } finally {
-            outputFrame.close();
+          const outputIndexes = speedPlan ? speedPlan.outputsBySource[sourceIndex] ?? [] : [encodedFrames];
+          for (const outputIndex of outputIndexes) {
+            const scale = Math.min(target.width / frame.displayWidth, target.height / frame.displayHeight);
+            const drawWidth = Math.max(1, Math.round(frame.displayWidth * scale));
+            const drawHeight = Math.max(1, Math.round(frame.displayHeight * scale));
+            const drawX = Math.floor((target.width - drawWidth) / 2);
+            const drawY = Math.floor((target.height - drawHeight) / 2);
+            context.fillRect(0, 0, target.width, target.height);
+            context.drawImage(frame, drawX, drawY, drawWidth, drawHeight);
+            const timestamp = Math.round(outputIndex * OUTPUT_DURATION_US);
+            const image = context.getImageData(0, 0, target.width, target.height);
+            const outputFrame = limitedI420Frame(image.data, target.width, target.height, timestamp);
+            try {
+              encoder.encode(outputFrame, {keyFrame: outputIndex % KEYFRAME_INTERVAL === 0});
+              encodedFrames += 1;
+            } finally {
+              outputFrame.close();
+            }
           }
-          options.onProgress?.(Math.min(0.95, encodedFrames / chunks.length));
+          options.onProgress?.(Math.min(0.95, encodedFrames / outputFrameTarget));
         } finally {
           frame.close();
           pendingFrames -= 1;
@@ -400,7 +412,9 @@ export async function normalizeWithWebCodecs(inputBytes, options = {}) {
   try {
     encoder.configure(encoderSelection.config);
     decoder.configure(decoderSelection.config);
-    options.onStatus?.(`Decoding H.264 and encoding a normalized ${target.width}×${target.height} stream with WebCodecs…`);
+    options.onStatus?.(speed === 1
+      ? `Decoding H.264 and encoding a normalized ${target.width}×${target.height} stream with WebCodecs…`
+      : `Applying ${speed.toFixed(1)}× speed while decoding and encoding a normalized ${target.width}×${target.height} stream with WebCodecs…`);
 
     for (const source of chunks) {
       throwIfAborted(options.signal);
@@ -417,11 +431,17 @@ export async function normalizeWithWebCodecs(inputBytes, options = {}) {
     await decoder.flush();
     await processing;
     if (encoderError || decoderError) throw encoderError ?? decoderError;
+    if (decodedSourceFrames !== chunks.length) {
+      throw new WebCodecsError(`WebCodecs decoded ${decodedSourceFrames} source frames; expected ${chunks.length}.`);
+    }
     await encoder.flush();
     if (encoderError) throw encoderError;
     if (!description) throw new WebCodecsError('The browser H.264 encoder did not provide an avcC decoder description.');
     if (encoded.length !== encodedFrames) {
       throw new WebCodecsError(`The browser encoded ${encoded.length} chunks for ${encodedFrames} frames.`);
+    }
+    if (encodedFrames !== outputFrameTarget) {
+      throw new WebCodecsError(`WebCodecs emitted ${encodedFrames} frames at ${speed.toFixed(1)}×; expected ${outputFrameTarget}.`);
     }
 
     encoded.sort((left, right) => left.timestamp - right.timestamp);
@@ -461,6 +481,13 @@ export async function normalizeWithWebCodecs(inputBytes, options = {}) {
       encoderCodec: encoderSelection.codec,
       sourceSamples: chunks.length,
       outputSamples: encoded.length,
+      speed,
+      sourceFps,
+      inputFrames: chunks.length,
+      outputFrames: encoded.length,
+      speedFramePlan: speedPlan ? {
+        donorIndexes: speedPlan.donorIndexes,
+      } : null,
       outputBytes: muxed.bytes.byteLength,
       idrCount,
       keyframes: muxed.report.keyframes,

@@ -13,6 +13,7 @@ import { MAX_TARGET_LONG_SIDE, capNormalizationDimensions } from '../conversion-
 import { parseSps } from '../parser/sps.js';
 import { ValueError, frameRateForTrack } from '../classic-mosh.js';
 import { assembleAudioTimeline, buildAdts, retimeMuxedAudio, RuntimeError, samplesPerFrame, wavBytes } from '../audio.js';
+import { SpeedValueError, atempoChain, atempoFilter, normalizeSpeed, speedFramePlan } from '../speed.js';
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const fixturePath = join(projectRoot, 'testmedia', 'synthetic-h264.mp4');
@@ -1200,6 +1201,91 @@ const audioSourceHashes = Object.fromEntries(Object.entries(audioFixtures).map((
 ]));
 const audioFrameSamples = samplesPerFrame(25);
 assert.equal(audioFrameSamples, 1920);
+
+const speedPlans = new Map([
+  [2, speedFramePlan(60, 30, 2)],
+  [0.5, speedFramePlan(60, 30, 0.5)],
+  [1, speedFramePlan(60, 30, 1)],
+  [1.7, speedFramePlan(60, 30, 1.7)],
+]);
+assert.equal(speedPlans.get(2).outputFrames, 30);
+assert.deepEqual(speedPlans.get(2).donorIndexes, Array.from({length: 30}, (_, index) => index * 2));
+assert.equal(speedPlans.get(0.5).outputFrames, 120);
+assert.deepEqual(speedPlans.get(0.5).donorIndexes.slice(0, 8), [0, 0, 1, 1, 2, 2, 3, 3]);
+assert.equal(speedPlans.get(1).outputFrames, 60);
+assert.deepEqual(speedPlans.get(1).donorIndexes, Array.from({length: 60}, (_, index) => index));
+assert.equal(speedPlans.get(1.7).outputFrames, 35);
+assert.deepEqual(speedPlans.get(1.7).donorIndexes.slice(0, 8), [0, 1, 3, 5, 6, 8, 10, 11]);
+for (const speed of [0.1, 0.3, 0.5, 1, 1.7, 2, 4]) {
+  const chain = atempoChain(speed);
+  assert.ok(chain.every(stage => stage >= 0.5 && stage <= 2));
+  assert.ok(Math.abs(chain.reduce((total, stage) => total * stage, 1) - speed) < 1e-5);
+}
+assert.throws(() => normalizeSpeed(0.05), SpeedValueError);
+assert.throws(() => normalizeSpeed(5), SpeedValueError);
+assert.throws(() => normalizeSpeed(1.25), SpeedValueError);
+pass('Speed plans map 60 frames to 30/120/60/35 frames at 2×/0.5×/1×/1.7× and reject out-of-range values');
+
+function readInterleavedFloat32(path) {
+  const bytes = readFileSync(path);
+  return new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
+}
+
+function estimateToneFrequency(interleaved, channels, sampleRate) {
+  const start = 2400;
+  const length = 8192;
+  const mono = new Float32Array(length);
+  let mean = 0;
+  for (let index = 0; index < length; index += 1) {
+    mono[index] = interleaved[(start + index) * channels];
+    mean += mono[index];
+  }
+  mean /= length;
+  for (let index = 0; index < length; index += 1) mono[index] -= mean;
+  let bestLag = 0;
+  let best = -Infinity;
+  for (let lag = Math.floor(sampleRate / 1200); lag <= Math.ceil(sampleRate / 150); lag += 1) {
+    let correlation = 0;
+    let energy = 0;
+    for (let index = 0; index + lag < length; index += 1) {
+      correlation += mono[index] * mono[index + lag];
+      energy += mono[index] * mono[index];
+    }
+    const score = energy > 0 ? correlation / energy : -Infinity;
+    if (score > best) {
+      best = score;
+      bestLag = lag;
+    }
+  }
+  return sampleRate / bestLag;
+}
+
+const speedToneFrames = 96_000;
+const speedTonePcm = new Float32Array(speedToneFrames * 2);
+for (let frame = 0; frame < speedToneFrames; frame += 1) {
+  const value = 0.45 * Math.sin(2 * Math.PI * 440 * frame / 48_000);
+  speedTonePcm[frame] = value;
+  speedTonePcm[speedToneFrames + frame] = value;
+}
+const speedToneInput = join(projectRoot, 'testmedia', 'synthetic-speed-tone-input.wav');
+writeFileSync(speedToneInput, wavBytes(speedTonePcm, speedToneFrames));
+for (const speed of [2, 0.5, 1.7]) {
+  const outputFrames = Math.round(60 / speed);
+  const expectedSamples = outputFrames * 1600;
+  const outputPath = join(projectRoot, 'testmedia', `synthetic-speed-tone-${String(speed).replace('.', '_')}.pcm`);
+  command('ffmpeg', [
+    '-v', 'error', '-y', '-i', speedToneInput,
+    '-vn', '-ac', '2', '-ar', '48000',
+    '-af', `${atempoFilter(speed)},apad=whole_len=${expectedSamples},atrim=end_sample=${expectedSamples}`,
+    '-f', 'f32le', outputPath,
+  ], `Speed ${speed} audio atempo`);
+  const pcm = readInterleavedFloat32(outputPath);
+  assert.equal(pcm.length, expectedSamples * 2);
+  const frequency = estimateToneFrequency(pcm, 2, 48_000);
+  assert.ok(Math.abs(frequency - 440) < 12, `speed ${speed} changed 440 Hz tone to ${frequency.toFixed(1)} Hz`);
+}
+pass('2×, 0.5×, and 1.7× atempo chains keep the 440 Hz tone and emit exact 48,000/192,000/56,000 samples');
+
 function testClipAudio(frames, base, source = 'test tone') {
   const sampleFrames = frames * audioFrameSamples;
   const pcm = new Float32Array(sampleFrames * 2);

@@ -20,6 +20,7 @@ const fixtures = {
   audioA: join(projectRoot, 'testmedia', 'synthetic-audio-a.mp4'),
   audioB: join(projectRoot, 'testmedia', 'synthetic-audio-b.mp4'),
   silentB: join(projectRoot, 'testmedia', 'synthetic-audio-silent-b.mp4'),
+  speed: join(projectRoot, 'testmedia', 'synthetic-speed-60.mp4'),
   poc0A: join(projectRoot, 'testmedia', 'synthetic-multigop-poc0-a.mp4'),
   poc0B: join(projectRoot, 'testmedia', 'synthetic-multigop-poc0-b.mp4'),
 };
@@ -30,6 +31,7 @@ const normalizedPaths = {
 const downloadDir = join(projectRoot, 'testmedia', 'webcodecs-browser-downloads');
 const mergedPath = join(downloadDir, 'm4shlab-merge.mp4');
 const audioMergedPath = join(projectRoot, 'testmedia', 'webcodecs-audio-merged.mp4');
+const speedMergedPath = join(projectRoot, 'testmedia', 'webcodecs-speed-merged.mp4');
 const multiGopMergedPath = join(projectRoot, 'testmedia', 'webcodecs-browser-multigop-merged.mp4');
 const hybridExportPath = join(projectRoot, 'testmedia', 'webcodecs-hybrid-export.mp4');
 const multiTimelineExportPath = join(projectRoot, 'testmedia', 'webcodecs-multitimeline-export.mp4');
@@ -866,6 +868,187 @@ try {
   assert.ok(audioFallback.audio.encoderDelaySamples >= 0);
   console.log(`PASS AudioEncoder unavailable: PCM encoded in ffmpeg.wasm and merged audio reports delay=${audioFallback.audio.encoderDelaySamples} samples`);
   await client.send('Page.removeScriptToEvaluateOnNewDocument', {identifier: audioFallbackScript.identifier});
+
+  await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?clip-speed=1'});
+  await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
+  await client.setFile('#file-input-a', fixtures.speed);
+  await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 30000);
+  await client.setFile('#file-input-b', fixtures.speed);
+  await client.waitFor(`(() => {
+    const node = document.querySelector('#report');
+    if (!node.textContent) return false;
+    try {
+      const report = JSON.parse(node.textContent);
+      return report.stage === 'merged' && report.sources?.clips?.length === 2;
+    } catch { return false; }
+  })()`, 60000);
+  const speedAtOne = await client.evaluate(`(() => {
+    const report = JSON.parse(document.querySelector('#report').textContent);
+    return {
+      speeds: report.sources.clips.map(clip => clip.speed),
+      inputFrames: report.sources.clips.map(clip => clip.input_frames),
+      outputFrames: report.sources.clips.map(clip => clip.output_frames),
+      conversions: report.sources.clips.map(clip => clip.conversion),
+      sliderCount: document.querySelectorAll('.clip-speed input[type="range"]').length,
+      sliderStep: document.querySelector('.clip-speed input[type="range"]')?.step,
+      resetLabels: [...document.querySelectorAll('.clip-speed button')].map(button => button.textContent),
+    };
+  })()`);
+  assert.deepEqual(speedAtOne.speeds, [1, 1]);
+  assert.deepEqual(speedAtOne.inputFrames, [60, 60]);
+  assert.deepEqual(speedAtOne.outputFrames, [60, 60]);
+  assert.deepEqual(speedAtOne.conversions, [null, null]);
+  assert.equal(speedAtOne.sliderCount, 2);
+  assert.equal(speedAtOne.sliderStep, '0.1');
+  assert.deepEqual(speedAtOne.resetLabels, ['Reset', 'Reset']);
+
+  const setClipSpeed = async (index, speed, outputFrames) => {
+    await client.evaluate(`(() => {
+      const card = document.querySelectorAll('.clip-card')[${index}];
+      const input = card.querySelector('.clip-speed input[type="range"]');
+      input.value = '${speed}';
+      input.dispatchEvent(new Event('input', {bubbles: true}));
+      input.dispatchEvent(new Event('change', {bubbles: true}));
+    })()`);
+    await client.waitFor(`(() => {
+      const node = document.querySelector('#report');
+      if (!node.textContent) return false;
+      try {
+        const report = JSON.parse(node.textContent);
+        const clip = report.sources?.clips?.[${index}];
+        return clip?.speed === ${speed} && clip?.speedReport?.outputFrames === ${outputFrames};
+      } catch { return false; }
+    })()`, 120000);
+  };
+  await setClipSpeed(0, 2, 30);
+  await setClipSpeed(1, 0.5, 120);
+
+  await client.evaluate(`(() => {
+    document.querySelector('.connector').click();
+    const cut = document.querySelector('#transition-dialog input[value="cut"]');
+    cut.checked = true;
+    cut.dispatchEvent(new Event('change', {bubbles: true}));
+    document.querySelector('#transition-apply').click();
+  })()`);
+  await client.waitFor(`(() => {
+    const node = document.querySelector('#report');
+    if (!node.textContent) return false;
+    try {
+      const report = JSON.parse(node.textContent);
+      return report.stage === 'merged' && report.transitions?.[0]?.method === 'cut' && report.merge?.mergedSamples === 150;
+    } catch { return false; }
+  })()`, 120000);
+  const speedMerge = await client.evaluate(`(() => {
+    const report = JSON.parse(document.querySelector('#report').textContent);
+    return {
+      error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
+      sources: report.sources.clips.map(clip => ({
+        speed: clip.speed,
+        inputFrames: clip.input_frames,
+        outputFrames: clip.output_frames,
+        speedReport: clip.speedReport,
+        target: clip.conversion?.target,
+        reason: clip.conversion?.reason,
+      })),
+      transition: report.transitions[0],
+      mergedSamples: report.merge.mergedSamples,
+      audio: report.merge.audio,
+    };
+  })()`);
+  assert.equal(speedMerge.error, null, speedMerge.error);
+  assert.deepEqual(speedMerge.sources.map(source => source.speed), [2, 0.5]);
+  assert.deepEqual(speedMerge.sources.map(source => source.inputFrames), [60, 60]);
+  assert.deepEqual(speedMerge.sources.map(source => source.outputFrames), [30, 120]);
+  assert.equal(speedMerge.transition.speed, 0.5);
+  assert.equal(speedMerge.transition.input_frames, 60);
+  assert.equal(speedMerge.transition.output_frames, 120);
+  assert.equal(speedMerge.mergedSamples, 150);
+  assert.equal(speedMerge.audio.included, true);
+  assert.equal(speedMerge.audio.expectedSamples, 150 * 1600);
+  assert.ok(speedMerge.sources.every(source => source.reason === 'speed-normalization'));
+  assert.ok(speedMerge.sources.every(source => source.target.width === 320 && source.target.height === 240));
+
+  rmSync(downloadDir, {recursive: true, force: true});
+  mkdirSync(downloadDir, {recursive: true});
+  rmSync(speedMergedPath, {force: true});
+  await client.evaluate("document.querySelector('#export-button').click()");
+  await waitForDownload(join(downloadDir, 'm4shlab-merge.mp4'), 30000);
+  writeFileSync(speedMergedPath, readFileSync(join(downloadDir, 'm4shlab-merge.mp4')));
+  const speedProbe = command('ffprobe', [
+    '-v', 'error', '-count_frames',
+    '-show_entries', 'stream=codec_type,avg_frame_rate,nb_read_frames,duration:format=duration',
+    '-of', 'json', speedMergedPath,
+  ], 'speed merge probe');
+  const speedProbeJson = JSON.parse(speedProbe.stdout);
+  const speedVideo = speedProbeJson.streams.find(stream => stream.codec_type === 'video');
+  const speedAudio = speedProbeJson.streams.find(stream => stream.codec_type === 'audio');
+  assert.equal(speedVideo.avg_frame_rate, '30/1');
+  assert.equal(Number(speedVideo.nb_read_frames), 150);
+  assert.ok(speedAudio);
+  assert.ok(Math.abs(Number(speedAudio.duration) - 5) < 0.002, speedAudio.duration);
+  command('ffmpeg', ['-v', 'error', '-i', speedMergedPath, '-f', 'null', '-'], 'speed merge strict decode');
+  console.log(`PASS 2× + 0.5× clips merge to 150/150 frames and ${speedMerge.audio.expectedSamples} exact audio samples at 30 fps`);
+
+  await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?fractional-speed=1'});
+  await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
+  await client.setFile('#file-input-a', fixtures.speed);
+  await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 30000);
+  await client.evaluate(`(() => {
+    const input = document.querySelector('.clip-card .clip-speed input[type="range"]');
+    input.value = '1.7';
+    input.dispatchEvent(new Event('input', {bubbles: true}));
+    input.dispatchEvent(new Event('change', {bubbles: true}));
+  })()`);
+  await client.waitFor("document.querySelector('.clip-card .clip-speed')?.title.startsWith('60 → 35 frames')", 120000);
+  await client.waitFor("document.querySelector('#preview-video').readyState >= 2 || document.querySelector('#preview-video').error", 30000);
+  const fractionalSpeed = await client.evaluate(`({
+    title: document.querySelector('.clip-card .clip-speed').title,
+    error: document.querySelector('#preview-video').error?.code ?? null,
+    readyState: document.querySelector('#preview-video').readyState,
+    width: document.querySelector('#preview-video').videoWidth,
+    height: document.querySelector('#preview-video').videoHeight,
+  })`);
+  assert.match(fractionalSpeed.title, /^60 → 35 frames · audio 35 frames/);
+  assert.equal(fractionalSpeed.error, null);
+  assert.ok(fractionalSpeed.readyState >= 2);
+  assert.equal(fractionalSpeed.width, 320);
+  assert.equal(fractionalSpeed.height, 240);
+  console.log('PASS fractional 1.7× produces 35 decodable frames with a 35-frame audio timeline');
+  await client.evaluate("document.querySelector('.clip-card .clip-speed button').click()");
+  await client.waitFor("document.querySelector('.clip-card .clip-speed')?.title.startsWith('60 → 60 frames')", 120000);
+  const resetSpeed = await client.evaluate(`({
+    title: document.querySelector('.clip-card .clip-speed').title,
+    value: document.querySelector('.clip-card .clip-speed output').textContent,
+    disabled: document.querySelector('.clip-card .clip-speed button').disabled,
+  })`);
+  assert.match(resetSpeed.title, /^60 → 60 frames/);
+  assert.equal(resetSpeed.value, '1.0×');
+  assert.equal(resetSpeed.disabled, true);
+  console.log('PASS per-clip Reset restores 1.0× with 60 input and 60 output frames');
+
+  await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?speed-target=1'});
+  await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
+  await client.setFile('#file-input-a', fixtures.largeA);
+  await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 30000);
+  await client.evaluate(`(() => {
+    const input = document.querySelector('.clip-card .clip-speed input[type="range"]');
+    input.value = '2';
+    input.dispatchEvent(new Event('input', {bubbles: true}));
+    input.dispatchEvent(new Event('change', {bubbles: true}));
+  })()`);
+  await client.waitFor("document.querySelector('.clip-card .clip-speed')?.title.startsWith('25 → 15 frames')", 120000);
+  await client.waitFor("document.querySelector('#preview-video').videoWidth === 540 && document.querySelector('#preview-video').videoHeight === 720", 30000);
+  const targetSpeed = await client.evaluate(`({
+    title: document.querySelector('.clip-card .clip-speed').title,
+    width: document.querySelector('#preview-video').videoWidth,
+    height: document.querySelector('#preview-video').videoHeight,
+    resetDisabled: document.querySelector('.clip-speed button').disabled,
+  })`);
+  assert.match(targetSpeed.title, /^25 → 15 frames/);
+  assert.equal(targetSpeed.width, 540);
+  assert.equal(targetSpeed.height, 720);
+  assert.equal(targetSpeed.resetDisabled, false);
+  console.log('PASS single clip speed=2 and 720px normalization run in one 540×720 WebCodecs pass');
 
   await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?single-pair=1'});
   await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);

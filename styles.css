@@ -297,6 +297,45 @@ button:focus-visible,
   white-space: nowrap;
 }
 
+.clip-speed {
+  display: grid;
+  gap: 3px;
+  padding: 0 8px 7px;
+  border-top: 1px solid #ededeb;
+}
+
+.clip-speed-heading {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.clip-speed-heading output {
+  margin-left: auto;
+  color: var(--ink);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.clip-speed-heading button {
+  min-width: 0;
+  border: 0;
+  padding: 2px 3px;
+  color: #555;
+  font-size: 9px;
+  text-transform: none;
+}
+
+.clip-speed input[type="range"] {
+  width: 100%;
+  margin: 0;
+  accent-color: #555;
+}
+
 .clip-controls {
   display: flex;
   align-items: center;
@@ -639,6 +678,8 @@ progress {
   button,
   .button { min-height: 44px; }
   .clip-controls button { min-width: 44px; min-height: 44px; padding: 8px; }
+  .clip-speed-heading button { min-height: 44px; padding: 8px; }
+  .clip-speed input[type="range"] { min-height: 44px; }
   .connector { min-height: 44px; }
   .transition-dialog fieldset label { min-height: 44px; }
   .classic-mosh-options input[type="range"],

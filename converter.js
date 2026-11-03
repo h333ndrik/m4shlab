@@ -1,5 +1,6 @@
 import { capNormalizationDimensions } from './conversion-settings.js';
 import { HybridEncodeError, encodeY4mWithWebCodecs, isWebCodecsEncoderAvailable } from './hybrid-encoder.js';
+import { normalizeSpeed } from './speed.js';
 
 const MAX_CONVERSION_BYTES = 100 * 1024 * 1024;
 const FFMPEG_CORE_VERSION = '0.12.10';
@@ -255,6 +256,37 @@ export async function extractAudioPcmWithFfmpeg(inputBytes, expectedSamples, opt
   return {
     pcm: planar,
     present: true,
+    engine: 'ffmpeg.wasm',
+    elapsedMs: task.elapsedMs,
+  };
+}
+
+export async function speedAudioPcmWithFfmpeg(wavBytes, speed, expectedSamples, options = {}) {
+  if (!(wavBytes instanceof Uint8Array)) throw new TypeError('speedAudioPcmWithFfmpeg expects WAV bytes');
+  if (!Number.isInteger(expectedSamples) || expectedSamples <= 0) throw new Error('Audio speed change requires a positive exact sample count.');
+  const resolvedSpeed = normalizeSpeed(speed);
+  const copy = new Uint8Array(wavBytes.byteLength);
+  copy.set(wavBytes);
+  const task = await runWorkerTask({
+    type: 'speed-audio',
+    inputBytes: copy.buffer,
+    speed: resolvedSpeed,
+    expectedSamples,
+  }, [copy.buffer], options);
+  const interleaved = new Float32Array(task.bytes.buffer, task.bytes.byteOffset, task.bytes.byteLength / 4);
+  const expectedInterleaved = expectedSamples * 2;
+  if (interleaved.length !== expectedInterleaved) {
+    throw new Error(`ffmpeg atempo returned ${interleaved.length} samples; expected ${expectedInterleaved}.`);
+  }
+  const planar = new Float32Array(expectedInterleaved);
+  for (let sample = 0; sample < expectedSamples; sample += 1) {
+    planar[sample] = interleaved[sample * 2];
+    planar[expectedSamples + sample] = interleaved[sample * 2 + 1];
+  }
+  return {
+    pcm: planar,
+    speed: resolvedSpeed,
+    expectedSamples,
     engine: 'ffmpeg.wasm',
     elapsedMs: task.elapsedMs,
   };

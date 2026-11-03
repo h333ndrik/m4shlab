@@ -14,6 +14,8 @@ Melt and Loop Release: both now have a frame-quantized effect window and a **Con
 
 Reset Pulse: each frame-quantized interval starts by re-inserting B's original first IDR sample, then fills the interval with repeated consecutive B P-samples. The interval is 4–48 frames and the P-sample repeat is 2–12. Restore/Continue tail behavior matches Classic Mosh.
 
+Per-clip speed: every timeline entry has an independent 0.1×–4.0× speed control in 0.1× steps and a Reset action. Speed is applied during one WebCodecs decode/frame-map/encode pass at 30 fps, then combined with the 720px normalization target. Audio uses a chained ffmpeg.wasm `atempo` filter, so duration follows the clip speed while pitch is preserved. Audio and video remain sample- and frame-exact.
+
 Phase D PWA shell: m4shlab is installable and its app shell works offline after the first successful load. ffmpeg.wasm is cached on first use, not precached.
 
 Universal import: conventional H.264 MP4/MOV parses natively; other formats are converted locally with lazily loaded ffmpeg.wasm.
@@ -30,7 +32,7 @@ Automatic sequence normalization starts as soon as native compatibility fails. I
 npm start
 ```
 
-Open `http://127.0.0.1:4173`, choose up to 12 clips with **Import clips**, or drop them onto the timeline. Use the card arrows to reorder, the remove buttons to edit the sequence, and undo/redo for timeline changes. Click each dashed connector to choose **Cut**, **Classic Mosh**, **Melt**, **Loop Release** or **Reset Pulse**. Every non-Cut method exposes duration and ending controls; Melt adds a repeat factor and Original/Gentler movement selector, Loop Release a group length, and Reset Pulse its interval and P-repeat. Switch between the first-clip cut and the full merged sequence; validation and normalization happen in the background, and only a blocking error is surfaced. Play from the start for the clearest result. Export downloads `m4shlab-merge.mp4` with the full sequence and source audio when available.
+Open `http://127.0.0.1:4173`, choose up to 12 clips with **Import clips**, or drop them onto the timeline. Use the card arrows to reorder, the remove buttons to edit the sequence, the per-card speed slider to set 0.1×–4.0×, and undo/redo for timeline changes. Click each dashed connector to choose **Cut**, **Classic Mosh**, **Melt**, **Loop Release** or **Reset Pulse**. Every non-Cut method exposes duration and ending controls; Melt adds a repeat factor and Original/Gentler movement selector, Loop Release a group length, and Reset Pulse its interval and P-repeat. Switch between the first-clip cut and the full merged sequence; validation and normalization happen in the background, and only a blocking error is surfaced. Play from the start for the clearest result. Export downloads `m4shlab-merge.mp4` with the full sequence and source audio when available.
 
 The Phase A single-clip transfer remains available through `mosh.js` and its unchanged test chain.
 
@@ -46,7 +48,7 @@ Service workers require HTTPS or `localhost`; GitHub Pages provides HTTPS automa
 
 The first load must reach the network so the manifest and versioned app shell can be cached. After that the UI starts offline. Import, Classic Mosh, preview, and export are local operations and continue to work without a network. New-format conversion needs the ffmpeg.wasm core; the first conversion downloads it, then `converter-worker.js`, `ffmpeg-core.js`, and `ffmpeg-core.wasm` stay in the runtime cache. The OS may evict that cache under storage pressure, in which case conversion needs network again.
 
-The current cache version is `v8` (`m4shlab-v8` plus `m4shlab-runtime-v8`). Bump `VERSION` in `sw.js` whenever app-shell or conversion-worker files change. Activation deletes older versioned caches, including the old runtime cache, so the worker cannot run stale code.
+The current cache version is `v9` (`m4shlab-v9` plus `m4shlab-runtime-v9`). Bump `VERSION` in `sw.js` whenever app-shell or conversion-worker files change. Activation deletes older versioned caches, including the old runtime cache, so the worker cannot run stale code.
 
 ## Supported formats
 
@@ -58,6 +60,8 @@ The current cache version is `v8` (`m4shlab-v8` plus `m4shlab-runtime-v8`). Bump
 | Not supported | DRM/encrypted media, unavailable ffmpeg.wasm assets, conversion input over 100 MB, or conversions that exceed browser wasm memory | Actionable error; no broken merge is emitted |
 
 Normalization produces conventional faststart MP4 with H.264 baseline or main profile, `yuv420p` limited range, 30 fps, a requested keyframe every 30 frames, no B-frames, and no audio. That video-only normalization output feeds the unchanged merge pipeline; the original soundtrack is extracted separately and muxed after the final video is built. Encoders may insert additional recovery IDRs. The common target is capped at **720 pixels on the long side**. Same-aspect inputs are purely scaled; different aspects are scaled proportionally and letterboxed into the shared box. The mosh effect is resolution-independent, and this cap is much faster than full-resolution software encoding, mirroring h4moshlab's deliberate 640×480 normalization.
+
+Speed changes always use this WebCodecs normalization path, including native Tier-1 clips. Frame selection/repetition and resolution scaling happen in the same decode/encode pass. A clip at speed 1.0× that does not need normalization stays on the original byte-identical Tier-1 path.
 
 Native Tier-1 clips may contain B-frames; their `ctts` composition offsets are preserved during merge. Converted clips deliberately have no B-frames.
 
@@ -73,7 +77,7 @@ Native Tier-1 clips may contain B-frames; their `ctts` composition offsets are p
 
 ## Interface
 
-The page follows the h4moshlab visual language: a light radial-gradient background, centered 1000px layout, compact bordered controls, a large dark preview well, and a horizontal clip timeline. Clip cards show a thumbnail, filename, duration, format status, active reorder arrows, and a remove button; undo/redo restores timeline edits. Each dashed connector names its boundary method and opens a dialog with **Cut**, **Classic Mosh**, **Melt**, **Loop Release** and **Reset Pulse**. All non-Cut methods share duration and ending controls; Melt adds a 2–12 repeat slider and an Original/Gentler movement selector, Loop Release a 2–48-frame group slider, and Reset Pulse 4–48-frame interval plus 2–12 P-repeat sliders. The first card is the preview cut; the export is the full chained result. Compatibility criteria, badges, and SPS/PPS hashes are not rendered. Under 600px the header and preview actions stack and touch controls meet the 44px target.
+The page follows the h4moshlab visual language: a light radial-gradient background, centered 1000px layout, compact bordered controls, a large dark preview well, and a horizontal clip timeline. Clip cards show a thumbnail, filename, duration, format status, a 0.1×–4.0× speed slider with Reset, active reorder arrows, and a remove button; undo/redo restores timeline and speed edits. Each dashed connector names its boundary method and opens a dialog with **Cut**, **Classic Mosh**, **Melt**, **Loop Release** and **Reset Pulse**. All non-Cut methods share duration and ending controls; Melt adds a 2–12 repeat slider and an Original/Gentler movement selector, Loop Release a 2–48-frame group slider, and Reset Pulse 4–48-frame interval plus 2–12 P-repeat sliders. The first card is the preview cut; the export is the full chained result. Compatibility criteria, badges, and SPS/PPS hashes are not rendered. Under 600px the header and preview actions stack and touch controls meet the 44px target.
 
 ## What it does
 
@@ -84,6 +88,15 @@ The page follows the h4moshlab visual language: a light radial-gradient backgrou
 3. Native H.264 normalization reuses parsed samples and `avcC`, decodes with `VideoDecoder`, scales/letterboxes through a canvas, converts to limited-range I420, and encodes every sequence member with `VideoEncoder` using identical settings.
 4. HEVC, WebM, fragmented MP4, and unsupported H.264 configurations use ffmpeg.wasm for decode. If WebCodecs H.264 encoding is available, ffmpeg.wasm emits a capped Y4M stream and WebCodecs performs the encode; otherwise the complete encode stays in the WASM worker.
 5. The UI and JSON report name decode path, encode path, target, parallel execution, fallback reason, and duration for every clip. Compatibility is checked again on the converted bytes before preview and chained merge, without rendering a criteria table.
+
+### Per-clip speed
+
+1. Speed is entry-specific clip metadata from 0.1× to 4.0× in 0.1× steps; duplicate imports may use different speeds. Undo/redo and the JSON source/boundary reports retain `speed`, `input_frames`, `output_frames`, and the applied donor mapping.
+2. A speed change uses the clip's base imported bytes, not an already speed-adjusted copy, so repeated changes and Reset do not stack re-encodes. Native and converted H.264 bases both enter the same WebCodecs pass.
+3. For speeds other than 1.0×, output frame `j` selects source frame `floor(j × speed × source_fps / 30)`. Output length is `round(source_frames × 30 / (source_fps × speed))`; the mapping repeats frames below 1×, drops them above 1×, and handles fractional speeds without accumulating rounding drift.
+4. All emitted frames use the constant 30 fps grid and identical H.264 normalization settings. Resolution scaling to the shared 720px target happens inside that same pass.
+5. Audio follows the same speed through a product-equivalent chain of ffmpeg.wasm `atempo` stages, each between 0.5× and 2.0×. `atempo` changes duration without changing tonal pitch. The result is resampled to 48 kHz stereo, then padded/trimmed to exactly `output_frames × 1600` samples. A mismatch is a loud `RuntimeError`.
+6. Speed audio needs the lazily loaded ffmpeg.wasm core unless the result is silent. The first speed change may therefore show a conversion delay of about 31 MB download plus WASM processing.
 
 ### Phase C: WebCodecs normalization
 
@@ -136,7 +149,7 @@ The page follows the h4moshlab visual language: a light radial-gradient backgrou
 
 ### Audio in merged exports
 
-1. The first audio track of every original source file is decoded locally to PCM. Web Audio resamples and pads/trims it to 48 kHz stereo on the clip's normalized video timeline; ffmpeg.wasm is the fallback when Web Audio cannot decode the format.
+1. The first audio track of every original source file is decoded locally to PCM. Web Audio resamples and pads/trims it to 48 kHz stereo on the clip's normalized video timeline; ffmpeg.wasm is the fallback when Web Audio cannot decode the format. Non-1.0× clips then pass that PCM through the pitch-preserving chained `atempo` speed stage.
 2. Audio segments follow timeline order. Classic Mosh, Loop Release, Reset Pulse, and explicit-window Melt start the incoming audio one video frame late, mirroring the removed first IDR sample. Cut keeps the full segment. Extra picture-only frames and restore-anchor frames receive sample-exact silence, so effect windows never shift later audio boundaries. API callers using the legacy duration-less Melt path keep the original full audio segment.
 3. The assembled PCM length must equal `merged video frames × (48000 / fps)` exactly. A mismatch raises `RuntimeError` before export instead of writing a misaligned file.
 4. WebCodecs `AudioEncoder` produces AAC-LC at 48 kHz stereo when available; ffmpeg.wasm encodes the same PCM as the fallback. ffmpeg.wasm muxes the AAC and merged video, and the report names both the encode and mux paths.
@@ -168,6 +181,7 @@ npm run test:pwa
 - HEVC MOV fixtures, including a different-resolution pair;
 - a fragmented MP4;
 - matching 320×240 H.264/AAC tone clips at 25 fps for merged-audio timing and a video-only silent B clip for mixed silence tests.
+- a 60-frame, 30 fps H.264/AAC 440 Hz tone fixture for speed mapping, merge, frame-count, and pitch-preservation tests.
 
 The tests assert:
 
@@ -191,6 +205,11 @@ The tests assert:
 - Gentler Melt duration=12/repeat=2 bounds every pre-release donor step to at most two frames, ends with donors 10/11/12, preserves payload bytes, and decodes 99/99; its Restore variant keeps the recovery IDR;
 - Loop Release duration=12 scales the release blocks into the window, rejoins at donor 13, and decodes 99/99; its Restore variant adds the normal recovery anchor;
 - Melt/Loop duration clamps to 74 frames, accepts one frame, rejects zero, and keeps the audio timeline exactly equal to merged video frames × samples per frame;
+- speed plans map 60 frames to 30, 120, 60, and 35 output frames at 2×, 0.5×, 1×, and 1.7×; out-of-range values raise `SpeedValueError`;
+- 2×, 0.5×, and 1.7× atempo chains preserve a 440 Hz tone and emit exactly 48,000, 192,000, and 56,000 samples; each stage is within 0.5–2.0×;
+- the browser merges a 2× clip plus a 0.5× clip into 150 frames with 240,000 audio samples, decodes 150/150 frames, and exports at 30 fps;
+- fractional 1.7× produces 35 decodable frames and a 35-frame audio timeline; Reset restores 1.0× and 60 input/output frames;
+- a single 1440×1920 clip at 2× normalizes to 540×720 and 15 output frames in one WebCodecs pass;
 - Reset Pulse interval=6/repeat=2 emits IDRs at merged samples 25/31, donor tables [1,1,2,2,3] per interval, tail donor 13, and decodes 99/99; interval 4, repeats 2/12, Restore tail IDR, duration clamping, and interval >= duration rejection are covered;
 - Reset Pulse POC type 0 restarts frame_num and POC-LSB at 1 per pulse segment and decodes 99/99; Reset Pulse→Cut and Reset Pulse→Classic Mosh decode 124/124 and 123/123;
 - POC type 0 Melt repeat=2 renumbers both counters and decodes 171/171; a three-clip Melt→Loop Release chain decodes 195/195 and a Loop Release→Cut chain decodes 124/124;
@@ -214,11 +233,11 @@ The tests assert:
 - the browser has no compatibility panel, status badge, table, or SPS/PPS hash display;
 - blocking merge errors render as a short alert rather than a compatibility panel;
 - the manifest has standalone display, the light theme, SVG/192/512/maskable icons, and a 180px Apple touch icon;
-- the service worker activates, controls the page, precaches the 21-file app shell, and excludes the conversion worker and ffmpeg core from precache;
+- the service worker activates, controls the page, precaches the 22-file app shell, and excludes the conversion worker and ffmpeg core from precache;
 - Chrome reports no manifest or installability errors, activates `beforeinstallprompt`, and the activate handler removes an older versioned cache;
 - an offline reload serves the complete shell, after which previously cached ffmpeg.wasm converts and merges HEVC inputs locally and the exported MP4 decodes.
 
-Current local results (2026-11-03, Node 26.13.0, FFmpeg 9.0.2, Google Chrome 156): all 72 Node checks pass. Phase A removes 11,468 bytes and decodes 73 frames. The multi-slice fixture keeps both initial IDR slices, starts at sample 25, removes four later slices, and decodes 73/73 retained frames. Phase B merges 25 A samples plus 24 retained B samples, decodes 49 frames, and produces the same 67,893-byte export. Melt repeat=4 emits and decodes 315 samples; Loop Release with a four-frame group emits and decodes 99, with donor blocks starting at source samples 1 and 13 and a release tail at 21. Melt duration=12/repeat=2 emits an exact 12-frame window, continues from donor 7, and decodes 105/105; its Restore form decodes 106/106. Gentler Melt uses the bounded donor schedule and decodes 99/99. Loop duration=12 emits and decodes 99/99. Reset Pulse interval=6/repeat=2 re-inserts the boundary IDR at merged samples 25 and 31, reports donor tables [1,1,2,2,3], and decodes 99/99; its POC type 0 variant also decodes 99/99. The multi-GOP regression merges 25 A + 75 B samples, retains two later B IDRs, patches 24 first-GOP slice headers, and decodes all 99 expected frames with three keyframes. A Safari-shaped POC type 0 pair also merges with POC-LSB alignment and decodes 99/99 frames; a genuinely reordered type 0 multi-GOP stream remains rejected. The WebCodecs muxer test emits 8 samples with a 14,984-byte mdat payload and 4,096 duration units. Tier-1 fixtures additionally verify a QuickTime H.264 MOV (25 samples / 26 NALs), a size-zero mdat, standalone `wide`, a 64-bit mdat, the exact HEVC error, and the exact fragmented-MP4 error. The Block F merge produces a 49-frame, 1.960-second AAC-LC track at 48 kHz stereo from 94,080 expected sample frames; the WebCodecs encode plus ffmpeg.wasm mux path preserves the 1,024-sample encoder delay and reports exact presentation timing.
+Current local results (2026-11-03, Node 26.13.0, FFmpeg 9.0.2, Google Chrome 156): all 74 Node checks pass. Phase A removes 11,468 bytes and decodes 73 frames. The multi-slice fixture keeps both initial IDR slices, starts at sample 25, removes four later slices, and decodes 73/73 retained frames. Phase B merges 25 A samples plus 24 retained B samples, decodes 49 frames, and produces the same 67,893-byte export. Melt repeat=4 emits and decodes 315 samples; Loop Release with a four-frame group emits and decodes 99, with donor blocks starting at source samples 1 and 13 and a release tail at 21. Melt duration=12/repeat=2 emits an exact 12-frame window, continues from donor 7, and decodes 105/105; its Restore form decodes 106/106. Gentler Melt uses the bounded donor schedule and decodes 99/99. Loop duration=12 emits and decodes 99/99. Reset Pulse interval=6/repeat=2 re-inserts the boundary IDR at merged samples 25 and 31, reports donor tables [1,1,2,2,3], and decodes 99/99; its POC type 0 variant also decodes 99/99. Speed plans produce 30/120/60/35 frames at 2×/0.5×/1×/1.7×; chained atempo preserves the 440 Hz tone. The multi-GOP regression merges 25 A + 75 B samples, retains two later B IDRs, patches 24 first-GOP slice headers, and decodes all 99 expected frames with three keyframes. A Safari-shaped POC type 0 pair also merges with POC-LSB alignment and decodes 99/99 frames; a genuinely reordered type 0 multi-GOP stream remains rejected. The WebCodecs muxer test emits 8 samples with a 14,984-byte mdat payload and 4,096 duration units. Tier-1 fixtures additionally verify a QuickTime H.264 MOV (25 samples / 26 NALs), a size-zero mdat, standalone `wide`, a 64-bit mdat, the exact HEVC error, and the exact fragmented-MP4 error. The Block F merge produces a 49-frame, 1.960-second AAC-LC track at 48 kHz stereo from 94,080 expected sample frames; the WebCodecs encode plus ffmpeg.wasm mux path preserves the 1,024-sample encoder delay and reports exact presentation timing.
 
 Classic Mosh restore was verified at a 10-frame duration. Phase A removes the sample-25 boundary sample, inserts the byte-identical boundary sample before source frame 36, retains the later sample-50 IDR, and decodes 75/75 source frames without an empty sample entry. The 10-frame Phase B restore inserts B's original IDR at merged sample 35 and decodes 50/50. Continue mode remains byte-identical to the prior full-length joins.
 
@@ -243,6 +262,10 @@ PASS browser Melt, Gentler Melt, Loop Release, and Reset Pulse produce 105-, 99-
 PASS selecting Melt on native B-frame clips auto-normalizes both sources before applying the NAL effect
 PASS audio merge exports AAC 48000 Hz/2ch, 94080 expected samples, runtime-matched duration, encode=WebCodecs, mux=ffmpeg.wasm
 PASS AudioEncoder unavailable: PCM encoded in ffmpeg.wasm and merged audio reports delay=1024 samples
+PASS 2× + 0.5× clips merge to 150/150 frames and 240000 exact audio samples at 30 fps
+PASS fractional 1.7× produces 35 decodable frames with a 35-frame audio timeline
+PASS per-clip Reset restores 1.0× with 60 input and 60 output frames
+PASS single clip speed=2 and 720px normalization run in one 540×720 WebCodecs pass
 PASS WebCodecs pair merged in the browser: 49 samples, one leading IDR, preview 320x240
 PASS merged export decodes: 49 frames, H.264 320x240 yuv420p/tv, SHA-256 b4bb6c4827b2f7a8fe6d93777ff63f4491dd0b8eb497148dd3b2d07da1666bef
 PASS ffmpeg.wasm decode + WebCodecs encode: 320x240, both progress bars completed, export decoded
@@ -253,7 +276,7 @@ PASS WebCodecs stubbed unavailable: ffmpeg.wasm fallback ran and the report iden
 
 ```text
 PASS manifest is valid with standalone display, light theme, SVG/192/512/maskable icons, and a 180px Apple touch icon
-PASS service worker registered, controlled the page, precached 21 shell assets, and Chrome reports no manifest/installability errors; beforeinstallprompt observed=true
+PASS service worker registered, controlled the page, precached 22 shell assets, and Chrome reports no manifest/installability errors; beforeinstallprompt observed=true
 PASS activate cleanup removed the old versioned cache and re-registered the current shell
 PASS first online conversion runtime-cached converter-worker.js, ffmpeg-core.js, and ffmpeg-core.wasm (3 runtime entries)
 PASS offline reload served the complete app shell from Cache Storage with no network
@@ -289,6 +312,8 @@ Direct merging supports compatible sequence members only. Resolution, profile, l
 Native parsing is not HEVC, fragmented-MP4, encrypted-media, or multi-video-track capable; those unsupported local files must go through Tier 2 conversion where applicable.
 
 All effect durations are bounded by the frames available after the incoming clip's first GOP boundary. Melt/Loop duration counts the effect window, not the following chronological tail, so the total contribution can differ from the window length. Direct API calls that omit duration keep the legacy full-length schedules; the UI submits an explicit window. Reset Pulse requires its interval to fit inside that duration and uses a hard IDR reset at each interval; repeated P-samples are not a blend or a smoothness guarantee. Restore inserts the original boundary IDR at frame N+1; it does not blend frames or guarantee smooth motion through the recovery jump. Continue deliberately retains the prediction chain. Gentler Melt only bounds donor movement; it is not interpolation or a guarantee of perceptual smoothness, and large source cuts or accumulated prediction corruption can still jump. Melt, Loop Release and Reset Pulse are decode-order bitstream effects: they do not blend pixels beyond the repeated slices and can look different across device decoders.
+
+Speed control is lossy in time: speeds above 1× discard source frames and below 1× repeat frames, so extreme settings lose temporal detail or motion smoothness. Fractional mapping is deterministic but not frame interpolation. Audio is time-stretched with ffmpeg.wasm `atempo` and keeps pitch; it is not audio moshing. Speed requires WebCodecs for the one-pass frame mapping/re-encode, and non-silent speed changes need the ffmpeg.wasm core. The 100 MB input and device-memory limits still apply.
 
 The PWA cache is not a persistence guarantee. First load needs network; a browser may evict Cache Storage, `file://` cannot register a service worker, and iOS may reclaim storage or terminate a large wasm conversion under memory pressure. The service worker deliberately does not cache source media or generated exports outside the page's in-memory Blob URLs.
 
