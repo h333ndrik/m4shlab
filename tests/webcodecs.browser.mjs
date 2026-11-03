@@ -477,6 +477,7 @@ try {
     const meltState = {
       classicHidden: document.querySelector('#classic-mosh-options').hidden,
       effectHidden: document.querySelector('#nal-effect-options').hidden,
+      ending: document.querySelector('#transition-ending').value,
       label: document.querySelector('#effect-parameter-label').textContent,
       min: Number(effect.min),
       max: Number(effect.max),
@@ -487,6 +488,8 @@ try {
     loop.checked = true;
     loop.dispatchEvent(new Event('change', {bubbles: true}));
     const loopState = {
+      classicHidden: document.querySelector('#classic-mosh-options').hidden,
+      ending: document.querySelector('#transition-ending').value,
       label: document.querySelector('#effect-parameter-label').textContent,
       max: Number(effect.max),
       value: Number(effect.value),
@@ -525,14 +528,17 @@ try {
   assert.equal(durationControls.classicHiddenForCut, true);
   assert.equal(durationControls.effectHiddenForCut, true);
   assert.equal(durationControls.resetHiddenForCut, true);
-  assert.equal(durationControls.meltState.classicHidden, true);
+  assert.equal(durationControls.meltState.classicHidden, false);
   assert.equal(durationControls.meltState.effectHidden, false);
+  assert.equal(durationControls.meltState.ending, 'continue');
   assert.equal(durationControls.meltState.label, 'repeat');
   assert.equal(durationControls.meltState.min, 2);
   assert.equal(durationControls.meltState.max, 12);
   assert.equal(durationControls.meltState.value, 4);
   assert.match(durationControls.meltState.valueText, /4×/);
   assert.equal(durationControls.loopState.label, 'loop frames');
+  assert.equal(durationControls.loopState.classicHidden, false);
+  assert.equal(durationControls.loopState.ending, 'continue');
   assert.equal(durationControls.loopState.max, 48);
   assert.equal(durationControls.loopState.value, 4);
   assert.match(durationControls.loopState.valueText, /4 frames/);
@@ -636,13 +642,15 @@ try {
         parameter.value = '${value}';
         parameter.dispatchEvent(new Event('input', {bubbles: true}));
       }
-      if (${JSON.stringify(method)} === 'reset-pulse') {
+      if (${JSON.stringify(method)} !== 'cut' && ${options.durationFrames !== undefined}) {
         const duration = document.querySelector('#transition-duration');
         duration.value = '${options.durationFrames ?? 12}';
         duration.dispatchEvent(new Event('input', {bubbles: true}));
         const ending = document.querySelector('#transition-ending');
         ending.value = '${options.ending ?? 'continue'}';
         ending.dispatchEvent(new Event('change', {bubbles: true}));
+      }
+      if (${JSON.stringify(method)} === 'reset-pulse') {
         const interval = document.querySelector('#reset-interval');
         interval.value = '${options.interval ?? 6}';
         interval.dispatchEvent(new Event('input', {bubbles: true}));
@@ -671,22 +679,24 @@ try {
       };
     })()`);
   };
-  const meltUi = await applyEffect('melt', 4);
+  const meltUi = await applyEffect('melt', 2, {durationFrames: 12, ending: 'continue'});
   assert.equal(meltUi.error, null, meltUi.error);
   assert.equal(meltUi.method, 'melt');
-  assert.equal(meltUi.mergedSamples, 315);
-  assert.equal(meltUi.effect.repeat, 4);
-  assert.equal(meltUi.effect.scheduledSourceSamples.length, 290);
-  assert.equal(meltUi.patchedSamples, 288);
+  assert.equal(meltUi.mergedSamples, 105);
+  assert.equal(meltUi.effect.repeat, 2);
+  assert.equal(meltUi.effect.window.windowOutputSamples, 12);
+  assert.equal(meltUi.effect.window.tail.donorStartSample, 7);
+  assert.equal(meltUi.effect.scheduledSourceSamples.length, 80);
+  assert.equal(meltUi.patchedSamples, 78);
   assert.equal(meltUi.previewEnabled, true);
-  const loopUi = await applyEffect('loop', 4);
+  const loopUi = await applyEffect('loop', 4, {durationFrames: 12, ending: 'continue'});
   assert.equal(loopUi.error, null, loopUi.error);
   assert.equal(loopUi.method, 'loop');
   assert.equal(loopUi.mergedSamples, 99);
-  assert.deepEqual(loopUi.effect.loopWindow, [1, 2, 3, 4]);
-  assert.deepEqual(loopUi.effect.loopSecondWindow, [13, 14, 15, 16]);
-  assert.equal(loopUi.effect.loopSchedule.tailStart, 20);
-  assert.equal(loopUi.effect.loopSchedule.tailDonorStart, 21);
+  assert.deepEqual(loopUi.effect.loopWindow, [1, 2]);
+  assert.deepEqual(loopUi.effect.loopSecondWindow, []);
+  assert.equal(loopUi.effect.window.windowOutputSamples, 12);
+  assert.equal(loopUi.effect.window.tail.donorStartSample, 13);
   assert.equal(loopUi.effect.scheduledSourceSamples.length, 74);
   assert.equal(loopUi.patchedSamples, 72);
   const resetUi = await applyEffect('reset-pulse', null, {durationFrames: 12, interval: 6, repeat: 2});
@@ -708,7 +718,7 @@ try {
   assert.equal(effectPlayback.error, null);
   assert.equal(effectPlayback.width, 320);
   assert.equal(effectPlayback.height, 240);
-  console.log('PASS browser Melt, Loop Release, and Reset Pulse produce 315-, 99-, and 99-sample decodable sequences');
+  console.log('PASS browser Melt, Loop Release, and Reset Pulse produce 105-, 99-, and 99-sample decodable sequences with duration windows');
 
   await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?normalize-effect=1'});
   await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
@@ -716,7 +726,7 @@ try {
   await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 15000);
   await client.setFile('#file-input-b', fixtures.bFrameB);
   await client.waitFor("document.querySelector('#status').textContent.includes('samples') || !document.querySelector('#error').hidden", 30000);
-  const normalizedEffect = await applyEffect('melt', 4);
+  const normalizedEffect = await applyEffect('melt', 4, {durationFrames: 12, ending: 'continue'});
   assert.equal(normalizedEffect.error, null, normalizedEffect.error);
   assert.equal(normalizedEffect.method, 'melt');
   assert.ok(normalizedEffect.mergedSamples > 49);

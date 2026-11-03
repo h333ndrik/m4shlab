@@ -49,6 +49,9 @@ const multiGopPoc0MergedPath = join(projectRoot, 'testmedia', 'synthetic-multigo
 const meltOutputPath = join(projectRoot, 'testmedia', 'synthetic-melt-test-output.mp4');
 const loopOutputPath = join(projectRoot, 'testmedia', 'synthetic-loop-test-output.mp4');
 const poc0MeltOutputPath = join(projectRoot, 'testmedia', 'synthetic-poc0-melt-test-output.mp4');
+const meltDurationOutputPath = join(projectRoot, 'testmedia', 'synthetic-melt-duration-test-output.mp4');
+const meltRestoreOutputPath = join(projectRoot, 'testmedia', 'synthetic-melt-restore-test-output.mp4');
+const loopDurationOutputPath = join(projectRoot, 'testmedia', 'synthetic-loop-duration-test-output.mp4');
 const resetPulseOutputPath = join(projectRoot, 'testmedia', 'synthetic-reset-pulse-test-output.mp4');
 const resetPulsePoc0OutputPath = join(projectRoot, 'testmedia', 'synthetic-reset-pulse-poc0-test-output.mp4');
 const resetPulseRestoreOutputPath = join(projectRoot, 'testmedia', 'synthetic-reset-pulse-restore-test-output.mp4');
@@ -732,6 +735,157 @@ assert.equal(loopDecodedFrames, loopMerge.report.mergedSamples);
 command('ffmpeg', ['-v', 'error', '-i', loopOutputPath, '-f', 'null', '-'], 'Loop strict decode');
 pass(`Loop Release loop_frames=4 emits 3× and 2× donor blocks, rejoins at donor 21, renumbers ${loopMerge.report.frameAlignment.patchedSamples} non-IDR samples, and decodes ${loopDecodedFrames}/${loopMerge.report.mergedSamples} frames`);
 
+const meltDurationWindow = [1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6];
+const meltDurationSchedule = [
+  ...meltDurationWindow,
+  ...Array.from({length: 68}, (_, index) => index + 7),
+];
+const meltDuration = await mergeEffectH264(multiGopAInput, multiGopBInput, multiGopAParsed, multiGopBParsed, {
+  method: 'melt',
+  repeat: 2,
+  durationFrames: 12,
+  ending: 'continue',
+});
+assert.equal(meltDuration.report.durationFrames, 12);
+assert.equal(meltDuration.report.ending, 'continue');
+assert.equal(meltDuration.report.effect.window.explicitDuration, true);
+assert.equal(meltDuration.report.effect.window.windowOutputSamples, 12);
+assert.deepEqual(meltDuration.report.effect.window.scheduledSourceSamples, meltDurationWindow);
+assert.deepEqual(meltDuration.report.effect.scheduledSourceSamples, meltDurationSchedule);
+assert.deepEqual(meltDuration.report.effect.window.tail, {
+  outputStart: 37,
+  donorStartSample: 7,
+  restoreResetPosition: null,
+});
+assert.equal(meltDuration.report.bScheduledSamples, 80);
+assert.equal(meltDuration.report.mergedSamples, 105);
+const meltDurationParsed = parseMp4(meltDuration.output);
+const meltDurationNals = extractNals(meltDuration.output, meltDurationParsed.videoTrack);
+assertEffectNalPayloads(
+  meltDurationNals,
+  extractNals(multiGopAInput, multiGopAParsed.videoTrack).length,
+  multiGopBNals,
+  meltDuration.report.effect.scheduledSourceSamples,
+  meltSps,
+  'melt-duration',
+);
+assert.equal(
+  meltDurationParsed.videoTrack.sampleSizes.sizes.reduce((total, value) => total + value, 0),
+  meltDurationParsed.mdatRanges.reduce((total, box) => total + box.payloadEnd - box.payloadStart, 0),
+);
+writeFileSync(meltDurationOutputPath, meltDuration.output);
+const meltDurationProbe = command('ffprobe', [
+  '-v', 'error', '-select_streams', 'v:0', '-count_frames',
+  '-show_entries', 'stream=nb_read_frames,has_b_frames', '-of', 'default=noprint_wrappers=1', meltDurationOutputPath,
+], 'Melt duration decode probe');
+const meltDurationDecoded = Number(/nb_read_frames=(\d+)/.exec(meltDurationProbe.stdout)?.[1] ?? 0);
+assert.equal(meltDurationDecoded, 105);
+assert.match(meltDurationProbe.stdout, /has_b_frames=0/);
+command('ffmpeg', ['-v', 'error', '-i', meltDurationOutputPath, '-f', 'null', '-'], 'Melt duration strict decode');
+pass(`Melt duration=12 emits an exact 12-frame hold window, then donor 7 tail, and decodes ${meltDurationDecoded}/105 frames`);
+
+const meltRestore = await mergeEffectH264(multiGopAInput, multiGopBInput, multiGopAParsed, multiGopBParsed, {
+  method: 'melt',
+  repeat: 2,
+  durationFrames: 12,
+  ending: 'restore',
+});
+assert.equal(meltRestore.report.mergedSamples, 106);
+assert.deepEqual(meltRestore.report.reInsertedIdrPositions, [37]);
+assert.equal(meltRestore.report.effect.window.tail.restoreResetPosition, 37);
+const meltRestoreParsed = parseMp4(meltRestore.output);
+const meltRestoreBoundary = multiGopBParsed.videoTrack.samples[0];
+const meltRestoreBoundaryBytes = multiGopBInput.subarray(
+  meltRestoreBoundary.offset,
+  meltRestoreBoundary.offset + meltRestoreBoundary.size,
+);
+const meltRestoreIdrSample = meltRestoreParsed.videoTrack.samples[37];
+assert.deepEqual(
+  meltRestore.output.subarray(meltRestoreIdrSample.offset, meltRestoreIdrSample.offset + meltRestoreIdrSample.size),
+  meltRestoreBoundaryBytes,
+);
+writeFileSync(meltRestoreOutputPath, meltRestore.output);
+const meltRestoreProbe = command('ffprobe', [
+  '-v', 'error', '-select_streams', 'v:0', '-count_frames',
+  '-show_entries', 'stream=nb_read_frames', '-of', 'default=noprint_wrappers=1', meltRestoreOutputPath,
+], 'Melt restore decode probe');
+assert.match(meltRestoreProbe.stdout, /nb_read_frames=106/);
+command('ffmpeg', ['-v', 'error', '-i', meltRestoreOutputPath, '-f', 'null', '-'], 'Melt restore strict decode');
+pass('Melt Restore re-inserts the byte-identical incoming IDR at the tail start and decodes 106/106 frames');
+
+const loopDurationWindow = [1, 2, 1, 2, 1, 2, 7, 8, 9, 10, 11, 12];
+const loopDurationSchedule = [
+  ...loopDurationWindow,
+  ...Array.from({length: 62}, (_, index) => index + 13),
+];
+const loopDuration = await mergeEffectH264(multiGopAInput, multiGopBInput, multiGopAParsed, multiGopBParsed, {
+  method: 'loop',
+  loopFrames: 4,
+  durationFrames: 12,
+  ending: 'continue',
+});
+assert.equal(loopDuration.report.durationFrames, 12);
+assert.equal(loopDuration.report.effect.window.windowOutputSamples, 12);
+assert.deepEqual(loopDuration.report.effect.scheduledSourceSamples, loopDurationSchedule);
+assert.deepEqual(loopDuration.report.effect.window.tail, {
+  outputStart: 37,
+  donorStartSample: 13,
+  restoreResetPosition: null,
+});
+assert.equal(loopDuration.report.mergedSamples, 99);
+const loopDurationParsed = parseMp4(loopDuration.output);
+assertEffectNalPayloads(
+  extractNals(loopDuration.output, loopDurationParsed.videoTrack),
+  extractNals(multiGopAInput, multiGopAParsed.videoTrack).length,
+  multiGopBNals,
+  loopDuration.report.effect.scheduledSourceSamples,
+  meltSps,
+  'loop-duration',
+);
+writeFileSync(loopDurationOutputPath, loopDuration.output);
+const loopDurationProbe = command('ffprobe', [
+  '-v', 'error', '-select_streams', 'v:0', '-count_frames',
+  '-show_entries', 'stream=nb_read_frames', '-of', 'default=noprint_wrappers=1', loopDurationOutputPath,
+], 'Loop duration decode probe');
+assert.match(loopDurationProbe.stdout, /nb_read_frames=99/);
+command('ffmpeg', ['-v', 'error', '-i', loopDurationOutputPath, '-f', 'null', '-'], 'Loop duration strict decode');
+const loopRestore = await mergeEffectH264(multiGopAInput, multiGopBInput, multiGopAParsed, multiGopBParsed, {
+  method: 'loop',
+  loopFrames: 4,
+  durationFrames: 12,
+  ending: 'restore',
+});
+assert.equal(loopRestore.report.mergedSamples, 100);
+assert.deepEqual(loopRestore.report.reInsertedIdrPositions, [37]);
+pass('Loop Release duration=12 scales the 3×/2× window, rejoins at donor 13, and Restore decodes with an anchor');
+
+const clampedMeltDuration = await mergeEffectH264(multiGopAInput, multiGopBInput, multiGopAParsed, multiGopBParsed, {
+  method: 'melt',
+  repeat: 4,
+  durationFrames: 999,
+  ending: 'continue',
+});
+assert.equal(clampedMeltDuration.report.durationFrames, 74);
+assert.equal(clampedMeltDuration.report.clamped, true);
+assert.equal(clampedMeltDuration.report.effect.window.windowOutputSamples, 74);
+assert.equal(clampedMeltDuration.report.effect.window.tail.donorStartSample, 20);
+const oneFrameMelt = await mergeEffectH264(multiGopAInput, multiGopBInput, multiGopAParsed, multiGopBParsed, {
+  method: 'melt',
+  repeat: 4,
+  durationFrames: 1,
+  ending: 'continue',
+});
+assert.equal(oneFrameMelt.report.durationFrames, 1);
+assert.equal(oneFrameMelt.report.effect.window.windowOutputSamples, 1);
+assert.equal(oneFrameMelt.report.effect.window.tail.donorStartSample, 2);
+await assert.rejects(
+  () => mergeEffectH264(multiGopAInput, multiGopBInput, multiGopAParsed, multiGopBParsed, {
+    method: 'melt', repeat: 4, durationFrames: 0,
+  }),
+  error => error instanceof ValueError && /greater than zero/.test(error.message),
+);
+pass('Melt/Loop duration clamps to 74 frames, accepts one frame, and rejects zero loudly');
+
 const expectedResetSchedule = [
   0, 1, 1, 2, 2, 3,
   0, 1, 1, 2, 2, 3,
@@ -1040,6 +1194,37 @@ for (let sample = 50 * 1920; sample < 103 * 1920; sample += 1) {
   assert.equal(meltAudio.pcm[103 * 1920 + sample], 0);
 }
 pass('Melt audio follows the linear clip timeline and pads extra picture-only frames with sample-exact silence');
+
+const meltDurationAudio = assembleAudioTimeline({
+  clips: [audioA, audioB],
+  methods: ['melt'],
+  videoSampleCounts: [25, 105],
+  fps: 25,
+});
+assert.equal(meltDurationAudio.expectedSamples, 105 * 1920);
+assert.equal(meltDurationAudio.pcm.length, 105 * 1920 * 2);
+assert.equal(meltDurationAudio.segments[1].targetFrames ?? meltDurationAudio.segments[1].videoFrames, 80);
+assert.equal(meltDurationAudio.segments[1].paddedFrames, 55);
+const meltRestoreAudio = assembleAudioTimeline({
+  clips: [audioA, audioB],
+  methods: ['melt'],
+  videoSampleCounts: [25, 106],
+  fps: 25,
+});
+assert.equal(meltRestoreAudio.expectedSamples, 106 * 1920);
+assert.equal(meltRestoreAudio.segments[1].videoFrames, 81);
+assert.equal(meltRestoreAudio.segments[1].paddedFrames, 56);
+const loopDurationAudio = assembleAudioTimeline({
+  clips: [audioA, audioB],
+  methods: ['loop'],
+  videoSampleCounts: [25, 99],
+  fps: 25,
+});
+assert.equal(loopDurationAudio.expectedSamples, 99 * 1920);
+assert.equal(loopDurationAudio.segments[1].dropFrames, 1);
+assert.equal(loopDurationAudio.segments[1].videoFrames, 74);
+assert.equal(loopDurationAudio.segments[1].paddedFrames, 50);
+pass('Melt and Loop duration/ending windows keep audio sample-exact with linear timeline padding');
 
 const loopAudio = assembleAudioTimeline({
   clips: [audioA, audioB],

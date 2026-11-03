@@ -266,6 +266,7 @@ function moshBoundaryLimits(clip) {
 function moshSettingsForClip(clip) {
   const limits = moshBoundaryLimits(clip);
   const requested = clip?.moshDurationFrames;
+  const defaultEnding = clip?.transition === 'melt' || clip?.transition === 'loop' ? 'continue' : 'restore';
   const durationFrames = Math.max(0, Math.min(
     limits.maximumFrames,
     Number.isFinite(requested) ? Math.round(requested) : limits.maximumFrames,
@@ -274,23 +275,32 @@ function moshSettingsForClip(clip) {
     ...limits,
     durationFrames,
     durationSeconds: limits.fps > 0 ? durationFrames / limits.fps : 0,
-    ending: clip?.moshEnding === 'continue' ? 'continue' : 'restore',
+    ending: clip?.moshEnding === 'continue' || clip?.moshEnding === 'restore' ? clip.moshEnding : defaultEnding,
+    explicitDuration: requested !== undefined && requested !== null,
   };
 }
 
 function effectSettingsForClip(clip) {
   if (clip?.transition === 'melt') {
     const repeat = Number(clip.meltRepeat);
+    const settings = moshSettingsForClip(clip);
     return {
       method: 'melt',
       repeat: Number.isInteger(repeat) && repeat >= 2 && repeat <= 12 ? repeat : 4,
+      durationFrames: settings.durationFrames,
+      durationSeconds: settings.durationSeconds,
+      ending: settings.ending,
     };
   }
   if (clip?.transition === 'loop') {
     const loopFrames = Number(clip.loopFrames);
+    const settings = moshSettingsForClip(clip);
     return {
       method: 'loop',
       loopFrames: Number.isInteger(loopFrames) && loopFrames >= 2 && loopFrames <= 48 ? loopFrames : 4,
+      durationFrames: settings.durationFrames,
+      durationSeconds: settings.durationSeconds,
+      ending: settings.ending,
     };
   }
   if (clip?.transition === 'reset-pulse') {
@@ -438,9 +448,11 @@ function renderConnector(index) {
       ? `${settings.durationSeconds.toFixed(2)} s · ${settings.ending}`
       : (seconds === null ? 'incoming clip' : `${seconds.toFixed(2)} s`);
   } else if (incoming.transition === 'melt') {
-    duration.textContent = `${effectSettingsForClip(incoming).repeat}× non-IDR`;
+    const effect = effectSettingsForClip(incoming);
+    duration.textContent = `${effect.durationSeconds.toFixed(2)} s · ${effect.repeat}× · ${effect.ending}`;
   } else if (incoming.transition === 'loop') {
-    duration.textContent = `${effectSettingsForClip(incoming).loopFrames}-frame · 3×/2× release`;
+    const effect = effectSettingsForClip(incoming);
+    duration.textContent = `${effect.durationSeconds.toFixed(2)} s · ${effect.loopFrames}f · ${effect.ending}`;
   } else if (incoming.transition === 'reset-pulse') {
     const effect = effectSettingsForClip(incoming);
     duration.textContent = `${effect.durationSeconds.toFixed(2)} s · ${effect.resetInterval}f / ${effect.repeat}×`;
@@ -651,7 +663,7 @@ function redoTimeline() {
 
 function updateTransitionOptionsVisibility() {
   const method = transitionDialog.querySelector('input[name="transition-method"]:checked')?.value;
-  classicMoshOptions.hidden = method !== 'classic-mosh' && method !== 'reset-pulse';
+  classicMoshOptions.hidden = method === 'cut';
   nalEffectOptions.hidden = method !== 'melt' && method !== 'loop';
   resetPulseOptions.hidden = method !== 'reset-pulse';
 }
@@ -744,6 +756,9 @@ function openTransition(boundaryIndex) {
 
 for (const radio of transitionDialog.querySelectorAll('input[name="transition-method"]')) {
   radio.addEventListener('change', () => {
+    if (clips[activeBoundary]?.transition !== radio.value) {
+      transitionEnding.value = radio.value === 'melt' || radio.value === 'loop' ? 'continue' : 'restore';
+    }
     updateTransitionOptionsVisibility();
     setEffectParameterControl(radio.value, clips[activeBoundary]);
     setResetPulseControls(radio.value, clips[activeBoundary]);
@@ -769,7 +784,7 @@ transitionApply.addEventListener('click', event => {
   const next = {
     ...current,
     transition: selected,
-    ...(selected === 'classic-mosh' || selected === 'reset-pulse' ? {
+    ...(selected !== 'cut' ? {
       moshDurationFrames: Math.round(Number(transitionDuration.value)),
       moshEnding: transitionEnding.value,
     } : {}),
@@ -1389,7 +1404,7 @@ async function refreshSequence() {
         boundaries: checks.map(compatibilityReport),
       },
       transitions: clips.slice(1).map((clip, offset) => {
-        const settings = clip.transition === 'classic-mosh' || clip.transition === 'reset-pulse' ? moshSettingsForClip(clip) : null;
+        const settings = clip.transition === 'cut' ? null : moshSettingsForClip(clip);
         const effect = effectSettingsForClip(clip);
         return {
           boundaryIndex: offset,
