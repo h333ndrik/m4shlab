@@ -434,17 +434,47 @@ try {
 
   const dialogMethods = await client.evaluate(`(() => {
     document.querySelectorAll('.connector')[0].click();
+    const duration = document.querySelector('#transition-duration');
     return {
       open: document.querySelector('#transition-dialog').open,
       methods: [...document.querySelectorAll('#transition-dialog input[name="transition-method"]')].map(input => input.value),
+      classicHidden: document.querySelector('#classic-mosh-options').hidden,
+      endingOptions: [...document.querySelectorAll('#transition-ending option')].map(option => option.textContent),
+      ending: document.querySelector('#transition-ending').value,
+      durationMax: Number(duration.max),
+      durationValue: Number(duration.value),
+      durationMode: document.querySelector('#transition-duration-mode').textContent,
     };
   })()`);
   assert.equal(dialogMethods.open, true);
   assert.deepEqual(dialogMethods.methods, ['cut', 'classic-mosh']);
-  await client.evaluate(`(() => {
-    document.querySelector('#transition-dialog input[value="cut"]').checked = true;
-    document.querySelector('#transition-apply').click();
+  assert.equal(dialogMethods.classicHidden, false);
+  assert.deepEqual(dialogMethods.endingOptions, ['Restore clear image', 'Continue motion']);
+  assert.equal(dialogMethods.ending, 'restore');
+  assert.ok(dialogMethods.durationMax >= 1);
+  assert.equal(dialogMethods.durationValue, dialogMethods.durationMax);
+  assert.equal(dialogMethods.durationMode, 'full length');
+  const durationControls = await client.evaluate(`(() => {
+    const duration = document.querySelector('#transition-duration');
+    duration.value = '5';
+    duration.dispatchEvent(new Event('input', {bubbles: true}));
+    const ending = document.querySelector('#transition-ending');
+    ending.value = 'continue';
+    ending.dispatchEvent(new Event('change', {bubbles: true}));
+    const cut = document.querySelector('#transition-dialog input[value="cut"]');
+    cut.checked = true;
+    cut.dispatchEvent(new Event('change', {bubbles: true}));
+    return {
+      valueText: document.querySelector('#transition-duration-value').textContent,
+      mode: document.querySelector('#transition-duration-mode').textContent,
+      classicHiddenForCut: document.querySelector('#classic-mosh-options').hidden,
+    };
   })()`);
+  assert.match(durationControls.valueText, /5 frames/);
+  assert.equal(durationControls.mode, 'custom');
+  assert.equal(durationControls.classicHiddenForCut, true);
+  console.log('PASS Classic Mosh dialog exposes a frame-quantized duration, grouped seconds feedback, and Restore clear image / Continue motion; controls hide for Cut');
+  await client.evaluate("document.querySelector('#transition-apply').click()");
   await client.waitFor("JSON.parse(document.querySelector('#report').textContent).transitions?.[0]?.method === 'cut' && document.querySelector('#status').textContent.includes('samples')", 30000);
   const mixedTimeline = await client.evaluate(`(() => ({
     connectors: [...document.querySelectorAll('.connector')].map(node => node.textContent),

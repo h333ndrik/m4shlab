@@ -8,6 +8,8 @@ Phase B MVP: two compatible H.264 clips, Classic A→B merge in the browser, exp
 
 Multi-clip timeline: import up to 12 clips, arrange them on one horizontal timeline, choose Cut or Classic Mosh at every boundary, and export the complete chained sequence. The two-clip flow remains the N=2 case.
 
+Classic Mosh duration + ending: each boundary has a frame-quantized duration and an ending mode. **Restore clear image** re-inserts the original boundary IDR after the effect window; **Continue motion** preserves the previous full-length IDR-free chain.
+
 Phase D PWA shell: m4shlab is installable and its app shell works offline after the first successful load. ffmpeg.wasm is cached on first use, not precached.
 
 Universal import: conventional H.264 MP4/MOV parses natively; other formats are converted locally with lazily loaded ffmpeg.wasm.
@@ -22,7 +24,7 @@ Automatic sequence normalization starts as soon as native compatibility fails. I
 npm start
 ```
 
-Open `http://127.0.0.1:4173`, choose up to 12 clips with **Import clips**, or drop them onto the timeline. Use the card arrows to reorder, the remove buttons to edit the sequence, and undo/redo for timeline changes. Click each dashed connector to choose **Cut** or **Classic Mosh**. Switch between the first-clip cut and the full merged sequence; validation and normalization happen in the background, and only a blocking error is surfaced. Play from the start for the clearest result. Export downloads `m4shlab-merge.mp4` with the full sequence.
+Open `http://127.0.0.1:4173`, choose up to 12 clips with **Import clips**, or drop them onto the timeline. Use the card arrows to reorder, the remove buttons to edit the sequence, and undo/redo for timeline changes. Click each dashed connector to choose **Cut** or **Classic Mosh**, then set the Classic Mosh duration and **Restore clear image** / **Continue motion**. Switch between the first-clip cut and the full merged sequence; validation and normalization happen in the background, and only a blocking error is surfaced. Play from the start for the clearest result. Export downloads `m4shlab-merge.mp4` with the full sequence.
 
 The Phase A single-clip transfer remains available through `mosh.js` and its unchanged test chain.
 
@@ -38,7 +40,7 @@ Service workers require HTTPS or `localhost`; GitHub Pages provides HTTPS automa
 
 The first load must reach the network so the manifest and versioned app shell can be cached. After that the UI starts offline. Import, Classic Mosh, preview, and export are local operations and continue to work without a network. New-format conversion needs the ffmpeg.wasm core; the first conversion downloads it, then `converter-worker.js`, `ffmpeg-core.js`, and `ffmpeg-core.wasm` stay in the runtime cache. The OS may evict that cache under storage pressure, in which case conversion needs network again.
 
-The current cache version is `v1` (`m4shlab-v1` plus `m4shlab-runtime-v1`). Bump `VERSION` in `sw.js` whenever app-shell or conversion-worker files change. Activation deletes older versioned caches, including the old runtime cache, so the worker cannot run stale code.
+The current cache version is `v2` (`m4shlab-v2` plus `m4shlab-runtime-v2`). Bump `VERSION` in `sw.js` whenever app-shell or conversion-worker files change. Activation deletes older versioned caches, including the old runtime cache, so the worker cannot run stale code.
 
 ## Supported formats
 
@@ -55,7 +57,7 @@ Native Tier-1 clips may contain B-frames; their `ctts` composition offsets are p
 
 ## Interface
 
-The page follows the h4moshlab visual language: a light radial-gradient background, centered 1000px layout, compact bordered controls, a large dark preview well, and a horizontal clip timeline. Clip cards show a thumbnail, filename, duration, format status, active reorder arrows, and a remove button; undo/redo restores timeline edits. Each dashed connector names its boundary method and the incoming clip duration, and opens a dialog with exactly **Cut** and **Classic Mosh**. The first card is the preview cut; the export is the full chained result. Compatibility criteria, badges, and SPS/PPS hashes are not rendered. Under 600px the header and preview actions stack and touch controls meet the 44px target.
+The page follows the h4moshlab visual language: a light radial-gradient background, centered 1000px layout, compact bordered controls, a large dark preview well, and a horizontal clip timeline. Clip cards show a thumbnail, filename, duration, format status, active reorder arrows, and a remove button; undo/redo restores timeline edits. Each dashed connector names its boundary method and its effect duration, and opens a dialog with exactly **Cut** and **Classic Mosh**. Classic Mosh adds a frame-quantized duration slider and **Restore clear image** / **Continue motion** ending selector. The first card is the preview cut; the export is the full chained result. Compatibility criteria, badges, and SPS/PPS hashes are not rendered. Under 600px the header and preview actions stack and touch controls meet the 44px target.
 
 ## What it does
 
@@ -86,9 +88,11 @@ The page follows the h4moshlab visual language: a light radial-gradient backgrou
 
 1. Walks the MP4 boxes and resolves the video track's sample table (`stsz`/`stz2`, `stsc`, `stco`/`co64`).
 2. Reads length-prefixed H.264 NAL units using the length size declared by `avcC`.
-3. Preserves the first GOP. From the second IDR onward, removes each IDR NAL unit and nothing else.
-4. Rewrites only the affected sample sizes, chunk offsets, mdat size, and the removed NAL bytes. All retained NAL payloads remain byte-identical and in order.
-5. Plays the modified MP4 as a Blob through the browser's native decoder and exports the same bytes as a download.
+3. Preserves the first GOP, then starts the mosh window at the next IDR. Duration is expressed in source frames, quantized from seconds at the clip's nominal fps.
+4. **Continue motion** removes all IDRs from the boundary onward, matching the previous full-length output byte-for-byte.
+5. **Restore clear image** removes IDRs only inside the selected window and inserts the original boundary IDR sample before frame N+1. Its payload is byte-identical; subsequent samples and later IDR anchors remain otherwise unchanged. The default is the full available window, which leaves legacy output unchanged.
+6. Rewrites sample sizes/offsets for full-length mode or rebuilds the video sample table for a short restore window. All retained NAL payloads remain byte-identical.
+7. Plays the modified MP4 as a Blob through the browser's native decoder and exports the same bytes as a download.
 
 `Cut` is retained by the transform as a byte-for-byte copy of the source.
 
@@ -100,15 +104,17 @@ The page follows the h4moshlab visual language: a light radial-gradient backgrou
 4. For a multi-GOP B whose first frame after the removed IDR cannot continue A's `frame_num`, it parses the first B-GOP slice headers and patches `frame_num` modulo `2^log2_max_frame_num`. Type 2 POC streams are always eligible. Type 0/1 streams are accepted only when B has no B-slices and its `ctts` has no non-zero composition offsets; for type 0, `pic_order_cnt_lsb` is aligned as well.
 5. The patcher unescapes emulation-prevention bytes to RBSP, changes the fixed-width `frame_num` and optional POC bits, then regenerates the EBSP. It therefore remains safe if the original or patched bits span positions where an emulation-prevention byte was present.
 6. Appends B's remaining crop of samples and rebuilds the video sample tables, composition offsets, chunk offsets, and container durations. Later B IDRs reset `frame_num` normally and need no patch.
-7. Reports every compatibility criterion, the removed B units, output duration, sample counts, retained B IDRs, the frame-number patch, and the leading IDR frame. Incompatible pairs are blocked loudly instead of producing a broken file.
+7. With **Restore clear image**, stops the IDR-free window after the selected duration and inserts B's original first IDR sample before frame N+1. The restore IDR is a normal recovery anchor; no extra frame-number patch is applied at insertion. **Continue motion** ignores the shortened window and remains byte-identical to the previous full-length merge.
+8. Reports every compatibility criterion, duration frames, ending, clamped/requested values, reinserted IDR positions, removed units, output duration, sample counts, retained B IDRs, frame-number alignment, and the leading IDR frame. Incompatible or invalid pairs are blocked loudly instead of producing a broken file.
 
 ### Multi-clip chain
 
 1. Clip 1 contributes every sample. Each **Cut** boundary appends the complete incoming clip with byte-identical sample/NAL data.
-2. Each **Classic Mosh** boundary removes only the incoming clip's first IDR sample and retained SPS/PPS/SEI units in that sample, then aligns the first incoming GOP's `frame_num` and type-0 POC LSB against the already merged stream. Alignment therefore continues from the running chain position, not from the original first clip.
-3. Later IDRs in every appended clip remain as reference anchors and reset local GOP numbering naturally.
-4. The sample table is rebuilt once per boundary from the running sequence. `stsz`, `stco`, `stsc`, `stts`, `ctts`, and track/movie durations describe the final chain.
-5. The report records clip count, per-boundary methods, source and merged sample counts, expected decoded frames (`source samples - mosh boundaries`), retained NAL identity, and normalization paths. The preview cut shows clip 1 only; the merged preview and export contain the full sequence.
+2. Each **Classic Mosh** boundary removes the incoming first IDR sample and retained SPS/PPS/SEI units, then aligns the first incoming GOP's `frame_num` and type-0 POC LSB against the already merged stream. Alignment therefore continues from the running chain position, not from the original first clip.
+3. **Restore clear image** ends that boundary after its own duration by inserting the original first IDR before frame N+1. **Continue motion** keeps the full-length chain. Settings travel with each boundary through reorder/undo and are reported independently.
+4. Later IDRs in every appended clip remain as reference anchors and reset local GOP numbering naturally.
+5. The sample table is rebuilt once per boundary from the running sequence. `stsz`, `stco`, `stsc`, `stts`, `ctts`, and track/movie durations describe the final chain.
+6. The report records clip count, per-boundary methods, duration frames, ending, clamped values, reinserted IDR positions, source and merged sample counts, expected decoded frames, retained NAL identity, and normalization paths. The preview cut shows clip 1 only; the merged preview and export contain the full sequence.
 
 The merged export is video-only. Audio, crossfades, and multi-clip audio mixing are not implemented.
 
@@ -146,6 +152,10 @@ The tests assert:
 - the merged stream starts with an IDR frame and retains B's later IDR anchors;
 - a multi-GOP B keeps its later IDR anchors, aligns the first B GOP with a safe RBSP/EBSP frame-number patch, and decodes as many frames as its sample table declares;
 - a POC type 0, no-B-frame multi-GOP pair merges with frame-number and POC-LSB alignment and decodes all 99 frames;
+- Classic Mosh restore at 10 frames removes only IDs inside the window, inserts the exact original boundary sample at frame 11, and preserves later IDR anchors;
+- restore decodes 75/75 Phase A frames and 50/50 Phase B frames; continue with a duration set is byte-identical to the previous full-length output;
+- duration 1 is accepted, values beyond the available window clamp with a report note, and durations below one frame raise `ValueError`;
+- chained rendering carries independent restore/continue settings at each Classic Mosh boundary;
 - a three-clip Classic Mosh chain keeps later B/C IDRs, aligns both first GOPs against the running chain, preserves all unpatched NAL bytes, and decodes 130/130 expected frames;
 - a three-clip Cut + Classic Mosh chain preserves A/B NALs byte-for-byte and decodes 131/131 frames;
 - POC type 0 with true B-frame reordering remains rejected with an explicit message, including in a chained merge;
@@ -162,11 +172,13 @@ The tests assert:
 - the browser has no compatibility panel, status badge, table, or SPS/PPS hash display;
 - blocking merge errors render as a short alert rather than a compatibility panel;
 - the manifest has standalone display, the light theme, SVG/192/512/maskable icons, and a 180px Apple touch icon;
-- the service worker activates, controls the page, precaches the 19-file app shell, and excludes the conversion worker and ffmpeg core from precache;
+- the service worker activates, controls the page, precaches the 20-file app shell, and excludes the conversion worker and ffmpeg core from precache;
 - Chrome reports no manifest or installability errors, activates `beforeinstallprompt`, and the activate handler removes an older versioned cache;
 - an offline reload serves the complete shell, after which previously cached ffmpeg.wasm converts and merges HEVC inputs locally and the exported MP4 decodes.
 
-Current local results (2026-11-03, Node 26.13.0, FFmpeg 9.0.2, Google Chrome 156): all 35 Node checks pass. Phase A removes 11,468 bytes and decodes 73 frames. Phase B merges 25 A samples plus 24 retained B samples, decodes 49 frames, and produces the same 67,893-byte export. The multi-GOP regression merges 25 A + 75 B samples, retains two later B IDRs, patches 24 first-GOP slice headers, and decodes all 99 expected frames with three keyframes. A Safari-shaped POC type 0 pair also merges with POC-LSB alignment and decodes 99/99 frames; a genuinely reordered type 0 multi-GOP stream remains rejected. The WebCodecs muxer test emits 8 samples with a 14,984-byte mdat payload and 4,096 duration units. Tier-1 fixtures additionally verify a QuickTime H.264 MOV (25 samples / 26 NALs), a size-zero mdat, standalone `wide`, a 64-bit mdat, the exact HEVC error, and the exact fragmented-MP4 error.
+Current local results (2026-11-03, Node 26.13.0, FFmpeg 9.0.2, Google Chrome 156): all 43 Node checks pass. Phase A removes 11,468 bytes and decodes 73 frames. Phase B merges 25 A samples plus 24 retained B samples, decodes 49 frames, and produces the same 67,893-byte export. The multi-GOP regression merges 25 A + 75 B samples, retains two later B IDRs, patches 24 first-GOP slice headers, and decodes all 99 expected frames with three keyframes. A Safari-shaped POC type 0 pair also merges with POC-LSB alignment and decodes 99/99 frames; a genuinely reordered type 0 multi-GOP stream remains rejected. The WebCodecs muxer test emits 8 samples with a 14,984-byte mdat payload and 4,096 duration units. Tier-1 fixtures additionally verify a QuickTime H.264 MOV (25 samples / 26 NALs), a size-zero mdat, standalone `wide`, a 64-bit mdat, the exact HEVC error, and the exact fragmented-MP4 error.
+
+Classic Mosh restore was verified at a 10-frame duration. Phase A removes the sample-25 boundary sample, inserts the byte-identical boundary sample before source frame 36, retains the later sample-50 IDR, and decodes 75/75 source frames without an empty sample entry. The 10-frame Phase B restore inserts B's original IDR at merged sample 35 and decodes 50/50. Continue mode remains byte-identical to the prior full-length joins.
 
 The three-clip POC0 chain uses 25 + 75 + 32 source samples. Two Classic Mosh boundaries retain B/C IDRs at merged samples 49, 74, and 123; 48 first-GOP slice headers are intentionally patched while all other retained NALs stay byte-identical, and strict decode returns 130/130 frames. A Cut + Mosh variant returns 131/131.
 
@@ -179,6 +191,7 @@ PASS WebCodecs decoded and normalized both clips with one leading IDR each; 5301
 PASS WebCodecs emitted keyframes at samples 1, 31, and 61; the multi-GOP merge retained two later IDRs and decoded all 149 frames
 PASS Safari-style POC type 0 multi-GOP pair merges in the browser and clears stale errors
 PASS mobile layout stacks under 600px and keeps 44px touch targets on the scrolling timeline
+PASS Classic Mosh dialog exposes a frame-quantized duration, grouped seconds feedback, and Restore clear image / Continue motion; controls hide for Cut
 PASS blocking merge errors stay short and do not render a compatibility panel
 PASS large native mismatch auto-normalized to 540x720; UI showed the normalizing state and merge produced 49 samples
 PASS multi-file import normalized 3 clips to 540x720, exposed two Cut/Classic Mosh boundary dialogs, and merged 74 samples
@@ -194,7 +207,7 @@ PASS WebCodecs stubbed unavailable: ffmpeg.wasm fallback ran and the report iden
 
 ```text
 PASS manifest is valid with standalone display, light theme, SVG/192/512/maskable icons, and a 180px Apple touch icon
-PASS service worker registered, controlled the page, precached 19 shell assets, and Chrome reports no manifest/installability errors; beforeinstallprompt observed=true
+PASS service worker registered, controlled the page, precached 20 shell assets, and Chrome reports no manifest/installability errors; beforeinstallprompt observed=true
 PASS activate cleanup removed the old versioned cache and re-registered the current shell
 PASS first online conversion runtime-cached converter-worker.js, ffmpeg-core.js, and ffmpeg-core.wasm (3 runtime entries)
 PASS offline reload served the complete app shell from Cache Storage with no network
@@ -228,6 +241,8 @@ The ffmpeg.wasm fallback depends on downloading the pinned core from jsDelivr. P
 Direct merging supports compatible sequence members only. Resolution, profile, level, chroma, bit depth, PPS, and video timescale must match; differing SPS payloads require equivalent parsed core fields. Phase C can normalize native H.264 mismatches to a common target first. The sequence itself is capped at 12 clips, and all merged exports have no audio. Normalized clips also drop audio before moshing. Multi-GOP B is supported: the mosh targets B's first GOP, then the retained B IDRs act as clean recovery anchors, so later B GOPs should play normally after the intended boundary corruption. Type 0/1 POC alignment is limited to streams with no B-slices and no composition reordering; genuinely reordered multi-GOP streams fail explicitly instead of silently producing a short decode. WebCodecs normalization is video-only and intentionally removes B-frames; it is not a general-purpose transcoder.
 
 Native parsing is not HEVC, fragmented-MP4, encrypted-media, or multi-video-track capable; those unsupported local files must go through Tier 2 conversion where applicable.
+
+Classic Mosh duration is bounded by the frames available after the incoming clip's first GOP boundary. Restore inserts the original boundary IDR at frame N+1; it does not blend frames or guarantee smooth motion through the recovery jump. Continue deliberately ignores the shortened window and retains the full prediction chain. Full-length defaults preserve legacy output behavior.
 
 The PWA cache is not a persistence guarantee. First load needs network; a browser may evict Cache Storage, `file://` cannot register a service worker, and iOS may reclaim storage or terminate a large wasm conversion under memory pressure. The service worker deliberately does not cache source media or generated exports outside the page's in-memory Blob URLs.
 

@@ -1,6 +1,7 @@
 import { parseMp4, childBoxes, Mp4Error } from './parser/mp4.js';
 import { extractNals } from './parser/nal.js';
 import { parseSps } from './parser/sps.js';
+import { countPictureSamples, resolveClassicMoshSettings } from './classic-mosh.js';
 
 const IDR_NAL_TYPE = 5;
 const SEI_NAL_TYPE = 6;
@@ -426,7 +427,7 @@ function rebuildMoov(inputA, parsedA, sizes, durations, compositionOffsets, chun
   ]);
 }
 
-function prepareB(inputB, parsedB) {
+function prepareB(inputB, parsedB, options = {}) {
   const track = parsedB.videoTrack;
   const nals = extractNals(inputB, track);
   const bySample = new Map();
@@ -439,14 +440,37 @@ function prepareB(inputB, parsedB) {
   if (!firstIdr) throw new Mp4Error('Clip B has no IDR NAL unit');
   if (parsedB.videoTrack.stts.durations.length !== track.samples.length) throw new Mp4Error('B stts sample count does not match its sample table');
 
+  const settings = resolveClassicMoshSettings(track, firstIdr.sampleIndex, options);
+  if (settings.maximumFrames < 1) throw new Mp4Error('Clip B has no frames after its first GOP boundary for Classic Mosh.');
+  const restoreWithinClip = settings.ending === 'restore'
+    && settings.recoverySampleIndex < track.samples.length;
+  const boundarySample = track.samples[firstIdr.sampleIndex];
+  const boundarySampleBytes = inputB.subarray(boundarySample.offset, boundarySample.offset + boundarySample.size);
+  const boundaryNals = bySample.get(firstIdr.sampleIndex) ?? [];
   const samples = [];
   const removedCounts = { idr: 0, sei: 0, sps: 0, pps: 0 };
+  const removedIdrSamples = new Set();
   let skippedPrefix = 0;
   let skippedEmpty = 0;
+  let reInserted = false;
+
   for (const sample of track.samples) {
+    if (restoreWithinClip && sample.index === settings.recoverySampleIndex) {
+      samples.push({
+        sourceSampleIndex: sample.index,
+        data: boundarySampleBytes,
+        duration: track.stts.durations[firstIdr.sampleIndex],
+        compositionOffset: track.ctts?.offsets[firstIdr.sampleIndex] ?? 0,
+        retainedNals: boundaryNals,
+        reInsertedIdr: true,
+      });
+      reInserted = true;
+    }
+
     const sampleNals = bySample.get(sample.index) ?? [];
     if (sample.index === firstIdr.sampleIndex) {
       skippedPrefix += 1;
+      removedIdrSamples.add(sample.index);
       for (const nal of sampleNals) {
         if (nal.type === IDR_NAL_TYPE) removedCounts.idr += 1;
         if (nal.type === SEI_NAL_TYPE) removedCounts.sei += 1;
@@ -457,7 +481,14 @@ function prepareB(inputB, parsedB) {
     }
 
     const retained = sampleNals.filter(nal => {
-      if (nal.type === IDR_NAL_TYPE) return true;
+      if (nal.type === IDR_NAL_TYPE) {
+        if (restoreWithinClip && sample.index < settings.recoverySampleIndex) {
+          removedCounts.idr += 1;
+          removedIdrSamples.add(sample.index);
+          return false;
+        }
+        return true;
+      }
       if (!REMOVED_B_NAL_TYPES.has(nal.type)) return true;
       if (nal.type === SEI_NAL_TYPE) removedCounts.sei += 1;
       if (nal.type === SPS_NAL_TYPE) removedCounts.sps += 1;
@@ -471,18 +502,27 @@ function prepareB(inputB, parsedB) {
     samples.push({
       sourceSampleIndex: sample.index,
       data: concatBytes(retained.map(nal => inputB.subarray(nal.start, nal.end))),
-      duration: parsedB.videoTrack.stts.durations[sample.index],
-      compositionOffset: parsedB.videoTrack.ctts?.offsets[sample.index] ?? 0,
+      duration: track.stts.durations[sample.index],
+      compositionOffset: track.ctts?.offsets[sample.index] ?? 0,
       retainedNals: retained,
+      reInsertedIdr: false,
     });
   }
+
+  const pictureSamples = samples.filter(sample => sample.retainedNals.some(nal => nal.type === 1 || nal.type === IDR_NAL_TYPE)).length;
+  const laterIdrCount = samples.reduce((total, sample) => total
+    + sample.retainedNals.filter(nal => !sample.reInsertedIdr && nal.type === IDR_NAL_TYPE).length, 0);
   return {
     firstIdrSample: firstIdr.sampleIndex,
     idrSamples: [...new Set(nals.filter(nal => nal.type === IDR_NAL_TYPE).map(nal => nal.sampleIndex))].sort((a, b) => a - b),
     skippedPrefix,
     skippedEmpty,
     removedCounts,
-    laterIdrCount: samples.reduce((total, sample) => total + sample.retainedNals.filter(nal => nal.type === IDR_NAL_TYPE).length, 0),
+    removedIdrSamples: [...removedIdrSamples].sort((a, b) => a - b),
+    laterIdrCount,
+    pictureSamples,
+    reInsertedIdrPositions: reInserted ? [settings.recoverySampleIndex] : [],
+    settings,
     samples,
   };
 }
@@ -683,12 +723,16 @@ function alignFirstBGop(inputA, parsedA, inputB, parsedB, preparedB) {
   }
   const modulo = 2 ** bSps.log2MaxFrameNum;
   const pocModulo = bSps.picOrderCntType === 0 ? 2 ** bSps.log2MaxPicOrderCntLsb : null;
-  const nextIdrSample = preparedB.idrSamples[1] ?? parsedB.videoTrack.samples.length;
+  const hasRecoveryIdr = preparedB.reInsertedIdrPositions.length > 0;
+  const nextIdrSample = hasRecoveryIdr
+    ? preparedB.reInsertedIdrPositions[0]
+    : preparedB.idrSamples[1] ?? parsedB.videoTrack.samples.length;
   let patchedSamples = 0;
   let patchedNals = 0;
 
   for (const sample of preparedB.samples) {
     if (sample.sourceSampleIndex >= nextIdrSample) break;
+    if (sample.reInsertedIdr) continue;
     const frameNumber = (aLastFrameNum + (sample.sourceSampleIndex - preparedB.firstIdrSample)) % modulo;
     const pictureOrderCount = bSps.picOrderCntType === 0 ? {
       value: (aLastPicOrderCntLsb + (sample.sourceSampleIndex - preparedB.firstIdrSample)) % pocModulo,
@@ -700,10 +744,12 @@ function alignFirstBGop(inputA, parsedA, inputB, parsedB, preparedB) {
     patchedSamples += 1;
     patchedNals += patched.patchedNals;
   }
-  if (patchedNals === 0) throw new Mp4Error('Multi-GOP B has no first-GOP slices to align');
+  if (patchedNals === 0 && !hasRecoveryIdr) throw new Mp4Error('Multi-GOP B has no first-GOP slices to align');
 
   return {
-    applied: true,
+    applied: patchedNals > 0,
+    reason: patchedNals === 0 ? 'recovery-idr-before-first-delta' : undefined,
+    recoveryIdrSourceSample: hasRecoveryIdr ? nextIdrSample : null,
     aLastFrameNum,
     nextIdrSample,
     patchedSamples,
@@ -719,14 +765,14 @@ function alignFirstBGop(inputA, parsedA, inputB, parsedB, preparedB) {
   };
 }
 
-export async function mergeMoshH264(inputA, inputB, parsedA = parseMp4(inputA), parsedB = parseMp4(inputB)) {
+export async function mergeMoshH264(inputA, inputB, parsedA = parseMp4(inputA), parsedB = parseMp4(inputB), options = {}) {
   if (!(inputA instanceof Uint8Array) || !(inputB instanceof Uint8Array)) throw new TypeError('mergeMoshH264 expects two Uint8Array clips');
   const compatibility = await checkCompatibility(inputA, inputB, parsedA, parsedB);
   if (!compatibility.compatible) throw new CompatibilityError(compatibility);
   if (!parsedA.mvhd || !parsedA.videoTrack.tkhd || !parsedA.videoTrack.mdhd) throw new Mp4Error('Clip A is missing required duration metadata');
   if (parsedA.videoTrack.stts.durations.length !== parsedA.videoTrack.samples.length) throw new Mp4Error('A stts sample count does not match its sample table');
 
-  const preparedB = prepareB(inputB, parsedB);
+  const preparedB = prepareB(inputB, parsedB, options);
   const frameAlignment = alignFirstBGop(inputA, parsedA, inputB, parsedB, preparedB);
   const aSamples = parsedA.videoTrack.samples.map(sample => inputA.subarray(sample.offset, sample.offset + sample.size));
   const bSamples = preparedB.samples.map(sample => sample.data);
@@ -771,7 +817,20 @@ export async function mergeMoshH264(inputA, inputB, parsedA = parseMp4(inputA), 
       mdatPayloadBytes: sampleParts.reduce((total, sample) => total + sample.byteLength, 0),
       sampleSizeSum: sizes.reduce((total, value) => total + value, 0),
       idrCount: idrNals.length,
-      bIdrCountRemaining: preparedB.laterIdrCount,
+      bIdrCountRemaining: preparedB.laterIdrCount + preparedB.reInsertedIdrPositions.length,
+      bPictureSamples: preparedB.pictureSamples,
+      bRemovedIdrSamples: preparedB.removedIdrSamples,
+      durationFrames: preparedB.settings.durationFrames,
+      requestedDurationFrames: preparedB.settings.requestedFrames,
+      maximumDurationFrames: preparedB.settings.maximumFrames,
+      durationSeconds: preparedB.settings.durationSeconds,
+      fps: preparedB.settings.fps,
+      ending: preparedB.settings.ending,
+      clamped: preparedB.settings.clamped,
+      reInsertedIdrPositions: preparedB.reInsertedIdrPositions,
+      duration_frames: preparedB.settings.durationFrames,
+      ending: preparedB.settings.ending,
+      re_inserted_idr_positions: preparedB.reInsertedIdrPositions,
       frameAlignment,
       leadingIdrNalCount,
       startsWithIdrFrame: leadingIdrNalCount > 0,
@@ -861,8 +920,17 @@ export async function appendCutH264(inputA, inputB, parsedA = parseMp4(inputA), 
 export async function mergeSequenceH264(clips, methods = []) {
   if (!Array.isArray(clips) || clips.length < 1 || clips.length > 12) throw new TypeError('mergeSequenceH264 expects 1 to 12 clips');
   if (!Array.isArray(methods) || methods.length !== clips.length - 1) throw new TypeError('mergeSequenceH264 expects one method per boundary');
-  const transitions = methods.map(method => method === 'cut' ? 'cut' : method === 'classic-mosh' ? 'classic-mosh' : null);
-  if (transitions.some(method => method === null)) throw new TypeError('Transition methods must be cut or classic-mosh');
+  const transitions = methods.map(entry => {
+    const value = typeof entry === 'string' ? {method: entry} : entry;
+    if (!value || (value.method !== 'cut' && value.method !== 'classic-mosh')) return null;
+    return {
+      method: value.method,
+      durationFrames: value.durationFrames,
+      durationSeconds: value.durationSeconds ?? value.duration,
+      ending: value.ending ?? 'restore',
+    };
+  });
+  if (transitions.some(transition => transition === null)) throw new TypeError('Transition methods must be cut or classic-mosh');
   for (const clip of clips) {
     if (!(clip?.bytes instanceof Uint8Array)) throw new TypeError('mergeSequenceH264 clips require bytes');
   }
@@ -870,21 +938,32 @@ export async function mergeSequenceH264(clips, methods = []) {
   const first = clips[0];
   let currentBytes = new Uint8Array(first.bytes);
   let currentParsed = first.parsed ?? parseMp4(currentBytes);
+  let expectedDecodedFrames = countPictureSamples(currentBytes, currentParsed.videoTrack);
   const boundaries = [];
   let sourceSamples = currentParsed.videoTrack.samples.length;
   let moshBoundaries = 0;
   let sourceBytes = first.bytes.byteLength;
 
   for (let index = 0; index < transitions.length; index += 1) {
-    const method = transitions[index];
+    const transition = transitions[index];
+    const method = transition.method;
     const incoming = clips[index + 1];
     const incomingParsed = incoming.parsed ?? parseMp4(incoming.bytes);
     const step = method === 'cut'
       ? await appendCutH264(currentBytes, incoming.bytes, currentParsed, incomingParsed)
-      : await mergeMoshH264(currentBytes, incoming.bytes, currentParsed, incomingParsed);
+      : await mergeMoshH264(currentBytes, incoming.bytes, currentParsed, incomingParsed, {
+        durationFrames: transition.durationFrames,
+        durationSeconds: transition.durationSeconds,
+        ending: transition.ending,
+      });
     sourceSamples += incomingParsed.videoTrack.samples.length;
     sourceBytes += incoming.bytes.byteLength;
-    if (method === 'classic-mosh') moshBoundaries += 1;
+    if (method === 'classic-mosh') {
+      moshBoundaries += 1;
+      expectedDecodedFrames += step.report.bPictureSamples;
+    } else {
+      expectedDecodedFrames += countPictureSamples(incoming.bytes, incomingParsed.videoTrack);
+    }
     boundaries.push({
       boundaryIndex: index,
       fromClip: index,
@@ -906,12 +985,12 @@ export async function mergeSequenceH264(clips, methods = []) {
     report: {
       clipCount: clips.length,
       transitionCount: transitions.length,
-      methods: transitions,
+      methods: transitions.map(transition => transition.method),
       sourceSamples,
       moshBoundaries,
       cutBoundaries: transitions.length - moshBoundaries,
       mergedSamples,
-      expectedDecodedFrames: sourceSamples - moshBoundaries,
+      expectedDecodedFrames,
       sourceBytes,
       outputBytes: currentBytes.byteLength,
       mergedDurationUnits: outputMp4.videoTrack.stts.durations.reduce((total, value) => total + value, 0),
@@ -925,6 +1004,13 @@ export async function mergeSequenceH264(clips, methods = []) {
         method: boundary.method,
         mergedSamples: boundary.report.mergedSamples,
         removedSamples: Math.max(0, boundary.report.bSamples - boundary.report.bSamplesKept),
+        removedIdrSamples: boundary.report.bRemovedIdrSamples ?? [],
+        durationFrames: boundary.report.durationFrames ?? null,
+        duration_frames: boundary.report.duration_frames ?? null,
+        ending: boundary.report.ending ?? null,
+        clamped: boundary.report.clamped ?? false,
+        reInsertedIdrPositions: boundary.report.reInsertedIdrPositions ?? [],
+        re_inserted_idr_positions: boundary.report.re_inserted_idr_positions ?? [],
         frameAlignment: boundary.report.frameAlignment,
         compatibility: compatibilityReportSummary(boundary.compatibility),
       })),
@@ -942,4 +1028,4 @@ function compatibilityReportSummary(compatibility) {
   };
 }
 
-export { fullBox, makeBox, makeChunkOffset, makeStsc, makeStss, makeStsz, makeStts, u32 };
+export { buildMergedTrack, fullBox, makeBox, makeChunkOffset, makeStsc, makeStss, makeStsz, makeStts, u32 };

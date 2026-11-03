@@ -1,4 +1,5 @@
 import { parseMp4 } from './parser/mp4.js';
+import { extractNals } from './parser/nal.js';
 import {
   CompatibilityError,
   appendCutH264,
@@ -9,6 +10,7 @@ import {
 import { convertToH264, MAX_CONVERSION_BYTES } from './converter.js';
 import { isWebCodecsAvailable, normalizeWithWebCodecs } from './webcodecs.js';
 import { chooseNormalizationTarget } from './webcodecs-muxer.js';
+import { frameRateForTrack, maxMoshFrames } from './classic-mosh.js';
 
 const MAX_CLIPS = 12;
 const inputA = document.querySelector('#file-input-a');
@@ -37,12 +39,20 @@ const redoButton = document.querySelector('#redo-button');
 const transitionDialog = document.querySelector('#transition-dialog');
 const transitionTitle = document.querySelector('#transition-title');
 const transitionApply = document.querySelector('#transition-apply');
+const classicMoshOptions = document.querySelector('#classic-mosh-options');
+const transitionDuration = document.querySelector('#transition-duration');
+const transitionDurationValue = document.querySelector('#transition-duration-value');
+const transitionDurationMode = document.querySelector('#transition-duration-mode');
+const transitionDurationMax = document.querySelector('#transition-duration-max');
+const transitionEnding = document.querySelector('#transition-ending');
 
 let clips = [];
 let merged = null;
 let refreshToken = 0;
 let importToken = 0;
 let activeBoundary = null;
+let activeMoshFps = 25;
+let activeMoshMaximum = 0;
 let normalizationAttempted = false;
 let undoStack = [];
 let redoStack = [];
@@ -115,6 +125,33 @@ function clipDurationSeconds(clip) {
   if (!track?.stts || !track.mdhd?.timescale) return null;
   const units = track.stts.durations.reduce((total, value) => total + value, 0);
   return units / track.mdhd.timescale;
+}
+
+function moshBoundaryLimits(clip) {
+  const track = clip?.mp4?.videoTrack;
+  if (!track) return {fps: 25, maximumFrames: 0, boundarySample: 0};
+  const firstIdr = extractNals(clip.bytes, track).find(nal => nal.type === 5);
+  const boundarySample = firstIdr?.sampleIndex ?? 0;
+  let fps = 25;
+  try {
+    fps = frameRateForTrack(track);
+  } catch {}
+  return {fps, maximumFrames: maxMoshFrames(track, boundarySample), boundarySample};
+}
+
+function moshSettingsForClip(clip) {
+  const limits = moshBoundaryLimits(clip);
+  const requested = clip?.moshDurationFrames;
+  const durationFrames = Math.max(0, Math.min(
+    limits.maximumFrames,
+    Number.isFinite(requested) ? Math.round(requested) : limits.maximumFrames,
+  ));
+  return {
+    ...limits,
+    durationFrames,
+    durationSeconds: limits.fps > 0 ? durationFrames / limits.fps : 0,
+    ending: clip?.moshEnding === 'continue' ? 'continue' : 'restore',
+  };
 }
 
 function transitionLabel(method) {
@@ -236,7 +273,14 @@ function renderConnector(index) {
   effect.textContent = transitionLabel(incoming.transition);
   const duration = document.createElement('span');
   const seconds = clipDurationSeconds(incoming);
-  duration.textContent = seconds === null ? 'incoming clip' : `${seconds.toFixed(2)} s`;
+  if (incoming.transition === 'classic-mosh') {
+    const settings = moshSettingsForClip(incoming);
+    duration.textContent = settings.maximumFrames > 0
+      ? `${settings.durationSeconds.toFixed(2)} s · ${settings.ending}`
+      : (seconds === null ? 'incoming clip' : `${seconds.toFixed(2)} s`);
+  } else {
+    duration.textContent = seconds === null ? 'incoming clip' : `${seconds.toFixed(2)} s`;
+  }
   connector.append(effect, duration);
   connector.addEventListener('click', () => openTransition(index));
   return connector;
@@ -439,24 +483,71 @@ function redoTimeline() {
   restoreState(next);
 }
 
+function updateClassicMoshVisibility() {
+  const method = transitionDialog.querySelector('input[name="transition-method"]:checked')?.value;
+  classicMoshOptions.hidden = method !== 'classic-mosh';
+}
+
+function updateTransitionDurationDisplay(custom = false) {
+  const frames = Math.round(Number(transitionDuration.value));
+  const seconds = activeMoshFps > 0 ? frames / activeMoshFps : 0;
+  transitionDurationValue.textContent = `${seconds.toFixed(2)} s · ${frames} frame${frames === 1 ? '' : 's'}`;
+  transitionDurationMax.textContent = `${activeMoshMaximum} available`;
+  if (custom) transitionDurationMode.textContent = 'custom';
+}
+
 function openTransition(boundaryIndex) {
   if (boundaryIndex < 1 || boundaryIndex >= clips.length) return;
   activeBoundary = boundaryIndex;
-  const method = clips[boundaryIndex].transition;
+  const clip = clips[boundaryIndex];
+  const method = clip.transition;
   const radio = transitionDialog.querySelector(`input[name="transition-method"][value="${method}"]`);
   if (radio) radio.checked = true;
+  const settings = moshSettingsForClip(clip);
+  activeMoshFps = settings.fps;
+  activeMoshMaximum = Math.max(1, settings.maximumFrames);
+  transitionDuration.min = '1';
+  transitionDuration.max = String(activeMoshMaximum);
+  transitionDuration.step = '1';
+  transitionDuration.disabled = settings.maximumFrames < 1;
+  transitionDuration.value = String(settings.durationFrames > 0 ? settings.durationFrames : activeMoshMaximum);
+  transitionEnding.value = settings.ending;
+  transitionDurationMode.textContent = clip.moshDurationFrames === undefined || clip.moshDurationFrames === null
+    ? 'full length'
+    : 'custom';
+  updateTransitionDurationDisplay(false);
   transitionTitle.textContent = `${clipDisplayLabel(boundaryIndex - 1)} → ${clipDisplayLabel(boundaryIndex)}`;
+  updateClassicMoshVisibility();
   transitionDialog.showModal();
 }
+
+for (const radio of transitionDialog.querySelectorAll('input[name="transition-method"]')) {
+  radio.addEventListener('change', updateClassicMoshVisibility);
+}
+transitionDuration.addEventListener('input', () => updateTransitionDurationDisplay(true));
+transitionEnding.addEventListener('change', () => {
+  transitionDurationMode.textContent = 'custom';
+});
 
 transitionApply.addEventListener('click', event => {
   event.preventDefault();
   if (activeBoundary === null) return;
   const selected = transitionDialog.querySelector('input[name="transition-method"]:checked')?.value;
   if (selected !== 'cut' && selected !== 'classic-mosh') return;
-  if (clips[activeBoundary]?.transition !== selected) {
+  const current = clips[activeBoundary];
+  const next = {
+    ...current,
+    transition: selected,
+    ...(selected === 'classic-mosh' ? {
+      moshDurationFrames: Math.round(Number(transitionDuration.value)),
+      moshEnding: transitionEnding.value,
+    } : {}),
+  };
+  if (current.transition !== next.transition
+    || current.moshDurationFrames !== next.moshDurationFrames
+    || current.moshEnding !== next.moshEnding) {
     rememberState();
-    clips = clips.map((clip, index) => index === activeBoundary ? {...clip, transition: selected} : clip);
+    clips = clips.map((clip, index) => index === activeBoundary ? next : clip);
   }
   transitionDialog.close('apply');
   if (selected) refreshSequence();
@@ -537,6 +628,8 @@ async function readClipFile(file, index, token) {
     url: URL.createObjectURL(new Blob([bytes], {type: 'video/mp4'})),
     conversion,
     transition: 'classic-mosh',
+    moshDurationFrames: null,
+    moshEnding: 'restore',
   };
 }
 
@@ -828,13 +921,25 @@ async function refreshSequence() {
     let pairCompatibility = null;
     if (clips.length === 2) {
       pairCompatibility = checks[0];
+      const settings = moshSettingsForClip(clips[1]);
       result = clips[1].transition === 'cut'
         ? await appendCutH264(clips[0].bytes, clips[1].bytes, clips[0].mp4, clips[1].mp4)
-        : await mergeMoshH264(clips[0].bytes, clips[1].bytes, clips[0].mp4, clips[1].mp4);
+        : await mergeMoshH264(clips[0].bytes, clips[1].bytes, clips[0].mp4, clips[1].mp4, {
+          durationFrames: settings.durationFrames,
+          ending: settings.ending,
+        });
     } else {
       result = await mergeSequenceH264(
         clips.map(clip => ({bytes: clip.bytes, parsed: clip.mp4})),
-        clips.slice(1).map(clip => clip.transition),
+        clips.slice(1).map(clip => {
+          if (clip.transition === 'cut') return {method: 'cut'};
+          const settings = moshSettingsForClip(clip);
+          return {
+            method: 'classic-mosh',
+            durationFrames: settings.durationFrames,
+            ending: settings.ending,
+          };
+        }),
       );
     }
     if (token !== refreshToken) return;
@@ -859,10 +964,16 @@ async function refreshSequence() {
         compatible: true,
         boundaries: checks.map(compatibilityReport),
       },
-      transitions: clips.slice(1).map((clip, offset) => ({
-        boundaryIndex: offset,
-        method: clip.transition,
-      })),
+      transitions: clips.slice(1).map((clip, offset) => {
+        const settings = clip.transition === 'classic-mosh' ? moshSettingsForClip(clip) : null;
+        return {
+          boundaryIndex: offset,
+          method: clip.transition,
+          durationFrames: settings?.durationFrames ?? null,
+          durationSeconds: settings?.durationSeconds ?? null,
+          ending: settings?.ending ?? null,
+        };
+      }),
       merge: result.report,
       cutByteIdentical: result.cut.byteLength === clips[0].bytes.byteLength
         && result.cut.every((value, index) => value === clips[0].bytes[index]),

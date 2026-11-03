@@ -85,6 +85,23 @@
           <label><input type="radio" name="transition-method" value="cut"> <span><strong>Cut</strong><small>Append the incoming clip byte-for-byte.</small></span></label>
           <label><input type="radio" name="transition-method" value="classic-mosh" checked> <span><strong>Classic Mosh</strong><small>Remove the incoming first IDR and continue its references.</small></span></label>
         </fieldset>
+        <div id="classic-mosh-options" class="classic-mosh-options">
+          <div class="mosh-control-heading">
+            <label for="transition-duration">duration</label>
+            <span id="transition-duration-mode" class="mosh-mode">full length</span>
+          </div>
+          <input id="transition-duration" type="range" min="1" max="1" step="1" value="1">
+          <div class="mosh-control-meta">
+            <output id="transition-duration-value" for="transition-duration">0.00 s · 1 frame</output>
+            <span id="transition-duration-max">1 available</span>
+          </div>
+          <label class="mosh-ending-label" for="transition-ending">ending</label>
+          <select id="transition-ending">
+            <option value="restore">Restore clear image</option>
+            <option value="continue">Continue motion</option>
+          </select>
+          <p class="mosh-control-note">Restore re-inserts the original IDR after the effect window. Continue keeps the full prediction chain.</p>
+        </div>
         <div class="dialog-actions">
           <button type="submit" value="cancel">cancel</button>
           <button id="transition-apply" class="primary" type="button">apply</button>

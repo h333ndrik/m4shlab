@@ -10,6 +10,7 @@ import { CompatibilityError, appendCutH264, checkCompatibility, mergeMoshH264, m
 import { buildNormalizedMp4, chooseNormalizationTarget } from '../webcodecs-muxer.js';
 import { MAX_TARGET_LONG_SIDE, capNormalizationDimensions } from '../conversion-settings.js';
 import { parseSps } from '../parser/sps.js';
+import { ValueError, frameRateForTrack } from '../classic-mosh.js';
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const fixturePath = join(projectRoot, 'testmedia', 'synthetic-h264.mp4');
@@ -39,6 +40,9 @@ const multiGopPoc0MergedPath = join(projectRoot, 'testmedia', 'synthetic-multigo
 const sequenceMoshPath = join(projectRoot, 'testmedia', 'synthetic-sequence-mosh-test-output.mp4');
 const sequenceMixedPath = join(projectRoot, 'testmedia', 'synthetic-sequence-mixed-test-output.mp4');
 const normalizedMuxPath = join(projectRoot, 'testmedia', 'synthetic-webcodecs-mux-output.mp4');
+const phaseARestorePath = join(projectRoot, 'testmedia', 'synthetic-phase-a-restore-output.mp4');
+const phaseAContinuePath = join(projectRoot, 'testmedia', 'synthetic-phase-a-continue-output.mp4');
+const phaseBRestorePath = join(projectRoot, 'testmedia', 'synthetic-phase-b-restore-output.mp4');
 
 function command(program, args, label) {
   const result = spawnSync(program, args, { cwd: projectRoot, encoding: 'utf8' });
@@ -619,5 +623,157 @@ await assert.rejects(
 );
 pass('a chained sequence with genuinely reordered multi-GOP input fails loudly and emits no merged file');
 
+
+
+const durationFps = frameRateForTrack(parsed.videoTrack);
+assert.equal(durationFps, 25);
+const defaultMosh = moshH264(input, parsed);
+const restoredMosh = moshH264(input, parsed, {durationFrames: 10, ending: 'restore'});
+assert.equal(restoredMosh.report.duration_frames, 10);
+assert.equal(restoredMosh.report.requested_duration_frames, 10);
+assert.equal(restoredMosh.report.maximum_duration_frames, 49);
+assert.equal(restoredMosh.report.ending, 'restore');
+assert.equal(restoredMosh.report.clamped, false);
+assert.deepEqual(restoredMosh.report.re_inserted_idr_positions, [36]);
+assert.deepEqual(restoredMosh.report.re_inserted_idr_output_positions, [35]);
+assert.equal(restoredMosh.report.outputSamples, 75);
+assert.equal(restoredMosh.report.removedIdrCount, 1);
+
+const restoredParsed = parseMp4(restoredMosh.output);
+const restoredNals = extractNals(restoredMosh.output, restoredParsed.videoTrack);
+const sourceBySample = new Map();
+for (const nal of sourceNals) {
+  const items = sourceBySample.get(nal.sampleIndex) ?? [];
+  items.push(nal);
+  sourceBySample.set(nal.sampleIndex, items);
+}
+const boundarySampleNals = sourceBySample.get(25);
+const expectedRestoredNals = [];
+for (const sample of parsed.videoTrack.samples) {
+  if (sample.index === 25) {
+    expectedRestoredNals.push(...boundarySampleNals.filter(nal => nal.type !== 5));
+  } else {
+    if (sample.index === 36) expectedRestoredNals.push(...boundarySampleNals);
+    expectedRestoredNals.push(...(sourceBySample.get(sample.index) ?? []));
+  }
+}
+assert.equal(restoredNals.length, expectedRestoredNals.length);
+assert.deepEqual(restoredNals.map(nal => nal.type), expectedRestoredNals.map(nal => nal.type));
+for (let i = 0; i < expectedRestoredNals.length; i += 1) {
+  assert.deepEqual(restoredNals[i].data, expectedRestoredNals[i].data, `Restore NAL ${i} changed`);
+}
+const sourceBoundarySample = input.subarray(
+  parsed.videoTrack.samples[25].offset,
+  parsed.videoTrack.samples[25].offset + parsed.videoTrack.samples[25].size,
+);
+const restoredRecoverySample = restoredMosh.output.subarray(
+  restoredParsed.videoTrack.samples[35].offset,
+  restoredParsed.videoTrack.samples[35].offset + restoredParsed.videoTrack.samples[35].size,
+);
+assert.deepEqual(restoredRecoverySample, sourceBoundarySample);
+assert.deepEqual(
+  restoredMosh.output.subarray(restoredParsed.videoTrack.samples[50].offset, restoredParsed.videoTrack.samples[50].offset + restoredParsed.videoTrack.samples[50].size),
+  input.subarray(parsed.videoTrack.samples[50].offset, parsed.videoTrack.samples[50].offset + parsed.videoTrack.samples[50].size),
+);
+pass('Classic Mosh restore removes only the 10-frame window IDR and re-inserts the byte-identical boundary sample at frame 11; later IDR samples remain unchanged');
+pass('restore NAL sequence is exact: the boundary IDR is absent inside the window, inserted once at output sample 35, and the later original IDR is retained');
+
+const continuedMosh = moshH264(input, parsed, {durationFrames: 10, ending: 'continue'});
+assert.equal(continuedMosh.report.duration_frames, 10);
+assert.equal(continuedMosh.report.ending, 'continue');
+assert.deepEqual(continuedMosh.output, defaultMosh.output);
+assert.equal(continuedMosh.report.outputSamples, 75);
+assert.equal(continuedMosh.report.expectedDecodedFrames, 73);
+pass('ending=continue with a duration set is byte-identical to the existing full-length Classic Mosh output');
+
+const clampedMosh = moshH264(input, parsed, {durationSeconds: 100, ending: 'restore'});
+assert.equal(clampedMosh.report.duration_frames, 49);
+assert.equal(clampedMosh.report.requested_duration_frames, 2500);
+assert.equal(clampedMosh.report.clamped, true);
+assert.match(clampedMosh.report.clamp_note, /clamped to 49/);
+assert.deepEqual(clampedMosh.output, defaultMosh.output);
+pass('restore duration clamps to the 49 available frames, records the clamp, and matches full-length output');
+
+const oneFrameMosh = moshH264(input, parsed, {durationFrames: 1, ending: 'restore'});
+assert.equal(oneFrameMosh.report.duration_frames, 1);
+assert.deepEqual(oneFrameMosh.report.re_inserted_idr_positions, [27]);
+assert.equal(oneFrameMosh.report.outputSamples, 75);
+assert.throws(() => moshH264(input, parsed, {durationFrames: 0}), ValueError);
+assert.throws(() => moshH264(input, parsed, {durationSeconds: -1}), ValueError);
+assert.throws(() => moshH264(input, parsed, {durationSeconds: 0.001}), ValueError);
+pass('duration=1 is accepted; durations below one frame raise ValueError');
+
+writeFileSync(phaseARestorePath, restoredMosh.output);
+writeFileSync(phaseAContinuePath, continuedMosh.output);
+const restoredProbe = command('ffprobe', [
+  '-v', 'error', '-select_streams', 'v:0', '-count_frames',
+  '-show_entries', 'stream=codec_name,width,height,nb_read_frames',
+  '-of', 'default=noprint_wrappers=1', phaseARestorePath,
+], 'Phase A restore decode probe');
+const restoredDecodedFrames = Number(/nb_read_frames=(\d+)/.exec(restoredProbe.stdout)?.[1] ?? 0);
+assert.equal(restoredDecodedFrames, 75);
+command('ffmpeg', ['-v', 'error', '-i', phaseARestorePath, '-f', 'null', '-'], 'Phase A restore strict decode');
+const continueProbe = command('ffprobe', [
+  '-v', 'error', '-select_streams', 'v:0', '-count_frames',
+  '-show_entries', 'stream=nb_read_frames', '-of', 'default=noprint_wrappers=1', phaseAContinuePath,
+], 'Phase A continue decode probe');
+const continueDecodedFrames = Number(/nb_read_frames=(\d+)/.exec(continueProbe.stdout)?.[1] ?? 0);
+assert.equal(continueDecodedFrames, 73);
+pass(`Phase A restore decodes all ${restoredDecodedFrames}/75 source frames; continue keeps the baseline ${continueDecodedFrames} decoded frames from its 75 declared samples`);
+
+const pairRestore = await mergeMoshH264(
+  phaseAInput,
+  phaseBInput,
+  phaseAParsed,
+  phaseBParsed,
+  {durationFrames: 10, ending: 'restore'},
+);
+assert.equal(pairRestore.report.duration_frames, 10);
+assert.equal(pairRestore.report.ending, 'restore');
+assert.equal(pairRestore.report.mergedSamples, 50);
+assert.deepEqual(pairRestore.report.re_inserted_idr_positions, [11]);
+assert.equal(pairRestore.report.bIdrCountRemaining, 1);
+const pairRestoreParsed = parseMp4(pairRestore.output);
+assert.deepEqual(
+  pairRestore.output.subarray(pairRestoreParsed.videoTrack.samples[35].offset, pairRestoreParsed.videoTrack.samples[35].offset + pairRestoreParsed.videoTrack.samples[35].size),
+  phaseBInput.subarray(phaseBParsed.videoTrack.samples[0].offset, phaseBParsed.videoTrack.samples[0].offset + phaseBParsed.videoTrack.samples[0].size),
+);
+writeFileSync(phaseBRestorePath, pairRestore.output);
+const pairRestoreProbe = command('ffprobe', [
+  '-v', 'error', '-select_streams', 'v:0', '-count_frames',
+  '-show_entries', 'stream=nb_read_frames', '-of', 'default=noprint_wrappers=1', phaseBRestorePath,
+], 'Phase B restore decode probe');
+const pairRestoreFrames = Number(/nb_read_frames=(\d+)/.exec(pairRestoreProbe.stdout)?.[1] ?? 0);
+assert.equal(pairRestoreFrames, phaseAParsed.videoTrack.samples.length + phaseBParsed.videoTrack.samples.length);
+command('ffmpeg', ['-v', 'error', '-i', phaseBRestorePath, '-f', 'null', '-'], 'Phase B restore strict decode');
+const pairContinue = await mergeMoshH264(
+  phaseAInput,
+  phaseBInput,
+  phaseAParsed,
+  phaseBParsed,
+  {durationFrames: 10, ending: 'continue'},
+);
+assert.deepEqual(pairContinue.output, mergeResult.output);
+pass(`Phase B restore re-inserts the original B IDR at merged sample 35 and decodes all ${pairRestoreFrames}/50 frames; continue remains byte-identical to the full-length merge`);
+
+const chainedDuration = await mergeSequenceH264(
+  [
+    {bytes: phaseAInput, parsed: phaseAParsed},
+    {bytes: phaseBInput, parsed: phaseBParsed},
+    {bytes: phaseAInput, parsed: phaseAParsed},
+  ],
+  [
+    {method: 'classic-mosh', durationFrames: 10, ending: 'restore'},
+    {method: 'classic-mosh', durationFrames: 5, ending: 'continue'},
+  ],
+);
+assert.deepEqual(chainedDuration.report.methods, ['classic-mosh', 'classic-mosh']);
+assert.equal(chainedDuration.report.boundaries[0].duration_frames, 10);
+assert.equal(chainedDuration.report.boundaries[0].ending, 'restore');
+assert.deepEqual(chainedDuration.report.boundaries[0].re_inserted_idr_positions, [11]);
+assert.equal(chainedDuration.report.boundaries[1].duration_frames, 5);
+assert.equal(chainedDuration.report.boundaries[1].ending, 'continue');
+assert.ok(chainedDuration.report.mergedSamples > 0);
+pass('chained rendering carries independent duration/ending settings at both Classic Mosh boundaries and retains the restore IDR report');
 
 console.log(`All tests passed. Phase A: ${input.byteLength} B → ${result.output.byteLength} B; Phase B: ${phaseAInput.byteLength} B + ${phaseBInput.byteLength} B → ${mergeResult.output.byteLength} B.`);

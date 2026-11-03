@@ -499,6 +499,71 @@ progress {
   justify-content: flex-end;
 }
 
+.classic-mosh-options {
+  display: grid;
+  gap: 8px;
+  margin: 4px 0 18px;
+  padding: 14px;
+  border: 1px solid var(--soft-line);
+  border-radius: 4px;
+  background: #fff;
+}
+
+.mosh-control-heading,
+.mosh-control-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mosh-control-heading label,
+.mosh-ending-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.mosh-mode,
+.mosh-control-meta,
+.mosh-control-note {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.mosh-mode {
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.classic-mosh-options input[type="range"] {
+  width: 100%;
+  margin: 4px 0 0;
+  accent-color: #555;
+}
+
+.mosh-control-meta {
+  margin-bottom: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.classic-mosh-options select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #fafaf8;
+  color: var(--ink);
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 12px;
+}
+
+.mosh-control-note {
+  margin: 2px 0 0;
+  line-height: 1.5;
+}
+
 .report-panel {
   margin-top: 20px;
   border-top: 1px solid #ddd;
@@ -576,6 +641,8 @@ progress {
   .clip-controls button { min-width: 44px; min-height: 44px; padding: 8px; }
   .connector { min-height: 44px; }
   .transition-dialog fieldset label { min-height: 44px; }
+  .classic-mosh-options input[type="range"],
+  .classic-mosh-options select { min-height: 44px; }
   main {
     padding-left: max(16px, env(safe-area-inset-left));
     padding-right: max(16px, env(safe-area-inset-right));
