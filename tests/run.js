@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { parseMp4 } from '../parser/mp4.js';
+import { parseBoxes, parseMp4 } from '../parser/mp4.js';
 import { extractNals } from '../parser/nal.js';
 import { moshH264 } from '../mosh.js';
 import { CompatibilityError, checkCompatibility, mergeMoshH264 } from '../merge.js';
@@ -11,6 +11,12 @@ import { CompatibilityError, checkCompatibility, mergeMoshH264 } from '../merge.
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const fixturePath = join(projectRoot, 'testmedia', 'synthetic-h264.mp4');
 const modifiedPath = join(projectRoot, 'testmedia', 'synthetic-mosh-test-output.mp4');
+const tierOneFixtures = {
+  quicktime: join(projectRoot, 'testmedia', 'synthetic-quicktime.mov'),
+  hevc: join(projectRoot, 'testmedia', 'synthetic-hevc.mov'),
+  hevcSmall: join(projectRoot, 'testmedia', 'synthetic-hevc-small.mov'),
+  fragmented: join(projectRoot, 'testmedia', 'synthetic-fragmented.mp4'),
+};
 const phaseBFixtures = {
   a: join(projectRoot, 'testmedia', 'synthetic-b-a.mp4'),
   b: join(projectRoot, 'testmedia', 'synthetic-b-b.mp4'),
@@ -32,7 +38,7 @@ function pass(message) {
   console.log(`PASS ${message}`);
 }
 
-const requiredFixtures = [fixturePath, ...Object.values(phaseBFixtures)];
+const requiredFixtures = [fixturePath, ...Object.values(tierOneFixtures), ...Object.values(phaseBFixtures)];
 if (requiredFixtures.some(path => !existsSync(path))) {
   console.log('One or more fixtures are missing; generating local test media with ffmpeg.');
   command('bash', ['testmedia/generate.sh'], 'fixture generation');
@@ -110,6 +116,74 @@ pass(`export decodes with ffprobe: H.264 ${parsed.videoTrack.width}x${parsed.vid
 const truncated = result.output.subarray(0, Math.floor(result.output.byteLength / 2));
 assert.throws(() => parseMp4(truncated), /extends past|outside|Truncated|Invalid|ended/);
 pass('a deliberately truncated file is rejected instead of being presented as a valid mosh');
+
+
+const quickTimeInput = new Uint8Array(readFileSync(tierOneFixtures.quicktime));
+const hevcInput = new Uint8Array(readFileSync(tierOneFixtures.hevc));
+const fragmentedInput = new Uint8Array(readFileSync(tierOneFixtures.fragmented));
+
+const quickTimeParsed = parseMp4(quickTimeInput);
+const quickTimeNals = extractNals(quickTimeInput, quickTimeParsed.videoTrack);
+assert.ok(quickTimeParsed.boxes.some(box => box.type === 'wide'), 'QuickTime fixture should exercise a wide placeholder box');
+assert.equal(quickTimeParsed.videoTrack.stsd.entries[0].type, 'avc1');
+assert.equal(quickTimeParsed.videoTrack.samples.length, 25);
+assert.equal(quickTimeNals.length, 26);
+assert.deepEqual(quickTimeNals.slice(0, 2).map(nal => nal.type), [6, 5]);
+pass('QuickTime MOV with H.264 and a wide placeholder parses 25 samples / 26 NAL units');
+
+const sizeZeroInput = new Uint8Array(input);
+const sourceBoxes = parseBoxes(sizeZeroInput, 0, sizeZeroInput.byteLength, {allowSizeZero: true});
+const sourceMdat = sourceBoxes.find(box => box.type === 'mdat');
+assert.equal(sourceMdat.end, sizeZeroInput.byteLength, 'Size-0 test requires mdat at EOF');
+new DataView(sizeZeroInput.buffer).setUint32(sourceMdat.start, 0);
+const sizeZeroParsed = parseMp4(sizeZeroInput);
+assert.equal(sizeZeroParsed.videoTrack.samples.length, 75);
+assert.equal(sizeZeroParsed.mdatRanges[0].size, sourceMdat.size);
+pass('top-level size-0 mdat extends to EOF and parses all 75 samples');
+
+function patchChunkOffsets(bytes, chunkOffsets, delta) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  for (let i = 0; i < chunkOffsets.values.length; i += 1) {
+    view.setUint32(chunkOffsets.entryOffset(i), chunkOffsets.values[i] + delta);
+  }
+}
+
+const mdatForWide = parsed.mdatRanges[0];
+const wideBytes = new Uint8Array(input.byteLength + 8);
+wideBytes.set(input.subarray(0, mdatForWide.start), 0);
+new DataView(wideBytes.buffer).setUint32(mdatForWide.start, 8);
+for (let i = 0; i < 4; i += 1) wideBytes[mdatForWide.start + 4 + i] = 'wide'.charCodeAt(i);
+wideBytes.set(input.subarray(mdatForWide.start), mdatForWide.start + 8);
+patchChunkOffsets(wideBytes, parsed.videoTrack.chunkOffsets, 8);
+const wideParsed = parseMp4(wideBytes);
+assert.ok(wideParsed.boxes.some(box => box.type === 'wide'));
+assert.equal(wideParsed.videoTrack.samples.length, 75);
+pass('a standalone wide placeholder box is skipped without disturbing sample offsets');
+
+const mdatForExtended = parsed.mdatRanges[0];
+const extendedInput = new Uint8Array(input.byteLength + 8);
+extendedInput.set(input.subarray(0, mdatForExtended.start + 8), 0);
+const extendedView = new DataView(extendedInput.buffer);
+extendedView.setUint32(mdatForExtended.start, 1);
+extendedView.setBigUint64(mdatForExtended.start + 8, BigInt(mdatForExtended.size + 8));
+extendedInput.set(input.subarray(mdatForExtended.payloadStart), mdatForExtended.start + 16);
+patchChunkOffsets(extendedInput, parsed.videoTrack.chunkOffsets, 8);
+const extendedParsed = parseMp4(extendedInput);
+assert.equal(extendedParsed.mdatRanges[0].extended, true);
+assert.equal(extendedParsed.videoTrack.samples.length, 75);
+pass('64-bit mdat heading parses with all 75 sample offsets intact');
+
+assert.throws(
+  () => parseMp4(hevcInput),
+  error => error.code === 'UNSUPPORTED_CODEC' && error.message === 'This file contains HEVC (hvc1). Convert to H.264 or use convert-on-load.',
+);
+pass('HEVC input reports the actionable codec error instead of a box-walk error');
+
+assert.throws(
+  () => parseMp4(fragmentedInput),
+  error => error.code === 'FRAGMENTED_MP4' && error.message === 'Fragmented MP4 is not supported; convert to a conventional MP4.',
+);
+pass('fragmented MP4 reports the actionable fragmentation error');
 
 
 const phaseAInput = new Uint8Array(readFileSync(phaseBFixtures.a));

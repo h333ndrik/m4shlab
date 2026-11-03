@@ -30,3 +30,36 @@ encode synthetic-b-a.mp4 320x240 1 "testsrc2=size=320x240:rate=25"
 encode synthetic-b-b.mp4 320x240 1 "testsrc2=size=320x240:rate=25,hue=h=90"
 encode synthetic-b-mismatch.mp4 256x240 1 "testsrc2=size=256x240:rate=25"
 encode synthetic-b-timescale.mp4 320x240 1 "testsrc2=size=320x240:rate=25,hue=h=180" 25600
+
+ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i "testsrc2=size=320x240:rate=25" \
+  -t 1 \
+  -c:v libx264 -preset medium -profile:v high -pix_fmt yuv420p \
+  -g 25 -keyint_min 25 -sc_threshold 0 -bf 2 \
+  -f mov -movflags +faststart -an \
+  "$root/testmedia/synthetic-quicktime.mov"
+printf 'Generated %s\n' "$root/testmedia/synthetic-quicktime.mov"
+
+ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i "testsrc2=size=320x240:rate=25" \
+  -t 1 \
+  -c:v libx265 -preset ultrafast -pix_fmt yuv420p -tag:v hvc1 \
+  -f mov -movflags +faststart -an \
+  "$root/testmedia/synthetic-hevc.mov"
+printf 'Generated %s\n' "$root/testmedia/synthetic-hevc.mov"
+
+ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i "testsrc2=size=256x240:rate=25,hue=h=120" \
+  -t 1 \
+  -c:v libx265 -preset ultrafast -pix_fmt yuv420p -tag:v hvc1 \
+  -f mov -movflags +faststart -an \
+  "$root/testmedia/synthetic-hevc-small.mov"
+printf 'Generated %s\n' "$root/testmedia/synthetic-hevc-small.mov"
+
+ffmpeg -hide_banner -loglevel error -y \
+  -f lavfi -i "testsrc2=size=320x240:rate=25" \
+  -t 1 \
+  -c:v libx264 -preset veryfast -pix_fmt yuv420p -g 25 -bf 0 \
+  -movflags +frag_keyframe+empty_moov+default_base_moof -an \
+  "$root/testmedia/synthetic-fragmented.mp4"
+printf 'Generated %s\n' "$root/testmedia/synthetic-fragmented.mp4"

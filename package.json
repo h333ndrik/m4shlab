@@ -11,6 +11,7 @@
   "scripts": {
     "start": "node scripts/serve.mjs",
     "test": "node tests/run.js",
-    "test:fixture": "bash testmedia/generate.sh"
+    "test:fixture": "bash testmedia/generate.sh",
+    "test:conversion": "node tests/conversion.browser.mjs"
   }
 }

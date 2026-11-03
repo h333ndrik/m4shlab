@@ -17,21 +17,32 @@
     <section class="panel file-panel" aria-labelledby="source-heading">
       <div>
         <h2 id="source-heading">sources</h2>
-        <p class="muted">Choose two compatible H.264 MP4 clips. Files never leave this page.</p>
+        <p class="muted">Choose MP4, MOV, or another video. H.264 parses natively; everything else is converted locally with ffmpeg.wasm. Files never leave this page.</p>
       </div>
       <div class="file-actions">
         <label class="file-button">
           Clip A (base)
-          <input id="file-input-a" type="file" accept="video/mp4,.mp4">
+          <input id="file-input-a" type="file" accept="video/*,.mp4,.mov,.m4v,.mkv,.webm,.avi">
         </label>
         <label class="file-button">
           Clip B (incoming)
-          <input id="file-input-b" type="file" accept="video/mp4,.mp4">
+          <input id="file-input-b" type="file" accept="video/*,.mp4,.mov,.m4v,.mkv,.webm,.avi">
         </label>
       </div>
     </section>
 
     <p id="status" class="status" role="status">No videos loaded.</p>
+    <p id="source-tiers" class="source-tiers" hidden></p>
+
+    <section id="conversion-panel" class="panel conversion-panel" aria-labelledby="conversion-heading" aria-live="polite" hidden>
+      <div class="conversion-heading">
+        <h2 id="conversion-heading">conversion</h2>
+        <span id="conversion-status" class="conversion-status">preparing</span>
+      </div>
+      <p id="conversion-message" class="conversion-message">ffmpeg.wasm loads only when a source needs conversion.</p>
+      <progress id="conversion-progress" aria-label="Conversion progress"></progress>
+    </section>
+
     <p id="error" class="error" role="alert" hidden></p>
 
     <section id="compatibility-panel" class="panel compatibility-panel" aria-labelledby="compatibility-heading" hidden>
@@ -76,7 +87,7 @@
 
     <aside class="limits" aria-labelledby="limits-heading">
       <h2 id="limits-heading">limits</h2>
-      <p>Phase B merges compatible pairs only: identical resolution, profile, level, chroma, timescale, and PPS are required. Clip A remains the base; B’s IDR and parameter units are removed so its slices reference A’s final decoded state. Decode behavior remains device-dependent. Play from the start for the clearest result. Arbitrary pairs need the future normalization phase.</p>
+      <p>H.264 MP4/MOV parses natively. Other formats are converted only when needed by ffmpeg.wasm: video-only H.264 High profile, yuv420p, 30 fps, closed GOP, IDR at frame 0, and no B-frames. Pairs that need conversion are scaled and letterboxed to one common larger frame. Conversion is local, slow on large files, and may exceed memory limits or fail on iOS Safari. Merged exports still have no audio.</p>
     </aside>
   </main>
   <script type="module" src="./app.js"></script>

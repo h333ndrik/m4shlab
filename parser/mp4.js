@@ -38,7 +38,7 @@ function writeUint64(view, offset, value) {
   view.setBigUint64(offset, BigInt(value));
 }
 
-function boxHeader(bytes, offset, limit) {
+function boxHeader(bytes, offset, limit, allowSizeZero = false) {
   if (offset + 8 > limit) throw new Mp4Error(`Truncated box header at byte ${offset}`);
   const view = viewOf(bytes);
   let size = view.getUint32(offset);
@@ -52,6 +52,7 @@ function boxHeader(bytes, offset, limit) {
     headerSize = 16;
     extended = true;
   } else if (size === 0) {
+    if (!allowSizeZero) throw new Mp4Error(`Invalid size-0 ${type} box at byte ${offset}; only top-level boxes may extend to EOF`);
     size = limit - offset;
   }
 
@@ -60,11 +61,11 @@ function boxHeader(bytes, offset, limit) {
   return { type, start: offset, size, headerSize, extended, payloadStart: offset + headerSize, payloadEnd: offset + size, end: offset + size };
 }
 
-export function parseBoxes(bytes, start = 0, end = bytes.byteLength) {
+export function parseBoxes(bytes, start = 0, end = bytes.byteLength, options = {}) {
   const boxes = [];
   let offset = start;
   while (offset < end) {
-    const box = boxHeader(bytes, offset, end);
+    const box = boxHeader(bytes, offset, end, options.allowSizeZero === true);
     boxes.push(box);
     offset = box.end;
   }
@@ -302,6 +303,31 @@ function parseAvcConfiguration(bytes, entry, entryBoxes) {
   return { avcC, lengthSize };
 }
 
+function codecLabel(type) {
+  const labels = new Map([
+    ['hvc1', 'HEVC (hvc1)'],
+    ['hev1', 'HEVC (hev1)'],
+    ['av01', 'AV1 (av01)'],
+    ['vp09', 'VP9 (vp09)'],
+    ['mp4v', 'MPEG-4 Part 2 (mp4v)'],
+    ['encv', 'encrypted video (encv)'],
+  ]);
+  return labels.get(type) ?? `${type || 'unknown'} video`;
+}
+
+function unsupportedCodecError(type) {
+  const error = new Mp4Error(`This file contains ${codecLabel(type)}. Convert to H.264 or use convert-on-load.`);
+  error.code = 'UNSUPPORTED_CODEC';
+  error.codec = type;
+  return error;
+}
+
+function fragmentedMp4Error() {
+  const error = new Mp4Error('Fragmented MP4 is not supported; convert to a conventional MP4.');
+  error.code = 'FRAGMENTED_MP4';
+  return error;
+}
+
 function parseStsd(bytes, box) {
   const payloadLength = box.payloadEnd - box.payloadStart;
   if (payloadLength < 8) throw new Mp4Error('Truncated stsd box');
@@ -379,7 +405,7 @@ function parseTrack(bytes, trak, mdatRanges) {
   let video = null;
   if (handler === 'vide') {
     const avcEntry = sampleEntries.find((entry) => entry.type === 'avc1' || entry.type === 'avc3');
-    if (!avcEntry) throw new Mp4Error('Video track is not H.264 (expected an avc1 or avc3 sample entry)');
+    if (!avcEntry) throw unsupportedCodecError(sampleEntries[0]?.type);
     if (avcEntry.payloadStart + 78 > avcEntry.payloadEnd) throw new Mp4Error('Truncated visual sample entry');
     const entryChildren = parseBoxes(bytes, avcEntry.payloadStart + 78, avcEntry.payloadEnd);
     const config = parseAvcConfiguration(bytes, avcEntry, entryChildren);
@@ -412,7 +438,8 @@ function parseTrack(bytes, trak, mdatRanges) {
 export function parseMp4(bytes) {
   if (!(bytes instanceof Uint8Array)) throw new TypeError('parseMp4 expects a Uint8Array');
   if (bytes.byteLength < 8) throw new Mp4Error('File is too short to be an MP4');
-  const boxes = parseBoxes(bytes);
+  const boxes = parseBoxes(bytes, 0, bytes.byteLength, { allowSizeZero: true });
+  if (boxes.some((box) => box.type === 'moof')) throw fragmentedMp4Error();
   const moov = childBox({ type: 'file' }, boxes, 'moov');
   const mdatRanges = boxes.filter((box) => box.type === 'mdat');
   if (mdatRanges.length === 0) throw new Mp4Error('No mdat box found');
