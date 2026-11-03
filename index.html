@@ -15,34 +15,41 @@
         <p>H.264 bitstream moshing, entirely in your browser.</p>
       </div>
       <div class="file-actions" aria-label="Import clips">
-        <label class="button">Clip A<input id="file-input-a" type="file" accept="video/*,.mp4,.mov,.m4v,.mkv,.webm,.avi"></label>
-        <label class="button primary">Clip B<input id="file-input-b" type="file" accept="video/*,.mp4,.mov,.m4v,.mkv,.webm,.avi"></label>
+        <label class="button primary">Import clips<input id="file-input-a" type="file" multiple accept="video/*,.mp4,.mov,.m4v,.mkv,.webm,.avi"></label>
+        <input id="file-input-b" class="legacy-input" type="file" accept="video/*,.mp4,.mov,.m4v,.mkv,.webm,.avi" tabindex="-1" aria-hidden="true">
       </div>
     </header>
 
     <section class="viewer" aria-labelledby="preview-heading">
       <h2 id="preview-heading" class="visually-hidden">preview</h2>
       <video id="preview-video" controls playsinline muted></video>
-      <div id="empty-preview" class="empty-preview">load clip A and clip B to begin</div>
+      <div id="empty-preview" class="empty-preview">import clips to begin</div>
     </section>
 
     <div class="preview-meta">
       <div class="preview-options">
         <span id="preview-label">No video selected</span>
         <div class="toggle" role="group" aria-label="Preview version">
-          <button id="show-original" type="button" aria-pressed="true" disabled>A cut</button>
-          <button id="show-modified" type="button" aria-pressed="false" disabled>merged A→B</button>
+          <button id="show-original" type="button" aria-pressed="true" disabled>clip 1 cut</button>
+          <button id="show-modified" type="button" aria-pressed="false" disabled>merged sequence</button>
         </div>
       </div>
       <button id="export-button" class="primary" type="button" disabled>export merged MP4</button>
     </div>
 
-    <section class="sequence" aria-labelledby="source-heading">
+    <section id="drop-zone" class="sequence" aria-labelledby="source-heading">
       <div class="section-label">
-        <h2 id="source-heading">clips</h2>
-        <span>classic mosh · A → B</span>
+        <div class="section-title">
+          <h2 id="source-heading">clips</h2>
+          <span id="sequence-label">0 clips</span>
+        </div>
+        <div class="section-tools" aria-label="Timeline history">
+          <button id="undo-button" type="button" disabled>undo</button>
+          <button id="redo-button" type="button" disabled>redo</button>
+        </div>
       </div>
       <div id="source-tiers" class="timeline"></div>
+      <p class="drop-hint">Drop video files here · up to 12 clips · each connector chooses Cut or Classic Mosh</p>
     </section>
 
     <section id="conversion-panel" class="conversion-panel" aria-labelledby="conversion-heading" aria-live="polite" hidden>
@@ -63,8 +70,26 @@
       <pre id="report"></pre>
     </details>
 
+    <dialog id="transition-dialog" class="transition-dialog" aria-labelledby="transition-title">
+      <form method="dialog">
+        <div class="dialog-heading">
+          <h2 id="transition-title">transition</h2>
+          <button type="submit" value="cancel" aria-label="Close transition dialog">×</button>
+        </div>
+        <fieldset>
+          <legend>Boundary method</legend>
+          <label><input type="radio" name="transition-method" value="cut"> <span><strong>Cut</strong><small>Append the incoming clip byte-for-byte.</small></span></label>
+          <label><input type="radio" name="transition-method" value="classic-mosh" checked> <span><strong>Classic Mosh</strong><small>Remove the incoming first IDR and continue its references.</small></span></label>
+        </fieldset>
+        <div class="dialog-actions">
+          <button type="submit" value="cancel">cancel</button>
+          <button id="transition-apply" class="primary" type="button">apply</button>
+        </div>
+      </form>
+    </dialog>
+
     <footer class="limits" aria-labelledby="limits-heading">
-      <p id="limits-heading">H.264 MP4/MOV parses natively. Other containers and codecs use the lazily loaded ffmpeg.wasm fallback. Incompatible H.264 pairs normalize locally at a 720px long-side cap. Conversion is local; large files can exceed device memory or fail on iOS Safari, and hardware acceleration is not guaranteed. Merged exports have no audio.</p>
+      <p id="limits-heading">H.264 MP4/MOV parses natively. Other containers and codecs use the lazily loaded ffmpeg.wasm fallback. Sequences with incompatible parameters normalize locally to one shared target capped at 720px on the long side. Conversion is local; large files can exceed device memory or fail on iOS Safari, and hardware acceleration is not guaranteed. Merged exports have no audio.</p>
     </footer>
   </main>
   <script type="module" src="./app.js"></script>

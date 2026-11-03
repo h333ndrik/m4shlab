@@ -54,9 +54,11 @@ encode_multigop synthetic-multigop-a.mp4 320x240 1 "testsrc2=size=320x240:rate=2
 encode_multigop synthetic-multigop-b.mp4 320x240 3 "testsrc2=size=320x240:rate=25,hue=h=90"
 encode_multigop synthetic-multigop-poc0-source-a.mp4 320x240 1 "testsrc2=size=320x240:rate=25" vlc
 encode_multigop synthetic-multigop-poc0-source-b.mp4 320x240 3 "testsrc2=size=320x240:rate=25,hue=h=90" vlc
+encode_multigop synthetic-multigop-poc0-source-c.mp4 320x240 1.28 "testsrc2=size=320x240:rate=25,hue=h=180" vlc
 node "$root/testmedia/generate-poc0-fixture.mjs" "$root/testmedia/synthetic-multigop-poc0-source-a.mp4" "$root/testmedia/synthetic-multigop-poc0-a.mp4"
 node "$root/testmedia/generate-poc0-fixture.mjs" "$root/testmedia/synthetic-multigop-poc0-source-b.mp4" "$root/testmedia/synthetic-multigop-poc0-b.mp4"
-printf 'Generated %s\n' "$root/testmedia/synthetic-multigop-poc0-a.mp4" "$root/testmedia/synthetic-multigop-poc0-b.mp4"
+node "$root/testmedia/generate-poc0-fixture.mjs" "$root/testmedia/synthetic-multigop-poc0-source-c.mp4" "$root/testmedia/synthetic-multigop-poc0-c.mp4"
+printf 'Generated %s\n' "$root/testmedia/synthetic-multigop-poc0-a.mp4" "$root/testmedia/synthetic-multigop-poc0-b.mp4" "$root/testmedia/synthetic-multigop-poc0-c.mp4"
 
 ffmpeg -hide_banner -loglevel error -y \
   -f lavfi -i "testsrc2=size=320x240:rate=25" \

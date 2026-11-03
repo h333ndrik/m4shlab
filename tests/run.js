@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { childBoxes, parseBoxes, parseMp4 } from '../parser/mp4.js';
 import { extractNals } from '../parser/nal.js';
 import { moshH264 } from '../mosh.js';
-import { CompatibilityError, checkCompatibility, mergeMoshH264, parseAvcConfig } from '../merge.js';
+import { CompatibilityError, appendCutH264, checkCompatibility, mergeMoshH264, mergeSequenceH264, parseAvcConfig } from '../merge.js';
 import { buildNormalizedMp4, chooseNormalizationTarget } from '../webcodecs-muxer.js';
 import { MAX_TARGET_LONG_SIDE, capNormalizationDimensions } from '../conversion-settings.js';
 import { parseSps } from '../parser/sps.js';
@@ -31,10 +31,13 @@ const multiGopFixtures = {
   b: join(projectRoot, 'testmedia', 'synthetic-multigop-b.mp4'),
   poc0A: join(projectRoot, 'testmedia', 'synthetic-multigop-poc0-a.mp4'),
   poc0B: join(projectRoot, 'testmedia', 'synthetic-multigop-poc0-b.mp4'),
+  poc0C: join(projectRoot, 'testmedia', 'synthetic-multigop-poc0-c.mp4'),
 };
 const mergedPath = join(projectRoot, 'testmedia', 'synthetic-b-merged-test-output.mp4');
 const multiGopMergedPath = join(projectRoot, 'testmedia', 'synthetic-multigop-merged-test-output.mp4');
 const multiGopPoc0MergedPath = join(projectRoot, 'testmedia', 'synthetic-multigop-poc0-merged-test-output.mp4');
+const sequenceMoshPath = join(projectRoot, 'testmedia', 'synthetic-sequence-mosh-test-output.mp4');
+const sequenceMixedPath = join(projectRoot, 'testmedia', 'synthetic-sequence-mixed-test-output.mp4');
 const normalizedMuxPath = join(projectRoot, 'testmedia', 'synthetic-webcodecs-mux-output.mp4');
 
 function command(program, args, label) {
@@ -469,5 +472,152 @@ const poc0MergedIdrs = [...new Set(extractNals(poc0Merge.output, poc0MergedParse
   .filter(nal => nal.type === 5).map(nal => nal.sampleIndex))];
 assert.deepEqual(poc0MergedIdrs, [0, 49, 74]);
 pass(`POC0 multi-GOP merged export decodes all ${poc0DecodedFrames} frames and retains later B IDR anchors`);
+
+
+function bytesEqual(left, right) {
+  if (left.byteLength !== right.byteLength) return false;
+  return left.every((value, index) => value === right[index]);
+}
+
+function preparedSequenceNals(label, bytes, parsed) {
+  const nals = extractNals(bytes, parsed.videoTrack);
+  const idrSamples = [...new Set(nals.filter(nal => nal.type === 5).map(nal => nal.sampleIndex))];
+  const firstIdrSample = idrSamples[0];
+  const nextIdrSample = idrSamples[1] ?? Number.POSITIVE_INFINITY;
+  return nals
+    .filter(nal => nal.sampleIndex !== firstIdrSample && ![6, 7, 8].includes(nal.type))
+    .map(nal => ({
+      ...nal,
+      sourceLabel: label,
+      patchable: nal.type === 1 && nal.sampleIndex > firstIdrSample && nal.sampleIndex < nextIdrSample,
+    }));
+}
+
+function assertSequenceSampleTables(output, parsed, expectedSamples, label) {
+  const track = parsed.videoTrack;
+  const mdatLength = parsed.mdatRanges.reduce((total, box) => total + box.payloadEnd - box.payloadStart, 0);
+  const stszSum = track.sampleSizes.sizes.reduce((total, value) => total + value, 0);
+  assert.equal(track.samples.length, expectedSamples, `${label} sample count`);
+  assert.equal(stszSum, mdatLength, `${label} stsz/mdat mismatch`);
+  assert.equal(stszSum, track.samples.reduce((total, sample) => total + sample.size, 0));
+  assert.ok(track.samples.every((sample, index, samples) => index === 0 || sample.offset > samples[index - 1].offset), `${label} offsets must increase`);
+  assert.equal(track.stsc.length, 1);
+  assert.equal(track.stsc[0].samplesPerChunk, expectedSamples);
+  assert.equal(track.stts.sampleCount, expectedSamples);
+  const duration = track.stts.durations.reduce((total, value) => total + value, 0);
+  assert.equal(track.mdhd.duration, duration, `${label} mdhd/stts mismatch`);
+  return {stszSum, mdatLength, duration};
+}
+
+const poc0CInput = new Uint8Array(readFileSync(multiGopFixtures.poc0C));
+const poc0CParsed = parseMp4(poc0CInput);
+assert.equal(poc0AParsed.videoTrack.samples.length, 25);
+assert.equal(poc0BParsed.videoTrack.samples.length, 75);
+assert.equal(poc0CParsed.videoTrack.samples.length, 32);
+const sequenceSources = [
+  ['A', poc0AInput, poc0AParsed],
+  ['B', poc0BInput, poc0BParsed],
+  ['C', poc0CInput, poc0CParsed],
+].map(([label, bytes, parsed]) => ({label, bytes, parsed}));
+const sharedSequenceTarget = chooseNormalizationTarget(...sequenceSources.map(source => source.parsed.videoTrack));
+assert.deepEqual(sharedSequenceTarget, {width: 320, height: 240});
+assert.deepEqual(
+  chooseNormalizationTarget({width: 1440, height: 1920}, {width: 768, height: 1024}, {width: 320, height: 240}),
+  {width: 540, height: 720},
+);
+assert.ok(Math.max(...Object.values(chooseNormalizationTarget({width: 1440, height: 1920}, {width: 768, height: 1024}, {width: 320, height: 240}))) <= MAX_TARGET_LONG_SIDE);
+pass('three-clip normalization selects one identical even target and keeps 1440×1920 + 768×1024 + 320×240 at 540×720');
+
+const tripleMosh = await mergeSequenceH264(sequenceSources.map(source => ({bytes: source.bytes, parsed: source.parsed})), ['classic-mosh', 'classic-mosh']);
+assert.deepEqual(tripleMosh.report.methods, ['classic-mosh', 'classic-mosh']);
+assert.equal(tripleMosh.report.clipCount, 3);
+assert.equal(tripleMosh.report.sourceSamples, 132);
+assert.equal(tripleMosh.report.moshBoundaries, 2);
+assert.equal(tripleMosh.report.mergedSamples, 130);
+assert.equal(tripleMosh.report.expectedDecodedFrames, 130);
+assert.equal(tripleMosh.report.boundaries[1].frameAlignment.pictureOrderCountPatch.aLastPicOrderCntLsb, 10);
+const tripleParsed = parseMp4(tripleMosh.output);
+const tripleNals = extractNals(tripleMosh.output, tripleParsed.videoTrack);
+const tripleAInputNals = extractNals(poc0AInput, poc0AParsed.videoTrack).map(nal => ({...nal, sourceLabel: 'A', patchable: false}));
+const expectedTripleNals = [
+  ...tripleAInputNals,
+  ...preparedSequenceNals('B', poc0BInput, poc0BParsed),
+  ...preparedSequenceNals('C', poc0CInput, poc0CParsed),
+];
+assert.equal(tripleNals.length, expectedTripleNals.length);
+assert.deepEqual(tripleNals.map(nal => nal.type), expectedTripleNals.map(nal => nal.type));
+let patchedTripleNals = 0;
+let byteIdenticalRetainedNals = 0;
+for (let i = 0; i < expectedTripleNals.length; i += 1) {
+  const expectedNal = expectedTripleNals[i];
+  if (expectedNal.patchable) {
+    patchedTripleNals += 1;
+    continue;
+  }
+  assert.deepEqual(tripleNals[i].data, expectedNal.data, `Retained ${expectedNal.sourceLabel} NAL ${i} changed`);
+  byteIdenticalRetainedNals += 1;
+}
+assert.equal(patchedTripleNals, 48);
+assert.equal(tripleMosh.report.boundaries.reduce((total, boundary) => total + boundary.frameAlignment.patchedNals, 0), 48);
+const tripleIdrSamples = [...new Set(tripleNals.filter(nal => nal.type === 5).map(nal => nal.sampleIndex))];
+assert.deepEqual(tripleIdrSamples, [0, 49, 74, 123]);
+const tripleTables = assertSequenceSampleTables(tripleMosh.output, tripleParsed, 130, 'three-clip mosh');
+pass(`three-clip Classic Mosh emits ${tripleNals.length} NAL units; ${byteIdenticalRetainedNals} retained NALs are byte-identical, ${patchedTripleNals} first-GOP slices are intentionally frame/POC aligned, and B/C IDRs at merged samples 49/74/123 remain`);
+
+writeFileSync(sequenceMoshPath, tripleMosh.output);
+const tripleProbe = command('ffprobe', [
+  '-v', 'error', '-select_streams', 'v:0', '-count_frames',
+  '-show_entries', 'stream=codec_name,width,height,nb_read_frames,has_b_frames',
+  '-of', 'default=noprint_wrappers=1', sequenceMoshPath,
+], 'three-clip mosh decode probe');
+assert.match(tripleProbe.stdout, /codec_name=h264/);
+assert.match(tripleProbe.stdout, /nb_read_frames=130/);
+assert.match(tripleProbe.stdout, /has_b_frames=0/);
+command('ffmpeg', ['-v', 'error', '-i', sequenceMoshPath, '-f', 'null', '-'], 'three-clip mosh strict decode');
+pass(`three-clip chained mosh decodes ${tripleMosh.report.expectedDecodedFrames} frames (132 source samples minus 2 mosh boundaries); stsz/mdat ${tripleTables.stszSum} B and stts ${tripleTables.duration} units agree`);
+
+const mixedSequence = await mergeSequenceH264(sequenceSources.map(source => ({bytes: source.bytes, parsed: source.parsed})), ['cut', 'classic-mosh']);
+assert.deepEqual(mixedSequence.report.methods, ['cut', 'classic-mosh']);
+assert.equal(mixedSequence.report.cutBoundaries, 1);
+assert.equal(mixedSequence.report.moshBoundaries, 1);
+assert.equal(mixedSequence.report.sourceSamples, 132);
+assert.equal(mixedSequence.report.mergedSamples, 131);
+assert.equal(mixedSequence.report.expectedDecodedFrames, 131);
+const mixedParsed = parseMp4(mixedSequence.output);
+const mixedNals = extractNals(mixedSequence.output, mixedParsed.videoTrack);
+const sourceABNals = [
+  ...extractNals(poc0AInput, poc0AParsed.videoTrack),
+  ...extractNals(poc0BInput, poc0BParsed.videoTrack),
+];
+for (let i = 0; i < sourceABNals.length; i += 1) {
+  assert.deepEqual(mixedNals[i].data, sourceABNals[i].data, `Cut sequence A/B NAL ${i} changed`);
+}
+const expectedCNals = preparedSequenceNals('C', poc0CInput, poc0CParsed);
+const mixedCNals = mixedNals.slice(sourceABNals.length);
+assert.equal(mixedCNals.length, expectedCNals.length);
+assert.deepEqual(mixedCNals.map(nal => nal.type), expectedCNals.map(nal => nal.type));
+for (let i = 0; i < expectedCNals.length; i += 1) {
+  if (!expectedCNals[i].patchable) assert.deepEqual(mixedCNals[i].data, expectedCNals[i].data, `Retained C NAL ${i} changed`);
+}
+assert.equal(mixedSequence.report.boundaries[0].frameAlignment.reason, 'cut');
+assert.equal(mixedSequence.report.boundaries[1].frameAlignment.applied, true);
+const mixedTables = assertSequenceSampleTables(mixedSequence.output, mixedParsed, 131, 'mixed sequence');
+writeFileSync(sequenceMixedPath, mixedSequence.output);
+const mixedProbe = command('ffprobe', [
+  '-v', 'error', '-select_streams', 'v:0', '-count_frames',
+  '-show_entries', 'stream=nb_read_frames', '-of', 'default=noprint_wrappers=1', sequenceMixedPath,
+], 'mixed Cut/Mosh decode probe');
+assert.match(mixedProbe.stdout, /nb_read_frames=131/);
+command('ffmpeg', ['-v', 'error', '-i', sequenceMixedPath, '-f', 'null', '-'], 'mixed Cut/Mosh strict decode');
+pass(`three-clip Cut + Classic Mosh sequence keeps all A/B NALs byte-identical, decodes 131/131 frames, and maintains stsz/mdat ${mixedTables.stszSum} B with monotonic offsets`);
+
+await assert.rejects(
+  () => mergeSequenceH264([{bytes: input, parsed}, {bytes: input, parsed}], ['classic-mosh']),
+  error => /Multi-GOP B frame-number alignment rejected/.test(error.message)
+    && /picture reordering/.test(error.message)
+    && /non-zero composition offsets/.test(error.message),
+);
+pass('a chained sequence with genuinely reordered multi-GOP input fails loudly and emits no merged file');
+
 
 console.log(`All tests passed. Phase A: ${input.byteLength} B → ${result.output.byteLength} B; Phase B: ${phaseAInput.byteLength} B + ${phaseBInput.byteLength} B → ${mergeResult.output.byteLength} B.`);

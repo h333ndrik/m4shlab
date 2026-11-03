@@ -25,6 +25,7 @@ const downloadDir = join(projectRoot, 'testmedia', 'webcodecs-browser-downloads'
 const mergedPath = join(downloadDir, 'm4shlab-merge.mp4');
 const multiGopMergedPath = join(projectRoot, 'testmedia', 'webcodecs-browser-multigop-merged.mp4');
 const hybridExportPath = join(projectRoot, 'testmedia', 'webcodecs-hybrid-export.mp4');
+const multiTimelineExportPath = join(projectRoot, 'testmedia', 'webcodecs-multitimeline-export.mp4');
 const chromeCandidates = [
   process.env.CHROME_BIN,
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -108,8 +109,12 @@ class CdpClient {
   }
 
   async setFile(selector, path) {
+    await this.setFiles(selector, [path]);
+  }
+
+  async setFiles(selector, paths) {
     const response = await this.send('Runtime.evaluate', {expression: `document.querySelector(${JSON.stringify(selector)})`});
-    await this.send('DOM.setFileInputFiles', {objectId: response.result.objectId, files: [path]});
+    await this.send('DOM.setFileInputFiles', {objectId: response.result.objectId, files: paths});
   }
 
   async waitFor(expression, timeout = 120000) {
@@ -216,7 +221,7 @@ try {
   await client.send('Emulation.setDeviceMetricsOverride', {width: 1200, height: 1600, deviceScaleFactor: 1, mobile: false});
   await client.send('Browser.setDownloadBehavior', {behavior: 'allow', downloadPath: downloadDir, eventsEnabled: true});
   await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/'});
-  await client.waitFor("document.querySelector('#file-input-a') !== null", 10000);
+  await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
 
   const feature = await client.evaluate(`(async () => ({
     decoder: typeof VideoDecoder,
@@ -285,7 +290,7 @@ try {
   console.log('PASS WebCodecs emitted keyframes at samples 1, 31, and 61; the multi-GOP merge retained two later IDRs and decoded all 149 frames');
 
   await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?safari-poc0=1'});
-  await client.waitFor("document.querySelector('#file-input-a') !== null", 10000);
+  await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
   await client.setFile('#file-input-a', fixtures.poc0A);
   await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 15000);
   await client.evaluate(`(() => {
@@ -339,7 +344,7 @@ try {
   await client.send('Emulation.setDeviceMetricsOverride', {width: 1200, height: 1600, deviceScaleFactor: 1, mobile: false});
 
   await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?merge-error=1'});
-  await client.waitFor("document.querySelector('#file-input-a') !== null", 10000);
+  await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
   await client.setFile('#file-input-a', join(projectRoot, 'testmedia', 'synthetic-h264.mp4'));
   await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 15000);
   await client.setFile('#file-input-b', join(projectRoot, 'testmedia', 'synthetic-h264.mp4'));
@@ -357,7 +362,7 @@ try {
   console.log('PASS blocking merge errors stay short and do not render a compatibility panel');
 
   await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?large-native=1'});
-  await client.waitFor("document.querySelector('#file-input-a') !== null", 10000);
+  await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
   await client.setFile('#file-input-a', fixtures.largeA);
   await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 15000);
   await client.evaluate(`(() => {
@@ -398,8 +403,122 @@ try {
   assert.equal(largePair.progressB, 1);
   console.log(`PASS large native mismatch auto-normalized to ${largePair.report.normalization.target.width}x${largePair.report.normalization.target.height}; UI showed the normalizing state and merge produced ${largePair.report.merge.mergedSamples} samples`);
 
+  await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?multi-timeline=1'});
+  await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
+  await client.setFiles('#file-input-a', [fixtures.largeA, fixtures.largeB, fixtures.a]);
+  await client.waitFor("document.querySelector('#status').textContent.includes('samples') || !document.querySelector('#error').hidden", 180000);
+  const multiInitial = await client.evaluate(`(() => {
+    const reportNode = document.querySelector('#report');
+    return {
+      error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
+      cards: [...document.querySelectorAll('.clip-card .clip-name')].map(node => node.textContent),
+      connectors: [...document.querySelectorAll('.connector')].map(node => node.textContent),
+      frameAlignment: document.querySelector('#transition-dialog') !== null,
+      compatibilityMarkup: document.querySelector('#compatibility-panel, #compatibility-status, .compatibility-table'),
+      report: reportNode.textContent ? JSON.parse(reportNode.textContent) : null,
+    };
+  })()`);
+  assert.equal(multiInitial.error, null, multiInitial.error || 'multi-clip sequence did not normalize');
+  assert.equal(multiInitial.cards.length, 3);
+  assert.equal(multiInitial.connectors.length, 2);
+  assert.ok(multiInitial.connectors.every(text => /Classic Mosh/.test(text)));
+  assert.equal(multiInitial.compatibilityMarkup, null);
+  assert.equal(multiInitial.report.normalization.autoNormalized, true);
+  assert.equal(multiInitial.report.normalization.parallel, true);
+  assert.deepEqual(multiInitial.report.normalization.target, {width: 540, height: 720});
+  assert.equal(multiInitial.report.sources.clips.length, 3);
+  assert.ok(multiInitial.report.sources.clips.every(clip => clip.conversion?.mode === 'normalized'));
+  assert.ok(multiInitial.report.sources.clips.every(clip => clip.conversion?.encodeEngine === 'WebCodecs'));
+  assert.equal(multiInitial.report.merge.clipCount, 3);
+  assert.deepEqual(multiInitial.report.merge.methods, ['classic-mosh', 'classic-mosh']);
+
+  const dialogMethods = await client.evaluate(`(() => {
+    document.querySelectorAll('.connector')[0].click();
+    return {
+      open: document.querySelector('#transition-dialog').open,
+      methods: [...document.querySelectorAll('#transition-dialog input[name="transition-method"]')].map(input => input.value),
+    };
+  })()`);
+  assert.equal(dialogMethods.open, true);
+  assert.deepEqual(dialogMethods.methods, ['cut', 'classic-mosh']);
+  await client.evaluate(`(() => {
+    document.querySelector('#transition-dialog input[value="cut"]').checked = true;
+    document.querySelector('#transition-apply').click();
+  })()`);
+  await client.waitFor("JSON.parse(document.querySelector('#report').textContent).transitions?.[0]?.method === 'cut' && document.querySelector('#status').textContent.includes('samples')", 30000);
+  const mixedTimeline = await client.evaluate(`(() => ({
+    connectors: [...document.querySelectorAll('.connector')].map(node => node.textContent),
+    methods: JSON.parse(document.querySelector('#report').textContent).merge.methods,
+    mergedSamples: JSON.parse(document.querySelector('#report').textContent).merge.mergedSamples,
+    modifiedEnabled: !document.querySelector('#show-modified').disabled,
+  }))()`);
+  assert.match(mixedTimeline.connectors[0], /Cut/);
+  assert.match(mixedTimeline.connectors[1], /Classic Mosh/);
+  assert.deepEqual(mixedTimeline.methods, ['cut', 'classic-mosh']);
+  assert.ok(mixedTimeline.mergedSamples > 0);
+  assert.equal(mixedTimeline.modifiedEnabled, true);
+  console.log(`PASS multi-file import normalized 3 clips to 540x720, exposed two Cut/Classic Mosh boundary dialogs, and merged ${mixedTimeline.mergedSamples} samples`);
+
+  const originalOrder = multiInitial.cards;
+  await client.evaluate("document.querySelectorAll('.clip-card')[2].querySelectorAll('.clip-controls button')[0].click()");
+  await client.waitFor(`JSON.stringify([...document.querySelectorAll('.clip-card .clip-name')].map(node => node.textContent)) === ${JSON.stringify(JSON.stringify([originalOrder[0], originalOrder[2], originalOrder[1]]))}`, 10000);
+  await client.evaluate("document.querySelector('#undo-button').click()");
+  await client.waitFor(`JSON.stringify([...document.querySelectorAll('.clip-card .clip-name')].map(node => node.textContent)) === ${JSON.stringify(JSON.stringify(originalOrder))}`, 10000);
+  await client.evaluate("document.querySelectorAll('.clip-card')[2].querySelectorAll('.clip-controls button')[2].click()");
+  await client.waitFor("document.querySelectorAll('.clip-card').length === 2", 10000);
+  await client.evaluate("document.querySelector('#undo-button').click()");
+  await client.waitFor("document.querySelectorAll('.clip-card').length === 3", 10000);
+  await client.waitFor("document.querySelector('#status').textContent.includes('samples') || !document.querySelector('#error').hidden", 30000);
+  const historyState = await client.evaluate(`(() => ({
+    cards: [...document.querySelectorAll('.clip-card .clip-name')].map(node => node.textContent),
+    undoDisabled: document.querySelector('#undo-button').disabled,
+    error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
+  }))()`);
+  assert.deepEqual(historyState.cards, originalOrder);
+  assert.equal(historyState.undoDisabled, false);
+  assert.equal(historyState.error, null, historyState.error);
+  console.log('PASS timeline reorder, remove, and full undo restores the three-clip order and merged preview');
+
+  await client.evaluate("document.querySelector('#show-modified').click()");
+  await client.waitFor("document.querySelector('#preview-video').readyState >= 2 || document.querySelector('#preview-video').error", 15000);
+  const multiPlayback = await client.evaluate(`({
+    error: document.querySelector('#preview-video').error?.code ?? null,
+    width: document.querySelector('#preview-video').videoWidth,
+    height: document.querySelector('#preview-video').videoHeight
+  })`);
+  assert.equal(multiPlayback.error, null);
+  assert.equal(multiPlayback.width, 540);
+  assert.equal(multiPlayback.height, 720);
+
+  rmSync(downloadDir, {recursive: true, force: true});
+  mkdirSync(downloadDir, {recursive: true});
+  rmSync(mergedPath, {force: true});
+  await client.evaluate("document.querySelector('#export-button').click()");
+  await waitForDownload(mergedPath);
+  writeFileSync(multiTimelineExportPath, readFileSync(mergedPath));
+  const multiParsed = parseMp4(new Uint8Array(readFileSync(multiTimelineExportPath)));
+  const multiNals = extractNals(new Uint8Array(readFileSync(multiTimelineExportPath)), multiParsed.videoTrack);
+  const finalReport = await client.evaluate("JSON.parse(document.querySelector('#report').textContent)");
+  const multiStszSum = multiParsed.videoTrack.sampleSizes.sizes.reduce((total, value) => total + value, 0);
+  const multiMdatLength = multiParsed.mdatRanges.reduce((total, box) => total + box.payloadEnd - box.payloadStart, 0);
+  assert.equal(multiParsed.videoTrack.samples.length, finalReport.merge.mergedSamples);
+  assert.equal(multiStszSum, multiMdatLength);
+  assert.ok(multiParsed.videoTrack.samples.every((sample, index, samples) => index === 0 || sample.offset > samples[index - 1].offset));
+  assert.deepEqual([...new Set(multiNals.filter(nal => nal.type === 5).map(nal => nal.sampleIndex))].slice(0, 1), [0]);
+  assert.ok(multiNals.some(nal => nal.sampleIndex === 0 && nal.type === 5));
+  const multiProbe = command('ffprobe', [
+    '-v', 'error', '-select_streams', 'v:0', '-count_frames',
+    '-show_entries', 'stream=codec_name,width,height,nb_read_frames', '-of', 'default=noprint_wrappers=1', multiTimelineExportPath,
+  ], 'multi-timeline export probe');
+  assert.match(multiProbe.stdout, /codec_name=h264/);
+  assert.match(multiProbe.stdout, /width=540/);
+  assert.match(multiProbe.stdout, /height=720/);
+  assert.match(multiProbe.stdout, new RegExp(`nb_read_frames=${finalReport.merge.expectedDecodedFrames}`));
+  command('ffmpeg', ['-v', 'error', '-i', multiTimelineExportPath, '-f', 'null', '-'], 'multi-timeline strict decode');
+  console.log(`PASS full three-clip export decodes ${finalReport.merge.expectedDecodedFrames} frames at 540x720; Cut + Classic Mosh NAL sequence and preview are intact`);
+
   await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?single-pair=1'});
-  await client.waitFor("document.querySelector('#file-input-a') !== null", 10000);
+  await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
   await client.setFile('#file-input-a', fixtures.a);
   await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 15000);
   await client.setFile('#file-input-b', fixtures.b);
@@ -489,7 +608,7 @@ try {
     console.log('SKIP ffmpeg.wasm fallback browser check: CDN assets are unavailable offline.');
   } else {
     await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?hybrid=1'});
-    await client.waitFor("document.querySelector('#file-input-a') !== null", 10000);
+    await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
     await client.setFile('#file-input-a', join(projectRoot, 'testmedia', 'synthetic-hevc.mov'));
     await client.waitFor("document.querySelector('#status').textContent.includes('clip A') || /failed/i.test(document.querySelector('#conversion-status').textContent)", 180000);
     await client.setFile('#file-input-b', join(projectRoot, 'testmedia', 'synthetic-hevc-small.mov'));
@@ -534,7 +653,7 @@ try {
       source: "Object.defineProperty(globalThis, 'VideoDecoder', {value: undefined, configurable: true}); Object.defineProperty(globalThis, 'VideoEncoder', {value: undefined, configurable: true});",
     });
     await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?fallback=1'});
-    await client.waitFor("document.querySelector('#file-input-a') !== null", 10000);
+    await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
     assert.equal(await client.evaluate("typeof VideoDecoder + '/' + typeof VideoEncoder"), 'undefined/undefined');
     await client.setFile('#file-input-a', fixtures.a);
     await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 15000);

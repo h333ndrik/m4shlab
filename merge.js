@@ -740,30 +740,8 @@ export async function mergeMoshH264(inputA, inputB, parsedA = parseMp4(inputA), 
     ...(parsedA.videoTrack.ctts?.offsets ?? parsedA.videoTrack.samples.map(() => 0)),
     ...preparedB.samples.map(sample => sample.compositionOffset),
   ];
-  if (sizes.length === 0) throw new Mp4Error('Merged video has no samples');
-
-  const ftypParts = parsedA.boxes.filter(box => box.type === 'ftyp').map(box => inputA.subarray(box.start, box.end));
-  if (ftypParts.length === 0) throw new Mp4Error('Clip A has no ftyp box');
-  const ftyp = concatBytes(ftypParts);
-  const mdat = makeBox('mdat', sampleParts);
-  const mdatHeaderSize = mdat.byteLength - sampleParts.reduce((total, sample) => total + sample.byteLength, 0);
-
-  let chunkOffset = 0;
-  let use64 = false;
-  let moov;
-  for (let attempt = 0; attempt < 6; attempt += 1) {
-    moov = rebuildMoov(inputA, parsedA, sizes, durations, compositionOffsets, chunkOffset, use64);
-    const predictedOffset = ftyp.byteLength + moov.byteLength + mdatHeaderSize;
-    const predictedUse64 = predictedOffset > 0xffffffff;
-    if (predictedOffset === chunkOffset && predictedUse64 === use64) break;
-    chunkOffset = predictedOffset;
-    use64 = predictedUse64;
-  }
-  const finalMoov = rebuildMoov(inputA, parsedA, sizes, durations, compositionOffsets, chunkOffset, use64);
-  const output = concatBytes([ftyp, finalMoov, mdat]);
-  const mergedDuration = durations.reduce((total, value) => total + value, 0);
-  const outputMp4 = parseMp4(output);
-  const outputNals = extractNals(output, outputMp4.videoTrack);
+  const built = buildMergedTrack(inputA, parsedA, sampleParts, durations, compositionOffsets);
+  const {output, outputMp4, outputNals, chunkOffset, mergedDuration} = built;
   const idrNals = outputNals.filter(nal => nal.type === IDR_NAL_TYPE);
   const firstSampleNals = outputNals.filter(nal => nal.sampleIndex === 0);
   const leadingIdrNalCount = firstSampleNals.filter(nal => nal.type === IDR_NAL_TYPE).length;
@@ -800,6 +778,167 @@ export async function mergeMoshH264(inputA, inputB, parsedA = parseMp4(inputA), 
       startsWithSingleIdr,
       audio: 'omitted in Phase B',
     },
+  };
+}
+
+function buildMergedTrack(inputA, parsedA, sampleParts, durations, compositionOffsets) {
+  if (sampleParts.length === 0) throw new Mp4Error('Merged video has no samples');
+  const sizes = sampleParts.map(sample => sample.byteLength);
+  const ftypParts = parsedA.boxes.filter(box => box.type === 'ftyp').map(box => inputA.subarray(box.start, box.end));
+  if (ftypParts.length === 0) throw new Mp4Error('Clip A has no ftyp box');
+  const ftyp = concatBytes(ftypParts);
+  const mdat = makeBox('mdat', sampleParts);
+  const mdatHeaderSize = mdat.byteLength - sampleParts.reduce((total, sample) => total + sample.byteLength, 0);
+
+  let chunkOffset = 0;
+  let use64 = false;
+  let moov;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    moov = rebuildMoov(inputA, parsedA, sizes, durations, compositionOffsets, chunkOffset, use64);
+    const predictedOffset = ftyp.byteLength + moov.byteLength + mdatHeaderSize;
+    const predictedUse64 = predictedOffset > 0xffffffff;
+    if (predictedOffset === chunkOffset && predictedUse64 === use64) break;
+    chunkOffset = predictedOffset;
+    use64 = predictedUse64;
+  }
+  const finalMoov = rebuildMoov(inputA, parsedA, sizes, durations, compositionOffsets, chunkOffset, use64);
+  const output = concatBytes([ftyp, finalMoov, mdat]);
+  const mergedDuration = durations.reduce((total, value) => total + value, 0);
+  const outputMp4 = parseMp4(output);
+  return {
+    output,
+    outputMp4,
+    outputNals: extractNals(output, outputMp4.videoTrack),
+    chunkOffset,
+    mergedDuration,
+    sizes,
+  };
+}
+
+export async function appendCutH264(inputA, inputB, parsedA = parseMp4(inputA), parsedB = parseMp4(inputB)) {
+  if (!(inputA instanceof Uint8Array) || !(inputB instanceof Uint8Array)) throw new TypeError('appendCutH264 expects two Uint8Array clips');
+  const compatibility = await checkCompatibility(inputA, inputB, parsedA, parsedB);
+  if (!compatibility.compatible) throw new CompatibilityError(compatibility);
+  if (!parsedA.mvhd || !parsedA.videoTrack.tkhd || !parsedA.videoTrack.mdhd) throw new Mp4Error('Clip A is missing required duration metadata');
+  if (parsedA.videoTrack.stts.durations.length !== parsedA.videoTrack.samples.length) throw new Mp4Error('A stts sample count does not match its sample table');
+  if (parsedB.videoTrack.stts.durations.length !== parsedB.videoTrack.samples.length) throw new Mp4Error('B stts sample count does not match its sample table');
+
+  const aSamples = parsedA.videoTrack.samples.map(sample => inputA.subarray(sample.offset, sample.offset + sample.size));
+  const bSamples = parsedB.videoTrack.samples.map(sample => inputB.subarray(sample.offset, sample.offset + sample.size));
+  const sampleParts = [...aSamples, ...bSamples];
+  const durations = [...parsedA.videoTrack.stts.durations, ...parsedB.videoTrack.stts.durations];
+  const compositionOffsets = [
+    ...(parsedA.videoTrack.ctts?.offsets ?? parsedA.videoTrack.samples.map(() => 0)),
+    ...(parsedB.videoTrack.ctts?.offsets ?? parsedB.videoTrack.samples.map(() => 0)),
+  ];
+  const built = buildMergedTrack(inputA, parsedA, sampleParts, durations, compositionOffsets);
+  return {
+    output: built.output,
+    cut: new Uint8Array(inputA),
+    compatibility,
+    report: {
+      method: 'cut',
+      sourceABytes: inputA.byteLength,
+      sourceBBytes: inputB.byteLength,
+      outputBytes: built.output.byteLength,
+      aSamples: aSamples.length,
+      bSamples: bSamples.length,
+      bSamplesKept: bSamples.length,
+      mergedSamples: sampleParts.length,
+      mergedDurationUnits: built.mergedDuration,
+      mergedDurationSeconds: built.mergedDuration / parsedA.videoTrack.mdhd.timescale,
+      timescale: parsedA.videoTrack.mdhd.timescale,
+      chunkOffset: built.chunkOffset,
+      mdatPayloadBytes: sampleParts.reduce((total, sample) => total + sample.byteLength, 0),
+      sampleSizeSum: built.sizes.reduce((total, value) => total + value, 0),
+      idrCount: built.outputNals.filter(nal => nal.type === IDR_NAL_TYPE).length,
+      frameAlignment: {applied: false, reason: 'cut'},
+      audio: 'omitted',
+    },
+  };
+}
+
+export async function mergeSequenceH264(clips, methods = []) {
+  if (!Array.isArray(clips) || clips.length < 1 || clips.length > 12) throw new TypeError('mergeSequenceH264 expects 1 to 12 clips');
+  if (!Array.isArray(methods) || methods.length !== clips.length - 1) throw new TypeError('mergeSequenceH264 expects one method per boundary');
+  const transitions = methods.map(method => method === 'cut' ? 'cut' : method === 'classic-mosh' ? 'classic-mosh' : null);
+  if (transitions.some(method => method === null)) throw new TypeError('Transition methods must be cut or classic-mosh');
+  for (const clip of clips) {
+    if (!(clip?.bytes instanceof Uint8Array)) throw new TypeError('mergeSequenceH264 clips require bytes');
+  }
+
+  const first = clips[0];
+  let currentBytes = new Uint8Array(first.bytes);
+  let currentParsed = first.parsed ?? parseMp4(currentBytes);
+  const boundaries = [];
+  let sourceSamples = currentParsed.videoTrack.samples.length;
+  let moshBoundaries = 0;
+  let sourceBytes = first.bytes.byteLength;
+
+  for (let index = 0; index < transitions.length; index += 1) {
+    const method = transitions[index];
+    const incoming = clips[index + 1];
+    const incomingParsed = incoming.parsed ?? parseMp4(incoming.bytes);
+    const step = method === 'cut'
+      ? await appendCutH264(currentBytes, incoming.bytes, currentParsed, incomingParsed)
+      : await mergeMoshH264(currentBytes, incoming.bytes, currentParsed, incomingParsed);
+    sourceSamples += incomingParsed.videoTrack.samples.length;
+    sourceBytes += incoming.bytes.byteLength;
+    if (method === 'classic-mosh') moshBoundaries += 1;
+    boundaries.push({
+      boundaryIndex: index,
+      fromClip: index,
+      toClip: index + 1,
+      method,
+      compatibility: step.compatibility,
+      report: step.report,
+    });
+    currentBytes = step.output;
+    currentParsed = parseMp4(currentBytes);
+  }
+
+  const outputMp4 = currentParsed;
+  const outputNals = extractNals(currentBytes, outputMp4.videoTrack);
+  const mergedSamples = outputMp4.videoTrack.samples.length;
+  return {
+    output: currentBytes,
+    cut: new Uint8Array(first.bytes),
+    report: {
+      clipCount: clips.length,
+      transitionCount: transitions.length,
+      methods: transitions,
+      sourceSamples,
+      moshBoundaries,
+      cutBoundaries: transitions.length - moshBoundaries,
+      mergedSamples,
+      expectedDecodedFrames: sourceSamples - moshBoundaries,
+      sourceBytes,
+      outputBytes: currentBytes.byteLength,
+      mergedDurationUnits: outputMp4.videoTrack.stts.durations.reduce((total, value) => total + value, 0),
+      mergedDurationSeconds: outputMp4.videoTrack.stts.durations.reduce((total, value) => total + value, 0) / outputMp4.videoTrack.mdhd.timescale,
+      timescale: outputMp4.videoTrack.mdhd.timescale,
+      idrCount: outputNals.filter(nal => nal.type === IDR_NAL_TYPE).length,
+      boundaries: boundaries.map(boundary => ({
+        boundaryIndex: boundary.boundaryIndex,
+        fromClip: boundary.fromClip,
+        toClip: boundary.toClip,
+        method: boundary.method,
+        mergedSamples: boundary.report.mergedSamples,
+        removedSamples: Math.max(0, boundary.report.bSamples - boundary.report.bSamplesKept),
+        frameAlignment: boundary.report.frameAlignment,
+        compatibility: compatibilityReportSummary(boundary.compatibility),
+      })),
+      audio: 'omitted',
+    },
+  };
+}
+
+function compatibilityReportSummary(compatibility) {
+  return {
+    compatible: compatibility.compatible,
+    spsMatch: compatibility.spsMatch,
+    ppsMatch: compatibility.ppsMatch,
+    failedChecks: compatibility.checks.filter(check => check.required && !check.match).map(check => check.key),
   };
 }
 

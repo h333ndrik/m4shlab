@@ -1,15 +1,24 @@
 import { parseMp4 } from './parser/mp4.js';
-import { CompatibilityError, checkCompatibility, mergeMoshH264 } from './merge.js';
+import {
+  CompatibilityError,
+  appendCutH264,
+  checkCompatibility,
+  mergeMoshH264,
+  mergeSequenceH264,
+} from './merge.js';
 import { convertToH264, MAX_CONVERSION_BYTES } from './converter.js';
 import { isWebCodecsAvailable, normalizeWithWebCodecs } from './webcodecs.js';
 import { chooseNormalizationTarget } from './webcodecs-muxer.js';
 
+const MAX_CLIPS = 12;
 const inputA = document.querySelector('#file-input-a');
 const inputB = document.querySelector('#file-input-b');
 const video = document.querySelector('#preview-video');
 const emptyPreview = document.querySelector('#empty-preview');
 const status = document.querySelector('#status');
 const sourceTiers = document.querySelector('#source-tiers');
+const sequenceLabel = document.querySelector('#sequence-label');
+const dropZone = document.querySelector('#drop-zone');
 const error = document.querySelector('#error');
 const conversionPanel = document.querySelector('#conversion-panel');
 const conversionStatus = document.querySelector('#conversion-status');
@@ -23,23 +32,25 @@ const exportButton = document.querySelector('#export-button');
 const previewLabel = document.querySelector('#preview-label');
 const reportPanel = document.querySelector('#report-panel');
 const report = document.querySelector('#report');
+const undoButton = document.querySelector('#undo-button');
+const redoButton = document.querySelector('#redo-button');
+const transitionDialog = document.querySelector('#transition-dialog');
+const transitionTitle = document.querySelector('#transition-title');
+const transitionApply = document.querySelector('#transition-apply');
 
-const clips = {a: null, b: null};
+let clips = [];
 let merged = null;
 let refreshToken = 0;
-let pairNormalizationAttempted = false;
-const loadTokens = {a: 0, b: 0};
+let importToken = 0;
+let activeBoundary = null;
+let normalizationAttempted = false;
+let undoStack = [];
+let redoStack = [];
 
 function formatBytes(value) {
   if (value < 1024) return `${value} B`;
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function clipMode(clip) {
-  if (!clip) return '';
-  if (clip.conversion) return `${clip.conversion.mode === 'normalized' ? 'normalized' : 'converted'} via ${conversionEngine(clip)}`;
-  return 'native H.264';
 }
 
 function conversionEngine(clip) {
@@ -53,18 +64,49 @@ function encodingPath(conversion) {
   return conversion?.encodeEngine === 'WebCodecs' ? 'encoded via WebCodecs' : 'encoded in wasm';
 }
 
+function clipMode(clip) {
+  if (!clip) return '';
+  if (clip.conversion) {
+    return `${clip.conversion.mode === 'normalized' ? 'normalized' : 'converted'} via ${conversionEngine(clip)}`;
+  }
+  return 'native H.264';
+}
+
+function conversionPath(clip) {
+  const conversion = clip.conversion;
+  if (!conversion) return 'native H.264';
+  if (conversion.mode === 'normalized') {
+    return conversion.origin
+      ? `${conversion.origin.mode} via ${conversion.origin.engine}, then normalized via ${conversionEngine(clip)}`
+      : `normalized via ${conversionEngine(clip)}`;
+  }
+  return `${conversion.mode} via ${conversionEngine(clip)}`;
+}
+
 function formatDuration(milliseconds) {
   if (!Number.isFinite(milliseconds)) return '';
   return milliseconds < 1000 ? `${Math.round(milliseconds)} ms` : `${(milliseconds / 1000).toFixed(1)} s`;
 }
 
-function clipReport(clip) {
+function clipReport(clip, index) {
   if (!clip) return null;
   return {
+    index,
     name: clip.file.name,
     tier: clip.conversion ? 'tier-2' : 'tier-1',
-    mode: clip.conversion ? `${clip.conversion.mode === 'normalized' ? 'normalized' : 'converted'} via ${conversionEngine(clip)}` : 'native H.264',
+    mode: clipMode(clip),
+    path: conversionPath(clip),
     conversion: clip.conversion ? {...clip.conversion} : null,
+  };
+}
+
+function sourcesReport() {
+  const list = clips.map(clipReport);
+  return {
+    count: list.length,
+    clips: list,
+    a: list[0] ?? null,
+    b: list[1] ?? null,
   };
 }
 
@@ -75,6 +117,14 @@ function clipDurationSeconds(clip) {
   return units / track.mdhd.timescale;
 }
 
+function transitionLabel(method) {
+  return method === 'cut' ? 'Cut' : 'Classic Mosh';
+}
+
+function clipDisplayLabel(index) {
+  return index === 0 ? 'Clip A' : index === 1 ? 'Clip B' : `Clip ${index + 1}`;
+}
+
 function compatibilityReport(compatibility) {
   if (!compatibility) return null;
   return {
@@ -82,8 +132,8 @@ function compatibilityReport(compatibility) {
     spsMatch: compatibility.spsMatch ?? false,
     ppsMatch: compatibility.ppsMatch ?? false,
     failedChecks: compatibility.checks
-      .filter(check => check.required && !check.match)
-      .map(check => check.key),
+      ?.filter(check => check.required && !check.match)
+      .map(check => check.key) ?? [],
   };
 }
 
@@ -94,7 +144,7 @@ function compatibilityErrorText(compatibility) {
     .slice(0, 3)
     .join(', ');
   const detail = labels ? ` (${labels})` : '';
-  return `This pair cannot be merged automatically${detail}. Record both clips with the same device and settings, or convert them to H.264 with matching parameters.`;
+  return `These clips cannot be merged automatically${detail}. Record them with the same device and settings, or convert them to H.264 with matching parameters.`;
 }
 
 function shortErrorText(message, fallback) {
@@ -108,15 +158,13 @@ function setError(message = '') {
   error.hidden = !message;
 }
 
-function setConversionProgress(progress, slot = 'a') {
+function setConversionProgress(progress, slot = null) {
+  if (slot !== 'a' && slot !== 'b') return;
   const bar = slot === 'b' ? conversionProgressB : conversionProgress;
   const row = slot === 'b' ? conversionProgressBRow : conversionProgress.closest('.conversion-progress-row');
   row.hidden = false;
-  if (progress === null || !Number.isFinite(progress)) {
-    bar.removeAttribute('value');
-  } else {
-    bar.value = Math.max(0, Math.min(1, progress));
-  }
+  if (progress === null || !Number.isFinite(progress)) bar.removeAttribute('value');
+  else bar.value = Math.max(0, Math.min(1, progress));
 }
 
 function showConversion(label, state, message, progress = null, slot = null) {
@@ -126,48 +174,51 @@ function showConversion(label, state, message, progress = null, slot = null) {
   if (slot) setConversionProgress(progress, slot);
 }
 
-function clipCard(slot, clip) {
+function progressSlot(index) {
+  return index === 0 ? 'a' : index === 1 ? 'b' : null;
+}
+
+function renderClipCard(index, clip) {
   const card = document.createElement('article');
-  card.className = `clip-card${clip ? '' : ' is-empty'}`;
+  card.className = 'clip-card';
+  card.dataset.clipIndex = String(index);
 
   const thumb = document.createElement('div');
   thumb.className = 'clip-thumb';
-  if (clip) {
-    const preview = document.createElement('video');
-    preview.src = `${clip.url}#t=0.001`;
-    preview.muted = true;
-    preview.playsInline = true;
-    preview.preload = 'metadata';
-    preview.setAttribute('aria-hidden', 'true');
-    thumb.append(preview);
-  } else {
-    thumb.textContent = `clip ${slot}`;
-  }
+  const preview = document.createElement('video');
+  preview.src = `${clip.url}#t=0.001`;
+  preview.muted = true;
+  preview.playsInline = true;
+  preview.preload = 'metadata';
+  preview.setAttribute('aria-hidden', 'true');
+  thumb.append(preview);
 
   const name = document.createElement('span');
   name.className = 'clip-name';
-  name.textContent = clip?.file.name ?? `Add clip ${slot.toUpperCase()}`;
+  name.textContent = clip.file.name;
+  name.title = clip.file.name;
 
   const detail = document.createElement('span');
   detail.className = 'clip-detail';
   const duration = clipDurationSeconds(clip);
-  detail.textContent = clip
-    ? `${duration === null ? 'video' : `${duration.toFixed(2)} s`} · ${clipMode(clip)}`
-    : 'use the import control';
+  detail.textContent = `${duration === null ? 'video' : `${duration.toFixed(2)} s`} · ${clipMode(clip)}`;
+  detail.title = conversionPath(clip);
 
   const controls = document.createElement('div');
   controls.className = 'clip-controls';
-  for (const [glyph, label, title] of [
-    ['←', `Move clip ${slot.toUpperCase()} left`, 'A → B order is fixed in this phase'],
-    ['→', `Move clip ${slot.toUpperCase()} right`, 'A → B order is fixed in this phase'],
-    ['×', `Remove clip ${slot.toUpperCase()}`, 'Use the import control to replace this clip'],
-  ]) {
+  const actions = [
+    ['←', `Move ${clipDisplayLabel(index)} left`, () => moveClip(index, index - 1), index === 0],
+    ['→', `Move ${clipDisplayLabel(index)} right`, () => moveClip(index, index + 1), index === clips.length - 1],
+    ['×', `Remove ${clipDisplayLabel(index)}`, () => removeClip(index), false],
+  ];
+  for (const [glyph, label, action, disabled] of actions) {
     const button = document.createElement('button');
     button.type = 'button';
     button.textContent = glyph;
     button.setAttribute('aria-label', label);
-    button.title = title;
-    button.disabled = true;
+    button.title = label;
+    button.disabled = disabled;
+    button.addEventListener('click', action);
     controls.append(button);
   }
 
@@ -175,37 +226,80 @@ function clipCard(slot, clip) {
   return card;
 }
 
-function renderSourceTiers() {
-  const connector = document.createElement('div');
+function renderConnector(index) {
+  const incoming = clips[index];
+  const connector = document.createElement('button');
+  connector.type = 'button';
   connector.className = 'connector';
+  connector.setAttribute('aria-label', `${transitionLabel(incoming.transition)} into ${clipDisplayLabel(index)}`);
   const effect = document.createElement('span');
-  effect.textContent = 'Classic Mosh';
+  effect.textContent = transitionLabel(incoming.transition);
   const duration = document.createElement('span');
-  duration.textContent = clipDurationSeconds(clips.b) === null
-    ? 'choose clip B'
-    : `${clipDurationSeconds(clips.b).toFixed(2)} s`;
+  const seconds = clipDurationSeconds(incoming);
+  duration.textContent = seconds === null ? 'incoming clip' : `${seconds.toFixed(2)} s`;
   connector.append(effect, duration);
-  sourceTiers.replaceChildren(clipCard('a', clips.a), connector, clipCard('b', clips.b));
+  connector.addEventListener('click', () => openTransition(index));
+  return connector;
+}
+
+function renderSourceTiers() {
+  if (clips.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'timeline-empty';
+    empty.textContent = 'Import up to 12 clips to build a sequence.';
+    sourceTiers.replaceChildren(empty);
+    sequenceLabel.textContent = '0 clips';
+    sourceTiers.hidden = false;
+    return;
+  }
+  const nodes = [];
+  clips.forEach((clip, index) => {
+    if (index > 0) nodes.push(renderConnector(index));
+    nodes.push(renderClipCard(index, clip));
+  });
+  sourceTiers.replaceChildren(...nodes);
   sourceTiers.hidden = false;
+  const cuts = clips.slice(1).filter(clip => clip.transition === 'cut').length;
+  const mosh = clips.length - 1 - cuts;
+  sequenceLabel.textContent = `${clips.length} clip${clips.length === 1 ? '' : 's'} · ${cuts} cut · ${mosh} mosh`;
 }
 
 function finishConversionPanel() {
-  const converted = ['a', 'b'].filter(slot => clips[slot]?.conversion);
-  if (!converted.length) {
+  const converted = clips.map((clip, index) => ({clip, index})).filter(item => item.clip.conversion);
+  if (converted.length === 0) {
     conversionPanel.hidden = true;
     return;
   }
-  const normalized = converted.length === 2 && converted.every(slot => clips[slot].conversion.mode === 'normalized');
-  const engines = [...new Set(converted.map(slot => conversionEngine(clips[slot])))];
-  const engineLabel = engines.join(' + ');
-  conversionStatus.textContent = `${normalized ? 'normalized' : 'converted'} via ${engineLabel}`;
-  conversionMessage.textContent = converted.map(slot => {
-    const conversion = clips[slot].conversion;
-    return `${slot.toUpperCase()}: ${clips[slot].file.name} → H.264 at ${clips[slot].mp4.videoTrack.width}×${clips[slot].mp4.videoTrack.height} · ${encodingPath(conversion)} · ${formatDuration(conversion.elapsedMs)}`;
+  const allNormalized = converted.length === clips.length && clips.length > 1
+    && converted.every(item => item.clip.conversion.mode === 'normalized');
+  const engines = [...new Set(converted.map(item => conversionEngine(item.clip)))];
+  conversionStatus.textContent = `${allNormalized ? 'normalized' : 'converted'} via ${engines.join(' + ')}`;
+  conversionMessage.textContent = converted.map(({clip, index}) => {
+    const conversion = clip.conversion;
+    return `${clipDisplayLabel(index)}: ${clip.file.name} → ${clip.mp4.videoTrack.width}×${clip.mp4.videoTrack.height} · ${encodingPath(conversion)} · ${formatDuration(conversion.elapsedMs)}`;
   }).join(' · ');
-  for (const slot of converted) setConversionProgress(1, slot);
-  conversionProgressBRow.hidden = !converted.includes('b');
+  for (const {index} of converted) setConversionProgress(1, progressSlot(index));
+  conversionProgressBRow.hidden = !converted.some(item => item.index === 1);
   conversionPanel.hidden = false;
+}
+
+function sequenceNormalizationReport() {
+  const conversions = clips.map(clip => clip.conversion).filter(Boolean);
+  if (conversions.length === 0) return null;
+  const reasons = new Set(['sequence-normalization', 'pair-normalization']);
+  return {
+    autoNormalized: clips.length > 1 && conversions.length === clips.length
+      && conversions.every(conversion => reasons.has(conversion.reason)),
+    parallel: conversions.length > 1 && conversions.every(conversion => conversion.parallel === true),
+    target: conversions.find(conversion => conversion.target)?.target ?? null,
+    engines: clips.map((clip, index) => ({
+      index,
+      name: clip.file.name,
+      path: conversionPath(clip),
+      decode: clip.conversion?.decodeEngine ?? clip.conversion?.engine ?? null,
+      encode: clip.conversion?.encodeEngine ?? clip.conversion?.engine ?? null,
+    })).filter(entry => clips[entry.index].conversion),
+  };
 }
 
 function videoErrorText() {
@@ -229,11 +323,6 @@ video.addEventListener('loadeddata', () => {
   emptyPreview.hidden = true;
 });
 
-function revokeClip(slot) {
-  const clip = clips[slot];
-  if (clip?.url) URL.revokeObjectURL(clip.url);
-}
-
 function resetMerged() {
   if (merged?.cutUrl) URL.revokeObjectURL(merged.cutUrl);
   if (merged?.mergedUrl) URL.revokeObjectURL(merged.mergedUrl);
@@ -243,7 +332,7 @@ function resetMerged() {
   exportButton.onclick = null;
 }
 
-function setPreview(url, label) {
+function setPreview(url, label, version = null) {
   if (!url) {
     video.removeAttribute('src');
     video.load();
@@ -252,30 +341,25 @@ function setPreview(url, label) {
   }
   video.src = url;
   previewLabel.textContent = label;
-  originalButton.setAttribute('aria-pressed', String(label.startsWith('A cut')));
-  modifiedButton.setAttribute('aria-pressed', String(label.startsWith('merged')));
+  if (version) {
+    originalButton.setAttribute('aria-pressed', String(version === 'original'));
+    modifiedButton.setAttribute('aria-pressed', String(version === 'merged'));
+  }
+}
+
+function sourceCutLabel() {
+  return clips[0]?.conversion ? 'clip 1 cut (converted source)' : 'clip 1 cut (input)';
 }
 
 function showVersion(version) {
   if (!merged) return;
   const isMerged = version === 'merged';
   setError('');
-  const cutLabel = clips.a?.conversion ? 'A cut (converted source)' : 'A cut (input)';
-  setPreview(isMerged ? merged.mergedUrl : merged.cutUrl, isMerged ? 'merged A→B · video only' : cutLabel);
-}
-
-function pairNormalizationReport() {
-  const conversions = ['a', 'b'].map(slot => clips[slot]?.conversion).filter(Boolean);
-  if (conversions.length === 0) return null;
-  return {
-    autoNormalized: conversions.length === 2 && conversions.every(conversion => conversion.reason === 'pair-normalization'),
-    parallel: conversions.length === 2 && conversions.every(conversion => conversion.parallel === true),
-    target: conversions[0].target ?? null,
-    engines: conversions.map(conversion => ({
-      decode: conversion.decodeEngine ?? conversion.engine,
-      encode: conversion.encodeEngine ?? conversion.engine,
-    })),
-  };
+  setPreview(
+    isMerged ? merged.mergedUrl : merged.cutUrl,
+    isMerged ? `merged ${clips.length} clip${clips.length === 1 ? '' : 's'} · video only` : sourceCutLabel(),
+    isMerged ? 'merged' : 'original',
+  );
 }
 
 function updateSingleClipState() {
@@ -283,31 +367,107 @@ function updateSingleClipState() {
   resetMerged();
   renderSourceTiers();
   finishConversionPanel();
-  originalButton.disabled = !clips.a;
+  originalButton.textContent = 'clip 1 cut';
+  originalButton.disabled = clips.length === 0;
   modifiedButton.disabled = true;
 
-  if (clips.a) {
-    setPreview(clips.a.url, clips.a.conversion ? 'A cut (converted source)' : 'A cut (input)');
+  if (clips.length === 1) {
+    setPreview(clips[0].url, sourceCutLabel(), 'original');
     emptyPreview.hidden = true;
-    originalButton.setAttribute('aria-pressed', 'true');
-    modifiedButton.setAttribute('aria-pressed', 'false');
+    status.textContent = `${clips[0].file.name} loaded as clip A (${clipMode(clips[0])}) · add another clip to create a transition.`;
   } else {
     setPreview(null);
     emptyPreview.hidden = false;
-    emptyPreview.textContent = 'load clips A and B to begin';
-  }
-
-  if (clips.a && !clips.b) {
-    status.textContent = `${clips.a.file.name} loaded as clip A (${clipMode(clips.a)}) · load clip B to create the transition.`;
-  } else if (!clips.a && clips.b) {
-    status.textContent = `${clips.b.file.name} loaded as clip B (${clipMode(clips.b)}) · load clip A to create the transition.`;
-  } else {
+    emptyPreview.textContent = 'import clips to begin';
     status.textContent = 'No videos loaded.';
   }
 }
 
-async function convertClipSource(slot, sourceBytes, options, parseError = null) {
-  const label = `Clip ${slot.toUpperCase()}`;
+function snapshotState() {
+  return clips.map(clip => ({...clip}));
+}
+
+function restoreState(snapshot) {
+  clips = snapshot.map(clip => ({...clip}));
+  normalizationAttempted = false;
+  updateHistoryButtons();
+  refreshSequence();
+}
+
+function rememberState() {
+  undoStack.push(snapshotState());
+  if (undoStack.length > 50) undoStack.shift();
+  redoStack = [];
+  updateHistoryButtons();
+}
+
+function updateHistoryButtons() {
+  undoButton.disabled = undoStack.length === 0;
+  redoButton.disabled = redoStack.length === 0;
+}
+
+function moveClip(from, to) {
+  if (to < 0 || to >= clips.length || from === to) return;
+  rememberState();
+  const next = [...clips];
+  const [clip] = next.splice(from, 1);
+  next.splice(to, 0, clip);
+  clips = next;
+  normalizationAttempted = false;
+  refreshSequence();
+}
+
+function removeClip(index) {
+  if (index < 0 || index >= clips.length) return;
+  rememberState();
+  clips = clips.filter((_, clipIndex) => clipIndex !== index);
+  normalizationAttempted = false;
+  refreshSequence();
+}
+
+function undoTimeline() {
+  if (undoStack.length === 0) return;
+  redoStack.push(snapshotState());
+  const previous = undoStack.pop();
+  restoreState(previous);
+}
+
+function redoTimeline() {
+  if (redoStack.length === 0) return;
+  undoStack.push(snapshotState());
+  const next = redoStack.pop();
+  restoreState(next);
+}
+
+function openTransition(boundaryIndex) {
+  if (boundaryIndex < 1 || boundaryIndex >= clips.length) return;
+  activeBoundary = boundaryIndex;
+  const method = clips[boundaryIndex].transition;
+  const radio = transitionDialog.querySelector(`input[name="transition-method"][value="${method}"]`);
+  if (radio) radio.checked = true;
+  transitionTitle.textContent = `${clipDisplayLabel(boundaryIndex - 1)} → ${clipDisplayLabel(boundaryIndex)}`;
+  transitionDialog.showModal();
+}
+
+transitionApply.addEventListener('click', event => {
+  event.preventDefault();
+  if (activeBoundary === null) return;
+  const selected = transitionDialog.querySelector('input[name="transition-method"]:checked')?.value;
+  if (selected !== 'cut' && selected !== 'classic-mosh') return;
+  if (clips[activeBoundary]?.transition !== selected) {
+    rememberState();
+    clips = clips.map((clip, index) => index === activeBoundary ? {...clip, transition: selected} : clip);
+  }
+  transitionDialog.close('apply');
+  if (selected) refreshSequence();
+});
+
+transitionDialog.addEventListener('close', () => {
+  activeBoundary = null;
+});
+
+async function convertClipSource(index, label, sourceBytes, options, parseError = null) {
+  const slot = progressSlot(index);
   const converted = await convertToH264(sourceBytes, {
     target: options.target ?? null,
     onStatus: message => {
@@ -345,227 +505,338 @@ async function convertClipSource(slot, sourceBytes, options, parseError = null) 
   };
 }
 
-async function normalizePair(token) {
-  const target = chooseNormalizationTarget(
-    {width: clips.a.mp4.videoTrack.width, height: clips.a.mp4.videoTrack.height},
-    {width: clips.b.mp4.videoTrack.width, height: clips.b.mp4.videoTrack.height},
-  );
-  pairNormalizationAttempted = true;
+async function readClipFile(file, index, token) {
+  const label = clipDisplayLabel(index);
+  const slot = progressSlot(index);
+  const sourceBytes = new Uint8Array(await file.arrayBuffer());
+  let bytes = sourceBytes;
+  let mp4;
+  let conversion = null;
+
+  try {
+    mp4 = parseMp4(bytes);
+  } catch (cause) {
+    if (sourceBytes.byteLength > MAX_CONVERSION_BYTES) {
+      throw new Error(`${label} is ${formatBytes(sourceBytes.byteLength)}; convert-on-load is limited to 100 MB.`);
+    }
+    showConversion(label, 'loading ffmpeg.wasm', `“${cause.message}” Loading the local converter; this can take a while on the first file.`, null, slot);
+    const converted = await convertClipSource(index, label, sourceBytes, {
+      reason: cause.code ?? 'unparseable-input',
+      isCurrent: () => token === importToken,
+    }, cause);
+    if (!converted || token !== importToken) return null;
+    bytes = converted.bytes;
+    mp4 = converted.mp4;
+    conversion = converted.conversion;
+  }
+
+  return {
+    file,
+    bytes,
+    mp4,
+    url: URL.createObjectURL(new Blob([bytes], {type: 'video/mp4'})),
+    conversion,
+    transition: 'classic-mosh',
+  };
+}
+
+function looksLikeVideo(file) {
+  return file.type.startsWith('video/') || /\.(mp4|mov|m4v|mkv|webm|avi)$/i.test(file.name);
+}
+
+async function importFiles(fileList) {
+  const candidates = [...fileList].filter(looksLikeVideo);
+  if (candidates.length === 0) {
+    setError('Choose a video file or drop a supported video onto the timeline.');
+    return;
+  }
+  const available = MAX_CLIPS - clips.length;
+  if (available <= 0) {
+    setError(`The timeline is limited to ${MAX_CLIPS} clips. Remove a clip before importing another.`);
+    return;
+  }
+  const selected = candidates.slice(0, available);
+  const overflow = candidates.length - selected.length;
+  const token = ++importToken;
+  const before = snapshotState();
+  const baseIndex = clips.length;
+  resetMerged();
+  setError('');
+  reportPanel.hidden = true;
+  status.textContent = `Reading ${selected.length} clip${selected.length === 1 ? '' : 's'}…`;
+
+  const settled = await Promise.allSettled(selected.map((file, offset) => readClipFile(file, baseIndex + offset, token)));
+  if (token !== importToken) {
+    for (const result of settled) {
+      if (result.status === 'fulfilled' && result.value?.url) URL.revokeObjectURL(result.value.url);
+    }
+    return;
+  }
+
+  const loaded = settled.filter(result => result.status === 'fulfilled' && result.value).map(result => result.value);
+  if (loaded.length > 0) {
+    undoStack.push(before);
+    if (undoStack.length > 50) undoStack.shift();
+    redoStack = [];
+    clips.push(...loaded);
+    normalizationAttempted = false;
+    updateHistoryButtons();
+    await refreshSequence();
+  } else {
+    await refreshSequence();
+  }
+
+  const messages = settled.flatMap((result, index) => result.status === 'rejected'
+    ? [`${selected[index]?.name ?? 'clip'}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`]
+    : []);
+  if (overflow > 0) messages.push(`Only ${MAX_CLIPS} clips fit; ${overflow} extra file${overflow === 1 ? ' was' : 's were'} not imported.`);
+  if (messages.length) {
+    const existing = error.hidden ? '' : error.textContent;
+    setError([existing, ...messages].filter(Boolean).join(' '));
+  }
+}
+
+async function loadClipLegacy(slot, file) {
+  const label = `Clip ${slot.toUpperCase()}`;
+  status.textContent = `Reading ${file.name} as ${label}…`;
+  await importFiles([file]);
+}
+
+function compatibleChecks(checks) {
+  return checks.every(compatibility => compatibility.compatible);
+}
+
+function needsNormalization(checks) {
+  return checks.some(compatibility => !compatibility.compatible || !compatibility.spsMatch);
+}
+
+async function checkSequenceCompatibility() {
+  return Promise.all(clips.slice(1).map((clip, offset) => {
+    const leftIndex = offset;
+    return checkCompatibility(clips[leftIndex].bytes, clip.bytes, clips[leftIndex].mp4, clip.mp4);
+  }));
+}
+
+async function mapWithConcurrency(items, limit, mapper) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  const worker = async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index], index);
+    }
+  };
+  await Promise.all(Array.from({length: Math.min(limit, items.length)}, worker));
+  return results;
+}
+
+async function normalizeAllClips(token, target) {
+  const originals = clips.map(clip => ({...clip}));
   let webcodecsFallbackReason = null;
 
-  if (isWebCodecsAvailable() && !clips.a.conversion && !clips.b.conversion) {
-    const normalizedClips = {};
-    const discardNormalizedClips = () => {
-      for (const clip of Object.values(normalizedClips)) {
-        if (clip.url) URL.revokeObjectURL(clip.url);
-      }
-    };
+  if (isWebCodecsAvailable() && originals.every(clip => !clip.conversion)) {
     try {
-      setConversionProgress(null, 'a');
-      setConversionProgress(null, 'b');
-      showConversion('Clips A + B', 'normalizing', `Decoding and re-encoding both clips in parallel with WebCodecs to a common ${target.width}×${target.height} H.264 layout…`, null);
-      await Promise.all(['a', 'b'].map(async slot => {
-        if (token !== refreshToken) return;
-        const clip = clips[slot];
-        const label = `Clip ${slot.toUpperCase()}`;
+      for (const [index] of originals.entries()) setConversionProgress(null, progressSlot(index));
+      showConversion(`${clips.length} clips`, 'normalizing', `Normalizing clips in parallel with WebCodecs to one ${target.width}×${target.height} H.264 layout…`, null);
+      const normalized = await mapWithConcurrency(originals, 2, async (clip, index) => {
+        if (token !== refreshToken) return null;
         if (clip.file.size > MAX_CONVERSION_BYTES) {
-          throw new Error(`${label} is ${formatBytes(clip.file.size)}; conversion is limited to 100 MB.`);
+          throw new Error(`${clipDisplayLabel(index)} is ${formatBytes(clip.file.size)}; conversion is limited to 100 MB.`);
         }
-        showConversion(label, 'normalizing', `Decoding and re-encoding both clips with WebCodecs to a common ${target.width}×${target.height} H.264 layout…`, null, slot);
-        const sourceBytes = new Uint8Array(await clip.file.arrayBuffer());
-        const normalized = await normalizeWithWebCodecs(sourceBytes, {
+        const label = clipDisplayLabel(index);
+        showConversion(label, 'normalizing', `Decoding and re-encoding ${clip.file.name} with WebCodecs to ${target.width}×${target.height}…`, null, progressSlot(index));
+        const result = await normalizeWithWebCodecs(clip.bytes, {
           target,
           onStatus: message => {
-            if (token === refreshToken) showConversion(label, 'working', message, null, slot);
+            if (token === refreshToken) showConversion(label, 'working', message, null, progressSlot(index));
           },
           onProgress: progress => {
             if (token !== refreshToken) return;
             const percent = Math.round(progress * 100);
-            showConversion(label, 'working', `Normalizing with WebCodecs · ${percent}%`, progress, slot);
+            showConversion(label, 'working', `Normalizing with WebCodecs · ${percent}%`, progress, progressSlot(index));
           },
         });
-        if (token !== refreshToken) return;
-        const mp4 = parseMp4(normalized.bytes);
-        normalizedClips[slot] = {
-          file: clip.file,
-          bytes: normalized.bytes,
+        return {result, sourceBytes: clip.bytes.byteLength};
+      });
+      if (token !== refreshToken || normalized.some(item => !item)) return false;
+      clips = originals.map((clip, index) => {
+        const {result, sourceBytes} = normalized[index];
+        const mp4 = parseMp4(result.bytes);
+        return {
+          ...clip,
+          bytes: result.bytes,
           mp4,
-          url: URL.createObjectURL(new Blob([normalized.bytes], {type: 'video/mp4'})),
           conversion: {
             converted: true,
             engine: 'WebCodecs',
             decodeEngine: 'WebCodecs',
             encodeEngine: 'WebCodecs',
             hybrid: false,
-            parallel: true,
-            inputBytes: sourceBytes.byteLength,
-            outputBytes: normalized.bytes.byteLength,
-            elapsedMs: normalized.elapsedMs,
-            target: normalized.target,
+            parallel: originals.length > 1,
+            inputBytes: sourceBytes,
+            outputBytes: result.bytes.byteLength,
+            elapsedMs: result.elapsedMs,
+            target: result.target,
             mode: 'normalized',
-            reason: 'pair-normalization',
-            decoderCodec: normalized.decoderCodec,
-            encoderCodec: normalized.encoderCodec,
-            fps: normalized.fps,
-            keyframes: normalized.keyframes,
-            outputSamples: normalized.outputSamples,
-            frameAlignment: normalized.frameAlignment,
+            reason: 'sequence-normalization',
+            origin: clip.conversion,
+            decoderCodec: result.decoderCodec,
+            encoderCodec: result.encoderCodec,
+            fps: result.fps,
+            keyframes: result.keyframes,
+            outputSamples: result.outputSamples,
+            frameAlignment: result.frameAlignment,
           },
         };
-      }));
-      if (token !== refreshToken || !normalizedClips.a || !normalizedClips.b) {
-        discardNormalizedClips();
-        return false;
+      });
+      for (const [index] of originals.entries()) {
+        clips[index].url = URL.createObjectURL(new Blob([clips[index].bytes], {type: 'video/mp4'}));
       }
-      for (const slot of ['a', 'b']) {
-        revokeClip(slot);
-        clips[slot] = normalizedClips[slot];
-      }
-      renderSourceTiers();
       finishConversionPanel();
       return true;
     } catch (cause) {
-      discardNormalizedClips();
       if (token !== refreshToken) return false;
       webcodecsFallbackReason = cause instanceof Error ? cause.message : String(cause);
-      showConversion('WebCodecs', 'falling back', `${cause instanceof Error ? cause.message : String(cause)} Loading the ffmpeg.wasm fallback…`, null);
+      showConversion('WebCodecs', 'falling back', `${webcodecsFallbackReason} Loading the ffmpeg.wasm fallback…`, null);
     }
   }
 
-  const convertedClips = {};
-  setConversionProgress(null, 'a');
-  setConversionProgress(null, 'b');
-  showConversion('Clips A + B', 'normalizing', `Converting both clips in parallel with ffmpeg.wasm to a common ${target.width}×${target.height} H.264 layout…`, null);
-  try {
-    await Promise.all(['a', 'b'].map(async slot => {
-      const clip = clips[slot];
-      const label = `Clip ${slot.toUpperCase()}`;
-      if (clip.file.size > MAX_CONVERSION_BYTES) {
-        throw new Error(`${label} is ${formatBytes(clip.file.size)}; convert-on-load is limited to 100 MB.`);
-      }
-      const sourceBytes = new Uint8Array(await clip.file.arrayBuffer());
-      const converted = await convertClipSource(slot, sourceBytes, {
-        target,
-        reason: 'pair-normalization',
-        isCurrent: () => token === refreshToken,
-      }, clip.conversion?.sourceError ?? null);
-      if (!converted || token !== refreshToken) return;
-      convertedClips[slot] = {
-        file: clip.file,
-        bytes: converted.bytes,
-        mp4: converted.mp4,
-        url: URL.createObjectURL(new Blob([converted.bytes], {type: 'video/mp4'})),
-        conversion: {
-          ...converted.conversion,
-          webcodecsFallbackReason,
-          parallel: true,
-        },
-      };
-    }));
-  } catch (cause) {
-    for (const clip of Object.values(convertedClips)) URL.revokeObjectURL(clip.url);
-    throw cause;
+  const converted = await Promise.all(originals.map(async (clip, index) => {
+    if (token !== refreshToken) return null;
+    if (clip.file.size > MAX_CONVERSION_BYTES) {
+      throw new Error(`${clipDisplayLabel(index)} is ${formatBytes(clip.file.size)}; conversion is limited to 100 MB.`);
+    }
+    const label = clipDisplayLabel(index);
+    const result = await convertClipSource(index, label, clip.bytes, {
+      target,
+      reason: 'sequence-normalization',
+      isCurrent: () => token === refreshToken,
+    }, clip.conversion?.sourceError ?? null);
+    if (!result || token !== refreshToken) return null;
+    return {
+      ...clip,
+      bytes: result.bytes,
+      mp4: result.mp4,
+      conversion: {
+        ...result.conversion,
+        reason: 'sequence-normalization',
+        parallel: originals.length > 1,
+        origin: clip.conversion,
+        webcodecsFallbackReason,
+      },
+    };
+  }));
+  if (token !== refreshToken || converted.some(item => !item)) return false;
+  clips = converted;
+  for (const [index] of originals.entries()) {
+    clips[index].url = URL.createObjectURL(new Blob([clips[index].bytes], {type: 'video/mp4'}));
   }
-  if (token !== refreshToken) {
-    for (const clip of Object.values(convertedClips)) URL.revokeObjectURL(clip.url);
-    return false;
-  }
-  if (!convertedClips.a || !convertedClips.b) return false;
-  for (const slot of ['a', 'b']) {
-    revokeClip(slot);
-    clips[slot] = convertedClips[slot];
-  }
-  renderSourceTiers();
   finishConversionPanel();
   return true;
 }
 
-async function refreshPair() {
+async function refreshSequence() {
   const token = ++refreshToken;
   resetMerged();
   setError('');
-  if (!clips.a || !clips.b) {
+  renderSourceTiers();
+  finishConversionPanel();
+  updateHistoryButtons();
+
+  if (clips.length === 0) {
+    updateSingleClipState();
+    return;
+  }
+  if (clips.length === 1) {
     updateSingleClipState();
     return;
   }
 
-  renderSourceTiers();
-  finishConversionPanel();
   reportPanel.hidden = true;
+  originalButton.textContent = 'clip 1 cut';
   originalButton.disabled = false;
   modifiedButton.disabled = true;
   exportButton.disabled = true;
-  setPreview(clips.a.url, clips.a.conversion ? 'A cut (converted source)' : 'A cut (input)');
+  setPreview(clips[0].url, sourceCutLabel(), 'original');
   emptyPreview.hidden = true;
-  status.textContent = 'Preparing the transition…';
+  status.textContent = 'Preparing the sequence…';
 
-  let compatibility;
+  let checks;
   try {
-    compatibility = await checkCompatibility(clips.a.bytes, clips.b.bytes, clips.a.mp4, clips.b.mp4);
+    checks = await checkSequenceCompatibility();
   } catch (cause) {
     if (token !== refreshToken) return;
-    status.textContent = 'Pair loaded; compatibility could not be verified.';
+    status.textContent = 'Clips loaded; compatibility could not be verified.';
     setError(cause instanceof Error ? cause.message : String(cause));
     return;
   }
   if (token !== refreshToken) return;
-  if (!compatibility.compatible && !pairNormalizationAttempted) {
-    const target = chooseNormalizationTarget(
-      {width: clips.a.mp4.videoTrack.width, height: clips.a.mp4.videoTrack.height},
-      {width: clips.b.mp4.videoTrack.width, height: clips.b.mp4.videoTrack.height},
-    );
+
+  if (needsNormalization(checks) && !normalizationAttempted) {
+    const target = chooseNormalizationTarget(...clips.map(clip => ({
+      width: clip.mp4.videoTrack.width,
+      height: clip.mp4.videoTrack.height,
+    })));
+    normalizationAttempted = true;
     report.textContent = JSON.stringify({
-      stage: 'normalizing-pair',
-      sources: {a: clipReport(clips.a), b: clipReport(clips.b)},
+      stage: 'normalizing-sequence',
+      sources: sourcesReport(),
       target,
-      compatibility: compatibilityReport(compatibility),
+      incompatibleBoundaries: checks.map((compatibility, offset) => ({boundaryIndex: offset, ...compatibilityReport(compatibility)}))
+        .filter(item => !item.compatible),
     }, null, 2);
     reportPanel.hidden = false;
-    modifiedButton.disabled = true;
-    exportButton.disabled = true;
-    status.textContent = `Normalizing clips A and B to ${target.width}×${target.height}…`;
+    status.textContent = `Normalizing clips to ${target.width}×${target.height}…`;
     try {
-      const normalized = await normalizePair(token);
+      const normalized = await normalizeAllClips(token, target);
       if (!normalized || token !== refreshToken) return;
-      await refreshPair();
-      return;
+      checks = await checkSequenceCompatibility();
     } catch (cause) {
       if (token !== refreshToken) return;
       report.textContent = JSON.stringify({
         stage: 'normalization-failed',
-        sources: {a: clipReport(clips.a), b: clipReport(clips.b)},
+        sources: sourcesReport(),
         target,
-        compatibility: compatibilityReport(compatibility),
         error: cause instanceof Error ? cause.message : String(cause),
       }, null, 2);
       showConversion('Conversion', 'failed', cause instanceof Error ? cause.message : String(cause));
-      status.textContent = 'Could not prepare this pair for merging.';
+      status.textContent = 'Could not prepare these clips for merging.';
       const detail = cause instanceof Error ? cause.message : String(cause);
       setError(shortErrorText(`Normalization failed. ${detail} Try shorter clips or matching H.264 settings.`, 'Normalization failed. Try shorter clips or matching H.264 settings.'));
       return;
     }
-  }
-
-  report.textContent = JSON.stringify({
-    stage: 'compatibility',
-    sources: {a: clipReport(clips.a), b: clipReport(clips.b)},
-    normalization: pairNormalizationReport(),
-    compatibility: compatibilityReport(compatibility),
-  }, null, 2);
-  reportPanel.hidden = false;
-
-  if (!compatibility.compatible) {
-    status.textContent = 'This pair cannot be merged automatically.';
-    setError(compatibilityErrorText(compatibility));
-    modifiedButton.disabled = true;
-    exportButton.disabled = true;
+    if (token !== refreshToken) return;
+  } else if (!compatibleChecks(checks) && normalizationAttempted) {
+    const firstFailure = checks.find(compatibility => !compatibility.compatible);
+    status.textContent = 'These clips cannot be merged automatically.';
+    setError(compatibilityErrorText(firstFailure));
     return;
   }
 
-  status.textContent = 'Compatible pair. Building the merged MP4…';
+  if (!compatibleChecks(checks)) {
+    const firstFailure = checks.find(compatibility => !compatibility.compatible);
+    status.textContent = 'These clips cannot be merged automatically.';
+    setError(compatibilityErrorText(firstFailure));
+    return;
+  }
+
+  status.textContent = 'Building the merged sequence…';
   setError('');
   try {
-    const result = await mergeMoshH264(clips.a.bytes, clips.b.bytes, clips.a.mp4, clips.b.mp4);
+    let result;
+    let pairCompatibility = null;
+    if (clips.length === 2) {
+      pairCompatibility = checks[0];
+      result = clips[1].transition === 'cut'
+        ? await appendCutH264(clips[0].bytes, clips[1].bytes, clips[0].mp4, clips[1].mp4)
+        : await mergeMoshH264(clips[0].bytes, clips[1].bytes, clips[0].mp4, clips[1].mp4);
+    } else {
+      result = await mergeSequenceH264(
+        clips.map(clip => ({bytes: clip.bytes, parsed: clip.mp4})),
+        clips.slice(1).map(clip => clip.transition),
+      );
+    }
     if (token !== refreshToken) return;
     const cutUrl = URL.createObjectURL(new Blob([result.cut], {type: 'video/mp4'}));
     const mergedUrl = URL.createObjectURL(new Blob([result.output], {type: 'video/mp4'}));
@@ -579,14 +850,24 @@ async function refreshPair() {
       link.click();
     };
     showVersion('original');
-    status.textContent = `${clips.a.file.name} + ${clips.b.file.name} · ${result.report.mergedSamples} samples · ${result.report.mergedDurationSeconds.toFixed(2)} s · video only`;
+    status.textContent = `${clips.length} clips · ${result.report.mergedSamples} samples · ${result.report.mergedDurationSeconds.toFixed(2)} s · video only`;
     report.textContent = JSON.stringify({
-      sources: {a: clipReport(clips.a), b: clipReport(clips.b)},
-      normalization: pairNormalizationReport(),
-      compatibility: compatibilityReport(result.compatibility),
+      stage: 'merged',
+      sources: sourcesReport(),
+      normalization: sequenceNormalizationReport(),
+      compatibility: pairCompatibility ? compatibilityReport(pairCompatibility) : {
+        compatible: true,
+        boundaries: checks.map(compatibilityReport),
+      },
+      transitions: clips.slice(1).map((clip, offset) => ({
+        boundaryIndex: offset,
+        method: clip.transition,
+      })),
       merge: result.report,
-      cutByteIdentical: result.cut.byteLength === clips.a.bytes.byteLength && result.cut.every((value, index) => value === clips.a.bytes[index]),
+      cutByteIdentical: result.cut.byteLength === clips[0].bytes.byteLength
+        && result.cut.every((value, index) => value === clips[0].bytes[index]),
     }, null, 2);
+    reportPanel.hidden = false;
   } catch (cause) {
     if (token !== refreshToken) return;
     status.textContent = 'No merged MP4 was produced.';
@@ -599,75 +880,45 @@ async function refreshPair() {
   }
 }
 
-async function loadClip(slot, file) {
-  const label = `Clip ${slot.toUpperCase()}`;
-  const token = ++loadTokens[slot];
-  pairNormalizationAttempted = false;
-  resetMerged();
-  revokeClip(slot);
-  clips[slot] = null;
-  setError('');
-  reportPanel.hidden = true;
-  renderSourceTiers();
-  status.textContent = `Reading ${file.name} as ${label}…`;
-
-  try {
-    const sourceBytes = new Uint8Array(await file.arrayBuffer());
-    let bytes = sourceBytes;
-    let mp4;
-    let conversion = null;
-    let parseError = null;
-
-    try {
-      mp4 = parseMp4(bytes);
-    } catch (cause) {
-      parseError = cause;
-      if (sourceBytes.byteLength > MAX_CONVERSION_BYTES) {
-        throw new Error(`${label} is ${formatBytes(sourceBytes.byteLength)}; convert-on-load is limited to 100 MB.`);
-      }
-      showConversion(label, 'loading ffmpeg.wasm', `“${cause.message}” Loading the local converter; this can take a while on the first file.`, null, slot);
-      const converted = await convertClipSource(slot, sourceBytes, {
-        reason: cause.code ?? 'unparseable-input',
-        isCurrent: () => token === loadTokens[slot],
-      }, cause);
-      if (!converted || token !== loadTokens[slot]) return;
-      bytes = converted.bytes;
-      mp4 = converted.mp4;
-      conversion = converted.conversion;
-    }
-
-    clips[slot] = {
-      file,
-      bytes,
-      mp4,
-      url: URL.createObjectURL(new Blob([bytes], {type: 'video/mp4'})),
-      conversion,
-    };
-    await refreshPair();
-  } catch (cause) {
-    if (token !== loadTokens[slot]) return;
-    clips[slot] = null;
-    showConversion(label, 'failed', cause instanceof Error ? cause.message : String(cause), null, slot);
-    await refreshPair();
-    setError(`${label}: ${cause instanceof Error ? cause.message : String(cause)}`);
-  }
-}
-
 inputA.addEventListener('change', () => {
-  const [file] = inputA.files;
-  if (file) loadClip('a', file);
+  const files = [...inputA.files];
+  inputA.value = '';
+  if (files.length) importFiles(files);
 });
 inputB.addEventListener('change', () => {
   const [file] = inputB.files;
-  if (file) loadClip('b', file);
+  inputB.value = '';
+  if (file) loadClipLegacy('b', file);
 });
 originalButton.addEventListener('click', () => showVersion('original'));
 modifiedButton.addEventListener('click', () => showVersion('merged'));
+undoButton.addEventListener('click', undoTimeline);
+redoButton.addEventListener('click', redoTimeline);
 
+for (const eventName of ['dragenter', 'dragover']) {
+  dropZone.addEventListener(eventName, event => {
+    event.preventDefault();
+    dropZone.classList.add('is-dragging');
+  });
+}
+dropZone.addEventListener('dragleave', event => {
+  if (!dropZone.contains(event.relatedTarget)) dropZone.classList.remove('is-dragging');
+});
+dropZone.addEventListener('drop', event => {
+  event.preventDefault();
+  dropZone.classList.remove('is-dragging');
+  if (event.dataTransfer.files.length) importFiles(event.dataTransfer.files);
+});
+window.addEventListener('dragover', event => event.preventDefault());
+window.addEventListener('drop', event => event.preventDefault());
+
+updateHistoryButtons();
 updateSingleClipState();
+document.documentElement.dataset.appReady = 'true';
 
 window.addEventListener('beforeunload', () => {
-  revokeClip('a');
-  revokeClip('b');
-  resetMerged();
+  const urls = new Set(clips.map(clip => clip.url).filter(Boolean));
+  if (merged?.cutUrl) urls.add(merged.cutUrl);
+  if (merged?.mergedUrl) urls.add(merged.mergedUrl);
+  for (const url of urls) URL.revokeObjectURL(url);
 });
