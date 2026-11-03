@@ -1,4 +1,4 @@
-const VERSION = 'v3';
+const VERSION = 'v4';
 const CACHE_NAME = `m4shlab-${VERSION}`;
 const RUNTIME_CACHE = `m4shlab-runtime-${VERSION}`;
 const APP_SHELL = [

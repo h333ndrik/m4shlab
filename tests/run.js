@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { childBoxes, parseBoxes, parseMp4 } from '../parser/mp4.js';
 import { extractNals } from '../parser/nal.js';
 import { moshH264 } from '../mosh.js';
-import { CompatibilityError, appendCutH264, checkCompatibility, mergeMoshH264, mergeSequenceH264, parseAvcConfig } from '../merge.js';
+import { CompatibilityError, appendCutH264, checkCompatibility, mergeEffectH264, mergeMoshH264, mergeSequenceH264, parseAvcConfig } from '../merge.js';
 import { buildNormalizedMp4, chooseNormalizationTarget } from '../webcodecs-muxer.js';
 import { MAX_TARGET_LONG_SIDE, capNormalizationDimensions } from '../conversion-settings.js';
 import { parseSps } from '../parser/sps.js';
@@ -39,6 +39,9 @@ const multiGopFixtures = {
 const mergedPath = join(projectRoot, 'testmedia', 'synthetic-b-merged-test-output.mp4');
 const multiGopMergedPath = join(projectRoot, 'testmedia', 'synthetic-multigop-merged-test-output.mp4');
 const multiGopPoc0MergedPath = join(projectRoot, 'testmedia', 'synthetic-multigop-poc0-merged-test-output.mp4');
+const meltOutputPath = join(projectRoot, 'testmedia', 'synthetic-melt-test-output.mp4');
+const loopOutputPath = join(projectRoot, 'testmedia', 'synthetic-loop-test-output.mp4');
+const poc0MeltOutputPath = join(projectRoot, 'testmedia', 'synthetic-poc0-melt-test-output.mp4');
 const sequenceMoshPath = join(projectRoot, 'testmedia', 'synthetic-sequence-mosh-test-output.mp4');
 const sequenceMixedPath = join(projectRoot, 'testmedia', 'synthetic-sequence-mixed-test-output.mp4');
 const normalizedMuxPath = join(projectRoot, 'testmedia', 'synthetic-webcodecs-mux-output.mp4');
@@ -57,6 +60,73 @@ function command(program, args, label) {
 
 function pass(message) {
   console.log(`PASS ${message}`);
+}
+
+function unescapeRbspPayload(nalData) {
+  const input = nalData.subarray(1);
+  const output = new Uint8Array(input.byteLength);
+  let length = 0;
+  let zeros = 0;
+  for (const value of input) {
+    if (zeros >= 2 && value === 3) {
+      zeros = 0;
+      continue;
+    }
+    output[length++] = value;
+    zeros = value === 0 ? zeros + 1 : 0;
+  }
+  return output.subarray(0, length);
+}
+
+function readBitAt(bytes, bit) {
+  return (bytes[bit >> 3] >> (7 - (bit & 7))) & 1;
+}
+
+function skipUnsignedExpGolomb(bytes, state) {
+  let zeros = 0;
+  while (readBitAt(bytes, state.bit) === 0) {
+    zeros += 1;
+    state.bit += 1;
+    if (zeros > 31) throw new Error('Invalid Exp-Golomb value in test slice header');
+  }
+  state.bit += 1 + zeros;
+}
+
+function slicePatchBitRange(nalData, sps) {
+  const rbsp = unescapeRbspPayload(nalData);
+  const state = {bit: 0};
+  skipUnsignedExpGolomb(rbsp, state);
+  skipUnsignedExpGolomb(rbsp, state);
+  skipUnsignedExpGolomb(rbsp, state);
+  const start = state.bit;
+  const end = start + sps.log2MaxFrameNum + (sps.picOrderCntType === 0 ? sps.log2MaxPicOrderCntLsb : 0);
+  return {rbsp, start, end};
+}
+
+function assertEffectNalPayloads(outputNals, aNalCount, sourceNals, scheduledSources, sps, label) {
+  const expected = scheduledSources.flatMap(sampleIndex => sourceNals
+    .filter(nal => nal.sampleIndex === sampleIndex)
+    .filter(nal => nal.type === 5 || ![6, 7, 8].includes(nal.type)));
+  const actual = outputNals.slice(aNalCount);
+  assert.equal(actual.length, expected.length, `${label} NAL count`);
+  assert.deepEqual(actual.map(nal => nal.type), expected.map(nal => nal.type), `${label} NAL order`);
+  let headerBitsChanged = 0;
+  for (let i = 0; i < expected.length; i += 1) {
+    if (expected[i].type !== 1) {
+      assert.deepEqual(actual[i].data, expected[i].data, `${label} non-slice NAL ${i} changed`);
+      continue;
+    }
+    const source = slicePatchBitRange(expected[i].data, sps);
+    const patched = slicePatchBitRange(actual[i].data, sps);
+    assert.equal(patched.rbsp.byteLength, source.rbsp.byteLength, `${label} slice ${i} RBSP length changed`);
+    for (let bit = 0; bit < source.rbsp.byteLength * 8; bit += 1) {
+      const differs = readBitAt(source.rbsp, bit) !== readBitAt(patched.rbsp, bit);
+      if (!differs) continue;
+      assert.ok(bit >= source.start && bit < source.end, `${label} slice ${i} changed payload bit ${bit} outside frame_num/POC fields`);
+      headerBitsChanged += 1;
+    }
+  }
+  assert.ok(headerBitsChanged > 0, `${label} did not renumber any slice headers`);
 }
 
 const requiredFixtures = [fixturePath, multiSliceIdrPath, ...Object.values(tierOneFixtures), ...Object.values(phaseBFixtures), ...Object.values(multiGopFixtures)];
@@ -524,6 +594,138 @@ const poc0MergedIdrs = [...new Set(extractNals(poc0Merge.output, poc0MergedParse
   .filter(nal => nal.type === 5).map(nal => nal.sampleIndex))];
 assert.deepEqual(poc0MergedIdrs, [0, 49, 74]);
 pass(`POC0 multi-GOP merged export decodes all ${poc0DecodedFrames} frames and retains later B IDR anchors`);
+
+const multiGopIdrSet = new Set(multiGopBIdrSamples);
+const expectedMeltSchedule = [];
+for (let index = 1; index < multiGopBParsed.videoTrack.samples.length; index += 1) {
+  const copies = multiGopIdrSet.has(index) ? 1 : 4;
+  for (let copy = 0; copy < copies; copy += 1) expectedMeltSchedule.push(index);
+}
+const meltMerge = await mergeEffectH264(multiGopAInput, multiGopBInput, multiGopAParsed, multiGopBParsed, {
+  method: 'melt',
+  repeat: 4,
+});
+assert.equal(meltMerge.report.method, 'melt');
+assert.equal(meltMerge.report.effect.repeat, 4);
+assert.deepEqual(meltMerge.report.effect.scheduledSourceSamples, expectedMeltSchedule);
+assert.equal(meltMerge.report.bScheduledSamples, 290);
+assert.equal(meltMerge.report.mergedSamples, 315);
+assert.equal(meltMerge.report.bPictureSamples, 290);
+assert.equal(meltMerge.report.frameAlignment.patchedSamples, 288);
+assert.equal(meltMerge.report.frameAlignment.patchedNals, 288);
+assert.equal(meltMerge.report.bIdrCountRemaining, 2);
+const meltParsed = parseMp4(meltMerge.output);
+const meltNals = extractNals(meltMerge.output, meltParsed.videoTrack);
+const meltSps = parseSps(parseAvcConfig(multiGopBInput, multiGopBParsed.videoTrack.avcC).sps[0]);
+assertEffectNalPayloads(
+  meltNals,
+  extractNals(multiGopAInput, multiGopAParsed.videoTrack).length,
+  multiGopBNals,
+  meltMerge.report.effect.scheduledSourceSamples,
+  meltSps,
+  'melt',
+);
+const meltStsz = meltParsed.videoTrack.sampleSizes.sizes.reduce((total, value) => total + value, 0);
+const meltMdat = meltParsed.mdatRanges.reduce((total, box) => total + box.payloadEnd - box.payloadStart, 0);
+assert.equal(meltStsz, meltMdat);
+assert.ok(meltParsed.videoTrack.samples.every((sample, index, samples) => index === 0 || sample.offset > samples[index - 1].offset));
+assert.equal(meltParsed.videoTrack.stts.durations.reduce((total, value) => total + value, 0), meltParsed.videoTrack.mdhd.duration);
+writeFileSync(meltOutputPath, meltMerge.output);
+const meltProbe = command('ffprobe', [
+  '-v', 'error', '-select_streams', 'v:0', '-count_frames',
+  '-show_entries', 'stream=codec_name,nb_frames,nb_read_frames,has_b_frames',
+  '-of', 'default=noprint_wrappers=1', meltOutputPath,
+], 'Melt decode probe');
+const meltDecodedFrames = Number(/nb_read_frames=(\d+)/.exec(meltProbe.stdout)?.[1] ?? 0);
+assert.equal(meltDecodedFrames, meltMerge.report.mergedSamples);
+command('ffmpeg', ['-v', 'error', '-i', meltOutputPath, '-f', 'null', '-'], 'Melt strict decode');
+pass(`Melt repeat=4 emits ${meltMerge.report.mergedSamples} samples, changes only slice header frame_num bits, and decodes ${meltDecodedFrames}/${meltMerge.report.mergedSamples} frames`);
+
+const expectedLoopSchedule = [1, 2, 3, 4, 1, 2, 3, 4, ...Array.from({length: 70}, (_, index) => index + 5)];
+const loopMerge = await mergeEffectH264(multiGopAInput, multiGopBInput, multiGopAParsed, multiGopBParsed, {
+  method: 'loop',
+  loopFrames: 4,
+});
+assert.equal(loopMerge.report.method, 'loop');
+assert.equal(loopMerge.report.effect.loopFrames, 4);
+assert.deepEqual(loopMerge.report.effect.loopWindow, [1, 2, 3, 4]);
+assert.deepEqual(loopMerge.report.effect.scheduledSourceSamples, expectedLoopSchedule);
+assert.equal(loopMerge.report.bScheduledSamples, 78);
+assert.equal(loopMerge.report.mergedSamples, 103);
+assert.equal(loopMerge.report.frameAlignment.patchedSamples, 76);
+assert.equal(loopMerge.report.bIdrCountRemaining, 2);
+const loopParsed = parseMp4(loopMerge.output);
+const loopNals = extractNals(loopMerge.output, loopParsed.videoTrack);
+assertEffectNalPayloads(
+  loopNals,
+  extractNals(multiGopAInput, multiGopAParsed.videoTrack).length,
+  multiGopBNals,
+  loopMerge.report.effect.scheduledSourceSamples,
+  meltSps,
+  'loop',
+);
+writeFileSync(loopOutputPath, loopMerge.output);
+const loopProbe = command('ffprobe', [
+  '-v', 'error', '-select_streams', 'v:0', '-count_frames',
+  '-show_entries', 'stream=codec_name,nb_frames,nb_read_frames,has_b_frames',
+  '-of', 'default=noprint_wrappers=1', loopOutputPath,
+], 'Loop decode probe');
+const loopDecodedFrames = Number(/nb_read_frames=(\d+)/.exec(loopProbe.stdout)?.[1] ?? 0);
+assert.equal(loopDecodedFrames, loopMerge.report.mergedSamples);
+command('ffmpeg', ['-v', 'error', '-i', loopOutputPath, '-f', 'null', '-'], 'Loop strict decode');
+pass(`Loop loop_frames=4 emits the repeated window then the chronological tail, renumbers all ${loopMerge.report.frameAlignment.patchedSamples} non-IDR samples, and decodes ${loopDecodedFrames}/${loopMerge.report.mergedSamples} frames`);
+
+const poc0Melt = await mergeEffectH264(poc0AInput, poc0BInput, poc0AParsed, poc0BParsed, {
+  method: 'melt',
+  repeat: 2,
+});
+assert.equal(poc0Melt.report.frameAlignment.picOrderCntType, 0);
+assert.equal(poc0Melt.report.frameAlignment.firstEmittedPicOrderCntLsb, 9);
+assert.ok(poc0Melt.report.frameAlignment.patchedNals > 0);
+writeFileSync(poc0MeltOutputPath, poc0Melt.output);
+const poc0MeltProbe = command('ffprobe', [
+  '-v', 'error', '-select_streams', 'v:0', '-count_frames',
+  '-show_entries', 'stream=nb_frames,nb_read_frames,has_b_frames',
+  '-of', 'default=noprint_wrappers=1', poc0MeltOutputPath,
+], 'POC0 Melt decode probe');
+const poc0MeltDecodedFrames = Number(/nb_read_frames=(\d+)/.exec(poc0MeltProbe.stdout)?.[1] ?? 0);
+assert.equal(poc0MeltDecodedFrames, poc0Melt.report.mergedSamples);
+assert.match(poc0MeltProbe.stdout, /has_b_frames=0/);
+pass(`POC0 Melt repeat=2 patches frame_num and monotonic POC-LSB values and decodes ${poc0MeltDecodedFrames}/${poc0Melt.report.mergedSamples} frames`);
+
+const effectSequence = await mergeSequenceH264(
+  [
+    {bytes: multiGopAInput, parsed: multiGopAParsed},
+    {bytes: multiGopBInput, parsed: multiGopBParsed},
+    {bytes: multiGopAInput, parsed: multiGopAParsed},
+  ],
+  [
+    {method: 'melt', repeat: 2},
+    {method: 'loop', loopFrames: 4},
+  ],
+);
+assert.deepEqual(effectSequence.report.methods, ['melt', 'loop']);
+assert.equal(effectSequence.report.effectBoundaries, 2);
+assert.equal(effectSequence.report.mergedSamples, 199);
+assert.equal(effectSequence.report.expectedDecodedFrames, 199);
+writeFileSync(join(projectRoot, 'testmedia', 'synthetic-effect-sequence-test-output.mp4'), effectSequence.output);
+const effectSequenceProbe = command('ffprobe', [
+  '-v', 'error', '-select_streams', 'v:0', '-count_frames',
+  '-show_entries', 'stream=nb_frames,nb_read_frames',
+  '-of', 'default=noprint_wrappers=1',
+  join(projectRoot, 'testmedia', 'synthetic-effect-sequence-test-output.mp4'),
+], 'effect sequence decode probe');
+const effectSequenceFrames = Number(/nb_read_frames=(\d+)/.exec(effectSequenceProbe.stdout)?.[1] ?? 0);
+assert.equal(effectSequenceFrames, 199);
+pass('three-clip Melt then Loop chain emits and decodes 199/199 samples with the running-chain frame counters');
+
+await assert.rejects(
+  () => mergeEffectH264(phaseAInput, phaseBInput, phaseAParsed, phaseBParsed, {method: 'melt', repeat: 4}),
+  error => /without B-frames/.test(error.message)
+    && /Normalize the sequence first/.test(error.message)
+    && /Cut\/Classic Mosh/.test(error.message),
+);
+pass('Melt/Loop fail loudly on native B-frame clips with an actionable normalization message');
 
 
 function bytesEqual(left, right) {

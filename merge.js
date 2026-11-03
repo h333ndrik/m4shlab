@@ -8,6 +8,11 @@ const SEI_NAL_TYPE = 6;
 const SPS_NAL_TYPE = 7;
 const PPS_NAL_TYPE = 8;
 const REMOVED_B_NAL_TYPES = new Set([IDR_NAL_TYPE, SEI_NAL_TYPE, SPS_NAL_TYPE, PPS_NAL_TYPE]);
+const TRANSITION_METHODS = new Set(['cut', 'classic-mosh', 'melt', 'loop']);
+const MELT_REPEAT_MIN = 2;
+const MELT_REPEAT_MAX = 12;
+const LOOP_FRAMES_MIN = 2;
+const LOOP_FRAMES_MAX = 48;
 
 export class CompatibilityError extends Error {
   constructor(report) {
@@ -607,6 +612,300 @@ function inspectPictureReordering(inputB, parsedB) {
   };
 }
 
+function integerOption(value, fallback, min, max, label) {
+  const resolved = value === undefined || value === null ? fallback : Number(value);
+  if (!Number.isInteger(resolved) || resolved < min || resolved > max) {
+    throw new Mp4Error(`${label} must be an integer from ${min} to ${max}.`);
+  }
+  return resolved;
+}
+
+function effectParameters(method, options = {}) {
+  if (method === 'melt') {
+    return {
+      method,
+      repeat: integerOption(options.repeat, 4, MELT_REPEAT_MIN, MELT_REPEAT_MAX, 'Melt repeat'),
+      loopFrames: null,
+    };
+  }
+  if (method === 'loop') {
+    return {
+      method,
+      repeat: null,
+      loopFrames: integerOption(options.loopFrames ?? options.loop_frames, 4, LOOP_FRAMES_MIN, LOOP_FRAMES_MAX, 'Loop frames'),
+    };
+  }
+  throw new Mp4Error(`Melt/Loop requires method "melt" or "loop", received "${method}".`);
+}
+
+export function inspectEffectEligibility(input, parsed = parseMp4(input)) {
+  try {
+    const track = parsed.videoTrack;
+    const config = parseAvcConfig(input, track.avcC);
+    const sps = config.sps.length ? parseSps(config.sps[0]) : null;
+    if (!sps) throw new Mp4Error('No SPS found in the AVC configuration');
+    const reordering = inspectPictureReordering(input, parsed);
+    return {
+      eligible: reordering.noReordering && (sps.picOrderCntType === 0 || sps.picOrderCntType === 2),
+      picOrderCntType: sps.picOrderCntType,
+      bSliceCount: reordering.bSliceCount,
+      compositionReordered: reordering.compositionReordered,
+      log2MaxFrameNum: sps.log2MaxFrameNum,
+      log2MaxPicOrderCntLsb: sps.log2MaxPicOrderCntLsb,
+    };
+  } catch (error) {
+    return {
+      eligible: false,
+      error: error instanceof Error ? error.message : String(error),
+      picOrderCntType: null,
+      bSliceCount: null,
+      compositionReordered: null,
+      log2MaxFrameNum: null,
+      log2MaxPicOrderCntLsb: null,
+    };
+  }
+}
+
+function effectEligibilityError(method, label, eligibility) {
+  const effects = method === 'melt' ? 'Melt' : 'Loop';
+  if (eligibility.error) return `${effects} could not inspect clip ${label}: ${eligibility.error}`;
+  if (eligibility.bSliceCount || eligibility.compositionReordered) {
+    const evidence = [
+      eligibility.bSliceCount ? `${eligibility.bSliceCount} B-slice NAL${eligibility.bSliceCount === 1 ? '' : 's'}` : null,
+      eligibility.compositionReordered ? 'non-zero composition offsets' : null,
+    ].filter(Boolean).join(' and ');
+    throw new Mp4Error(`${effects} requires clips without B-frames; clip ${label} contains ${evidence}. Normalize the sequence first, or choose Cut/Classic Mosh.`);
+  }
+  if (eligibility.picOrderCntType === 1) {
+    throw new Mp4Error(`${effects} does not support clip ${label} with pic_order_cnt_type 1. Normalize the sequence first, or choose Cut/Classic Mosh.`);
+  }
+  throw new Mp4Error(`${effects} requires a non-reordered H.264 clip ${label}. Normalize the sequence first, or choose Cut/Classic Mosh.`);
+}
+
+function assertEffectEligible(inputA, parsedA, inputB, parsedB, method) {
+  const a = inspectEffectEligibility(inputA, parsedA);
+  const b = inspectEffectEligibility(inputB, parsedB);
+  if (!a.eligible) effectEligibilityError(method, 'A', a);
+  if (!b.eligible) effectEligibilityError(method, 'B', b);
+  return {a, b};
+}
+
+function prepareEffectB(inputB, parsedB, method, options = {}) {
+  const effect = effectParameters(method, options);
+  const track = parsedB.videoTrack;
+  const nals = extractNals(inputB, track);
+  const bySample = new Map();
+  for (const nal of nals) {
+    const items = bySample.get(nal.sampleIndex) ?? [];
+    items.push(nal);
+    bySample.set(nal.sampleIndex, items);
+  }
+  const firstIdr = nals.find(nal => nal.type === IDR_NAL_TYPE);
+  if (!firstIdr) throw new Mp4Error('Clip B has no IDR NAL unit');
+  const sourceSamples = track.samples.map(sample => {
+    const sampleNals = bySample.get(sample.index) ?? [];
+    const retainedNals = sampleNals.filter(nal => {
+      if (nal.type === IDR_NAL_TYPE) return true;
+      return !REMOVED_B_NAL_TYPES.has(nal.type);
+    });
+    const idr = retainedNals.some(nal => nal.type === IDR_NAL_TYPE);
+    const picture = idr || retainedNals.some(nal => nal.type === 1);
+    return {
+      sample,
+      retainedNals,
+      idr,
+      picture,
+      data: retainedNals.length ? concatBytes(retainedNals.map(nal => inputB.subarray(nal.start, nal.end))) : null,
+      duration: track.stts.durations[sample.index],
+      compositionOffset: track.ctts?.offsets[sample.index] ?? 0,
+    };
+  });
+  const sourceByIndex = new Map(sourceSamples.map(source => [source.sample.index, source]));
+  const removedCounts = {idr: 0, sei: 0, sps: 0, pps: 0};
+  for (const nal of bySample.get(firstIdr.sampleIndex) ?? []) {
+    if (nal.type === IDR_NAL_TYPE) removedCounts.idr += 1;
+    if (nal.type === SEI_NAL_TYPE) removedCounts.sei += 1;
+    if (nal.type === SPS_NAL_TYPE) removedCounts.sps += 1;
+    if (nal.type === PPS_NAL_TYPE) removedCounts.pps += 1;
+  }
+
+  let loopWindow = [];
+  if (effect.method === 'loop') {
+    for (const source of sourceSamples) {
+      if (source.sample.index === firstIdr.sampleIndex) continue;
+      if (source.idr) break;
+      if (!source.picture) continue;
+      loopWindow.push(source.sample.index);
+      if (loopWindow.length === effect.loopFrames) break;
+    }
+    if (loopWindow.length < effect.loopFrames) {
+      throw new Mp4Error(`Loop needs ${effect.loopFrames} consecutive non-IDR frames before the next IDR; clip B has ${loopWindow.length}. Choose a shorter loop or normalize the clip.`);
+    }
+  }
+  const loopWindowSet = new Set(loopWindow);
+  const loopWindowLast = loopWindow[loopWindow.length - 1] ?? null;
+  const scheduled = [];
+  const repeatedSourceSamples = new Set();
+  let skippedPrefix = 0;
+  let skippedEmpty = 0;
+  let loopRepeated = false;
+
+  const schedule = (source, copyIndex) => {
+    if (!source.data) return false;
+    scheduled.push({
+      sourceSampleIndex: source.sample.index,
+      copyIndex,
+      data: source.data,
+      duration: source.duration,
+      compositionOffset: source.compositionOffset,
+      retainedNals: source.retainedNals,
+      isIdr: source.idr,
+    });
+    return true;
+  };
+
+  for (const source of sourceSamples) {
+    if (source.sample.index === firstIdr.sampleIndex) {
+      skippedPrefix += 1;
+      continue;
+    }
+    if (!source.data) {
+      skippedEmpty += 1;
+      continue;
+    }
+    if (source.idr) {
+      schedule(source, 0);
+      continue;
+    }
+    if (source.picture) {
+      const copies = effect.method === 'melt' ? effect.repeat : 1;
+      for (let copy = 0; copy < copies; copy += 1) {
+        schedule(source, copy);
+        if (effect.method === 'melt' && copy > 0) repeatedSourceSamples.add(source.sample.index);
+      }
+      if (effect.method === 'loop' && !loopRepeated && source.sample.index === loopWindowLast) {
+        for (const windowIndex of loopWindow) {
+          schedule(sourceByIndex.get(windowIndex), 1);
+          repeatedSourceSamples.add(windowIndex);
+        }
+        loopRepeated = true;
+      }
+      continue;
+    }
+    schedule(source, 0);
+  }
+
+  const pictureSamples = scheduled.filter(sample => sample.retainedNals.some(nal => nal.type === 1 || nal.type === IDR_NAL_TYPE)).length;
+  return {
+    method: effect.method,
+    effect,
+    firstIdrSample: firstIdr.sampleIndex,
+    idrSamples: [...new Set(nals.filter(nal => nal.type === IDR_NAL_TYPE).map(nal => nal.sampleIndex))].sort((a, b) => a - b),
+    skippedPrefix,
+    skippedEmpty,
+    removedCounts,
+    removedIdrSamples: [firstIdr.sampleIndex],
+    laterIdrCount: scheduled.reduce((total, sample) => total + sample.retainedNals.filter(nal => nal.type === IDR_NAL_TYPE).length, 0),
+    pictureSamples,
+    loopWindow,
+    repeatedSourceSamples: [...repeatedSourceSamples].sort((a, b) => a - b),
+    samples: scheduled,
+  };
+}
+
+function readLastPictureState(input, parsed, sps) {
+  const slices = extractNals(input, parsed.videoTrack).filter(nal => nal.type === 1 || nal.type === IDR_NAL_TYPE);
+  const last = slices[slices.length - 1];
+  if (!last) throw new Mp4Error('Clip A has no slice for frame-number alignment');
+  const {bits, frameNumberBit} = sliceHeaderState(last.data);
+  if (frameNumberBit + sps.log2MaxFrameNum > bits.bytes.byteLength * 8) {
+    throw new Mp4Error('Clip A slice is too short to read frame_num');
+  }
+  const frameNumber = bits.readBits(sps.log2MaxFrameNum);
+  let picOrderCntLsb = null;
+  if (sps.picOrderCntType === 0) {
+    if ((last.data[0] & 0x1f) === IDR_NAL_TYPE) bits.readUnsignedExpGolomb();
+    picOrderCntLsb = bits.readBits(sps.log2MaxPicOrderCntLsb);
+  }
+  return {frameNumber, picOrderCntLsb};
+}
+
+function renumberEffectSamples(inputA, parsedA, inputB, parsedB, preparedB) {
+  const bConfig = parseAvcConfig(inputB, parsedB.videoTrack.avcC);
+  const bSps = bConfig.sps.length ? parseSps(bConfig.sps[0]) : null;
+  const aConfig = parseAvcConfig(inputA, parsedA.videoTrack.avcC);
+  const aSps = aConfig.sps.length ? parseSps(aConfig.sps[0]) : null;
+  if (!bSps || !aSps) throw new Mp4Error('Melt/Loop require SPS data for both clips');
+  if (aSps.log2MaxFrameNum !== bSps.log2MaxFrameNum) {
+    throw new Mp4Error(`Melt/Loop requires matching log2_max_frame_num (${aSps.log2MaxFrameNum} ≠ ${bSps.log2MaxFrameNum}).`);
+  }
+  if (aSps.picOrderCntType !== bSps.picOrderCntType) {
+    throw new Mp4Error(`Melt/Loop cannot combine pic_order_cnt_type ${aSps.picOrderCntType} with ${bSps.picOrderCntType}.`);
+  }
+  if (bSps.picOrderCntType === 0 && aSps.log2MaxPicOrderCntLsb !== bSps.log2MaxPicOrderCntLsb) {
+    throw new Mp4Error(`Melt/Loop requires matching log2_max_pic_order_cnt_lsb (${aSps.log2MaxPicOrderCntLsb} ≠ ${bSps.log2MaxPicOrderCntLsb}).`);
+  }
+
+  const lastA = readLastPictureState(inputA, parsedA, bSps);
+  const frameModulo = 2 ** bSps.log2MaxFrameNum;
+  const pocModulo = bSps.picOrderCntType === 0 ? 2 ** bSps.log2MaxPicOrderCntLsb : null;
+  let frameNumber = (lastA.frameNumber + 1) % frameModulo;
+  let picOrderCntLsb = bSps.picOrderCntType === 0 ? (lastA.picOrderCntLsb + 1) % pocModulo : null;
+  const firstFrameNumber = frameNumber;
+  const firstPicOrderCntLsb = picOrderCntLsb;
+  let patchedSamples = 0;
+  let patchedNals = 0;
+  let gopResets = 0;
+
+  for (const sample of preparedB.samples) {
+    if (sample.isIdr) {
+      gopResets += 1;
+      frameNumber = 1;
+      if (bSps.picOrderCntType === 0) {
+        const previousPicOrderCntLsb = (picOrderCntLsb + pocModulo - 1) % pocModulo;
+        picOrderCntLsb = previousPicOrderCntLsb === 0 ? 2 : 1;
+      }
+      continue;
+    }
+    if (!sample.retainedNals.some(nal => nal.type === 1)) continue;
+    const patched = patchSampleFrameNumber(
+      sample.data,
+      parsedB.videoTrack.lengthSize,
+      bSps.log2MaxFrameNum,
+      frameNumber,
+      bSps.picOrderCntType === 0 ? {
+        value: picOrderCntLsb,
+        log2MaxPicOrderCntLsb: bSps.log2MaxPicOrderCntLsb,
+      } : null,
+    );
+    if (patched.patchedNals === 0) throw new Mp4Error('Melt/Loop scheduled a sample without a patchable non-IDR slice');
+    sample.data = patched.data;
+    patchedSamples += 1;
+    patchedNals += patched.patchedNals;
+    frameNumber = (frameNumber + 1) % frameModulo;
+    if (bSps.picOrderCntType === 0) picOrderCntLsb = (picOrderCntLsb + 1) % pocModulo;
+  }
+
+  if (patchedSamples === 0) throw new Mp4Error('Melt/Loop scheduled no non-IDR samples to renumber');
+  return {
+    applied: true,
+    method: preparedB.method,
+    aLastFrameNum: lastA.frameNumber,
+    firstEmittedFrameNum: firstFrameNumber,
+    firstEmittedPicOrderCntLsb: firstPicOrderCntLsb,
+    patchedSamples,
+    patchedNals,
+    gopResets,
+    log2MaxFrameNum: bSps.log2MaxFrameNum,
+    picOrderCntType: bSps.picOrderCntType,
+    pictureOrderCountPatch: bSps.picOrderCntType === 0 ? {
+      aLastPicOrderCntLsb: lastA.picOrderCntLsb,
+      log2MaxPicOrderCntLsb: bSps.log2MaxPicOrderCntLsb,
+    } : null,
+    emulationPrevention: 'RBSP bytes are unescaped, patched, then re-escaped with fresh emulation-prevention bytes',
+  };
+}
+
 function readSliceFrameNumber(nalData, log2MaxFrameNum) {
   const {rbsp, bits, frameNumberBit} = sliceHeaderState(nalData);
   if (frameNumberBit + log2MaxFrameNum > rbsp.byteLength * 8) throw new Mp4Error('H.264 slice is too short to read frame_num');
@@ -842,6 +1141,82 @@ export async function mergeMoshH264(inputA, inputB, parsedA = parseMp4(inputA), 
   };
 }
 
+export async function mergeEffectH264(inputA, inputB, parsedA = parseMp4(inputA), parsedB = parseMp4(inputB), options = {}) {
+  if (!(inputA instanceof Uint8Array) || !(inputB instanceof Uint8Array)) throw new TypeError('mergeEffectH264 expects two Uint8Array clips');
+  const method = options.method ?? options.effect;
+  if (method !== 'melt' && method !== 'loop') throw new TypeError('mergeEffectH264 expects method "melt" or "loop"');
+  const compatibility = await checkCompatibility(inputA, inputB, parsedA, parsedB);
+  if (!compatibility.compatible) throw new CompatibilityError(compatibility);
+  if (!parsedA.mvhd || !parsedA.videoTrack.tkhd || !parsedA.videoTrack.mdhd) throw new Mp4Error('Clip A is missing required duration metadata');
+  if (parsedA.videoTrack.stts.durations.length !== parsedA.videoTrack.samples.length) throw new Mp4Error('A stts sample count does not match its sample table');
+  if (parsedB.videoTrack.stts.durations.length !== parsedB.videoTrack.samples.length) throw new Mp4Error('B stts sample count does not match its sample table');
+
+  const eligibility = assertEffectEligible(inputA, parsedA, inputB, parsedB, method);
+  const preparedB = prepareEffectB(inputB, parsedB, method, options);
+  const frameAlignment = renumberEffectSamples(inputA, parsedA, inputB, parsedB, preparedB);
+  const aSamples = parsedA.videoTrack.samples.map(sample => inputA.subarray(sample.offset, sample.offset + sample.size));
+  const bSamples = preparedB.samples.map(sample => sample.data);
+  const sampleParts = [...aSamples, ...bSamples];
+  const durations = [
+    ...parsedA.videoTrack.stts.durations,
+    ...preparedB.samples.map(sample => sample.duration),
+  ];
+  const compositionOffsets = [
+    ...(parsedA.videoTrack.ctts?.offsets ?? parsedA.videoTrack.samples.map(() => 0)),
+    ...preparedB.samples.map(sample => sample.compositionOffset),
+  ];
+  const built = buildMergedTrack(inputA, parsedA, sampleParts, durations, compositionOffsets);
+  const {output, outputMp4, outputNals, chunkOffset, mergedDuration} = built;
+  const firstSampleNals = outputNals.filter(nal => nal.sampleIndex === 0);
+  const leadingIdrNalCount = firstSampleNals.filter(nal => nal.type === IDR_NAL_TYPE).length;
+  const leadingIdrSampleCount = leadingIdrNalCount > 0 ? 1 : 0;
+
+  return {
+    output,
+    cut: new Uint8Array(inputA),
+    compatibility,
+    report: {
+      method,
+      effect: {
+        ...preparedB.effect,
+        loopWindow: preparedB.loopWindow,
+        repeatedSourceSamples: preparedB.repeatedSourceSamples,
+        scheduledSourceSamples: preparedB.samples.map(sample => sample.sourceSampleIndex),
+      },
+      eligibility,
+      sourceABytes: inputA.byteLength,
+      sourceBBytes: inputB.byteLength,
+      outputBytes: output.byteLength,
+      aSamples: aSamples.length,
+      bSamples: parsedB.videoTrack.samples.length,
+      bSamplesKept: bSamples.length,
+      bScheduledSamples: bSamples.length,
+      bSkippedPrefixSamples: preparedB.skippedPrefix,
+      bSkippedEmptySamples: preparedB.skippedEmpty,
+      bFirstIdrSample: preparedB.firstIdrSample,
+      bRemovedNals: preparedB.removedCounts,
+      bIdrSamples: preparedB.idrSamples,
+      bRemovedIdrSamples: preparedB.removedIdrSamples,
+      bPictureSamples: preparedB.pictureSamples,
+      bIdrCountRemaining: preparedB.laterIdrCount,
+      mergedSamples: sampleParts.length,
+      mergedDurationUnits: mergedDuration,
+      mergedDurationSeconds: mergedDuration / parsedA.videoTrack.mdhd.timescale,
+      timescale: parsedA.videoTrack.mdhd.timescale,
+      chunkOffset,
+      mdatPayloadBytes: sampleParts.reduce((total, sample) => total + sample.byteLength, 0),
+      sampleSizeSum: sampleParts.reduce((total, sample) => total + sample.byteLength, 0),
+      idrCount: outputNals.filter(nal => nal.type === IDR_NAL_TYPE).length,
+      frameAlignment,
+      leadingIdrNalCount,
+      leadingIdrSampleCount,
+      startsWithIdrFrame: leadingIdrSampleCount === 1,
+      startsWithSingleIdr: leadingIdrSampleCount === 1,
+      audio: 'omitted',
+    },
+  };
+}
+
 function buildMergedTrack(inputA, parsedA, sampleParts, durations, compositionOffsets) {
   if (sampleParts.length === 0) throw new Mp4Error('Merged video has no samples');
   const sizes = sampleParts.map(sample => sample.byteLength);
@@ -924,15 +1299,17 @@ export async function mergeSequenceH264(clips, methods = []) {
   if (!Array.isArray(methods) || methods.length !== clips.length - 1) throw new TypeError('mergeSequenceH264 expects one method per boundary');
   const transitions = methods.map(entry => {
     const value = typeof entry === 'string' ? {method: entry} : entry;
-    if (!value || (value.method !== 'cut' && value.method !== 'classic-mosh')) return null;
+    if (!value || !TRANSITION_METHODS.has(value.method)) return null;
     return {
       method: value.method,
       durationFrames: value.durationFrames,
       durationSeconds: value.durationSeconds ?? value.duration,
       ending: value.ending ?? 'restore',
+      repeat: value.repeat,
+      loopFrames: value.loopFrames ?? value.loop_frames,
     };
   });
-  if (transitions.some(transition => transition === null)) throw new TypeError('Transition methods must be cut or classic-mosh');
+  if (transitions.some(transition => transition === null)) throw new TypeError('Transition methods must be cut, classic-mosh, melt, or loop');
   for (const clip of clips) {
     if (!(clip?.bytes instanceof Uint8Array)) throw new TypeError('mergeSequenceH264 clips require bytes');
   }
@@ -944,6 +1321,7 @@ export async function mergeSequenceH264(clips, methods = []) {
   const boundaries = [];
   let sourceSamples = currentParsed.videoTrack.samples.length;
   let moshBoundaries = 0;
+  let effectBoundaries = 0;
   let sourceBytes = first.bytes.byteLength;
 
   for (let index = 0; index < transitions.length; index += 1) {
@@ -951,17 +1329,29 @@ export async function mergeSequenceH264(clips, methods = []) {
     const method = transition.method;
     const incoming = clips[index + 1];
     const incomingParsed = incoming.parsed ?? parseMp4(incoming.bytes);
-    const step = method === 'cut'
-      ? await appendCutH264(currentBytes, incoming.bytes, currentParsed, incomingParsed)
-      : await mergeMoshH264(currentBytes, incoming.bytes, currentParsed, incomingParsed, {
+    let step;
+    if (method === 'cut') {
+      step = await appendCutH264(currentBytes, incoming.bytes, currentParsed, incomingParsed);
+    } else if (method === 'melt' || method === 'loop') {
+      step = await mergeEffectH264(currentBytes, incoming.bytes, currentParsed, incomingParsed, {
+        method,
+        repeat: transition.repeat,
+        loopFrames: transition.loopFrames,
+      });
+    } else {
+      step = await mergeMoshH264(currentBytes, incoming.bytes, currentParsed, incomingParsed, {
         durationFrames: transition.durationFrames,
         durationSeconds: transition.durationSeconds,
         ending: transition.ending,
       });
+    }
     sourceSamples += incomingParsed.videoTrack.samples.length;
     sourceBytes += incoming.bytes.byteLength;
     if (method === 'classic-mosh') {
       moshBoundaries += 1;
+      expectedDecodedFrames += step.report.bPictureSamples;
+    } else if (method === 'melt' || method === 'loop') {
+      effectBoundaries += 1;
       expectedDecodedFrames += step.report.bPictureSamples;
     } else {
       expectedDecodedFrames += countPictureSamples(incoming.bytes, incomingParsed.videoTrack);
@@ -990,7 +1380,8 @@ export async function mergeSequenceH264(clips, methods = []) {
       methods: transitions.map(transition => transition.method),
       sourceSamples,
       moshBoundaries,
-      cutBoundaries: transitions.length - moshBoundaries,
+      effectBoundaries,
+      cutBoundaries: transitions.filter(transition => transition.method === 'cut').length,
       mergedSamples,
       expectedDecodedFrames,
       sourceBytes,
@@ -1011,6 +1402,7 @@ export async function mergeSequenceH264(clips, methods = []) {
         duration_frames: boundary.report.duration_frames ?? null,
         ending: boundary.report.ending ?? null,
         clamped: boundary.report.clamped ?? false,
+        effect: boundary.report.effect ?? null,
         reInsertedIdrPositions: boundary.report.reInsertedIdrPositions ?? [],
         re_inserted_idr_positions: boundary.report.re_inserted_idr_positions ?? [],
         frameAlignment: boundary.report.frameAlignment,

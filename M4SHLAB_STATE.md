@@ -12,6 +12,7 @@ Updated: 2026-11-03
 - Automatic incompatible-sequence normalization, shared capped targets, parallel workers, and ffmpeg.wasm decode plus WebCodecs encode.
 - Multi-clip timeline: up to 12 clips, per-boundary Cut/Classic Mosh methods, reorder/remove with undo/redo, chained preview and export (`69aab54`).
 - Classic Mosh duration + ending: frame-quantized restore windows with byte-identical IDR reinsertion, full-length continue mode, per-boundary chained settings, report fields, and UI controls.
+- Block E: NAL-level Melt/Loop boundaries with per-sample `frame_num` and type-0 POC-LSB renumbering, bounded repeat/window controls, B-frame normalization gating, and chained reporting.
 - **State: PWA shell done.** m4shlab is installable, precaches its complete app shell, reloads offline, and runtime-caches ffmpeg.wasm after first conversion.
 - h4moshlab-style interface with a dark preview well, header import control, horizontal timeline, and no visible compatibility panel.
 
@@ -23,8 +24,9 @@ Updated: 2026-11-03
 - The sequence report records clip count, methods, source/merged samples, expected decoded frames, boundary alignment details, normalization paths, and audio omission.
 - `app.js` imports multiple files or dropped files, caps the timeline at 12, and normalizes every clip to one shared target when any boundary differs. Native H.264 uses WebCodecs first; tier-2 or WebCodecs-failing inputs use ffmpeg.wasm with the hybrid WebCodecs encoder when available.
 - Clip cards have active reorder/remove controls. Undo/redo snapshots cover import, reorder, removal, and transition changes without revoking media needed by an older snapshot.
-- Each dashed connector opens a dialog with exactly Cut and Classic Mosh. Classic Mosh exposes a frame-quantized duration slider and Restore clear image / Continue motion ending selector. Transition settings follow the incoming clip when cards are reordered.
+- Each dashed connector opens a dialog with Cut, Classic Mosh, Melt and Loop. Classic Mosh exposes duration/ending controls; Melt exposes repeat 2–12 and Loop exposes a 2–48-frame window. Transition settings follow the incoming clip when cards are reordered.
 - The preview shows clip 1 untouched or the full merged chain. Export downloads the complete sequence as video-only `m4shlab-merge.mp4`.
+- Melt schedules every incoming non-IDR sample multiple times; Loop schedules the first non-IDR window twice, then the chronological tail. Both retain later IDRs, reject reordered inputs, and renumber emitted slice headers through the existing RBSP/EBSP-safe patcher.
 - `classic-mosh.js` owns nominal fps detection, frame quantization, duration clamping, `ValueError`, and picture-sample counting. `mosh.js` and `merge.js` use the same settings so Phase A and boundary merges agree.
 - Restore removes IDRs only inside the selected window, inserts the original first-IDR sample before frame N+1, and preserves remaining samples plus later IDR anchors. Continue ignores the shorter window and remains byte-identical to the old full-length output. Default full duration plus restore preserves legacy exports.
 
@@ -33,14 +35,16 @@ Updated: 2026-11-03
 - `manifest.json` declares standalone display, light `#f5f5f3` theme/background, `./` start/scope, SVG icon, 192px any icon, and 512px maskable PNG icon.
 - `icon.svg` is the lowercase m4 wordmark on the light background; `icon-180.png`, `icon-192.png`, and `icon-512.png` are committed fallbacks.
 - `index.html` links the manifest, SVG favicon, 180px Apple touch icon, theme color, and Apple standalone metadata.
-- `sw.js` derives both `m4shlab-v3` and `m4shlab-runtime-v3` from one `VERSION` constant. Install precaches 20 app-shell files, including `classic-mosh.js`, skips `converter-worker.js` and ffmpeg.wasm, calls `skipWaiting()`, and activate deletes old versioned caches before `clients.claim()`.
+- `sw.js` derives both `m4shlab-v4` and `m4shlab-runtime-v4` from one `VERSION` constant. Install precaches 20 app-shell files, including `classic-mosh.js`, skips `converter-worker.js` and ffmpeg.wasm, calls `skipWaiting()`, and activate deletes old versioned caches before `clients.claim()`.
 - Static shell requests are cache-first. Navigation requests fall back to the cached `index.html`. Runtime cache-first applies only to `converter-worker.js` and the pinned jsDelivr ffmpeg core JS/WASM URLs.
 - `app.js` changes only by registering `./sw.js` after `load`; registration failures such as `file://` are swallowed so normal browser operation is unchanged.
 - Bump `VERSION` in `sw.js` whenever a shell or conversion-worker asset changes. Runtime cache separation keeps the 31 MB ffmpeg core out of shell precache; a version bump intentionally invalidates stale worker code too.
 
 ## Verification
 
-- `npm test`: 45 checks passed.
+- `npm test`: 50 checks passed.
+- Melt repeat=4: 315/315 decoded samples, with all non-header RBSP bits byte-identical. Loop window=4: 103/103 decoded samples. POC type 0 Melt: 171/171. Chained Melt→Loop: 199/199.
+- Native B-frame Melt/Loop rejects loudly; browser tests confirm native B-frame sources auto-normalize with WebCodecs before the effect runs.
 - Multi-slice Phase A: the second IDR sample is the boundary; both initial access-unit IDR slices remain byte-identical, all four later IDR slices are removed, and 73/73 retained frames decode.
 - Phase A: 111,706 B → 100,238 B, 73 decoded frames.
 - Phase B: 37,029 B + 36,812 B → 67,893 B, 49 decoded frames.
@@ -73,7 +77,7 @@ Updated: 2026-11-03
 
 - manifest/installability: PASS, including `beforeinstallprompt observed=true`;
 - service worker active and controlling, 20 shell assets precached off a fresh profile;
-- activation removed `m4shlab-v2` and re-registered the v3 shell;
+- activation removed `m4shlab-v3` and re-registered the v4 shell;
 - runtime cache: `converter-worker.js`, `ffmpeg-core.js`, `ffmpeg-core.wasm`;
 - fully offline HEVC conversion, merge, preview, and export: 59/59 decoded frames.
 
@@ -95,6 +99,7 @@ Updated: 2026-11-03
 - Multi-GOP alignment supports type 2 and non-reordered type 0/1 streams. Type 0/1 requires no B-slices and no non-zero composition offsets; reordered B fails explicitly.
 - The 100 MB limit is a soft limit; available device memory can still be exceeded.
 - Classic Mosh duration is bounded by frames after the incoming first GOP boundary. Restore is a hard reference reset, not a blend; the visible recovery jump is intentional. Continue ignores the shortened duration and keeps the full chain.
+- Melt and Loop are decode-order effects, not pixel blending. Device decoders may render repeated reference chains differently; both methods require B-frame-free, non-reordered inputs.
 - Timeline maximum is 12 clips. Merged exports remain video-only. Audio, crossfades, servers, uploads, and general-codec WebCodecs demuxing remain out of scope.
 - PWA first load requires network. The OS may evict Cache Storage, `file://` cannot register the worker, and a very large wasm conversion may still exceed iOS memory. iOS Home Screen/standalone behavior still needs a physical-device check.
 - The reported iPhone `IMG_4767.mov` / `final_0.mov` pair was not present locally; automated coverage uses a generated Safari-shaped POC type 0 fixture, so a physical-device retest is still required.

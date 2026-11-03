@@ -14,6 +14,9 @@ const fixtures = {
   b: join(projectRoot, 'testmedia', 'synthetic-b-mismatch.mp4'),
   largeA: join(projectRoot, 'testmedia', 'synthetic-native-large-a.mp4'),
   largeB: join(projectRoot, 'testmedia', 'synthetic-native-large-b.mp4'),
+  effectA: join(projectRoot, 'testmedia', 'synthetic-multigop-a.mp4'),
+  effectB: join(projectRoot, 'testmedia', 'synthetic-multigop-b.mp4'),
+  bFrameB: join(projectRoot, 'testmedia', 'synthetic-b-b.mp4'),
   poc0A: join(projectRoot, 'testmedia', 'synthetic-multigop-poc0-a.mp4'),
   poc0B: join(projectRoot, 'testmedia', 'synthetic-multigop-poc0-b.mp4'),
 };
@@ -439,6 +442,7 @@ try {
       open: document.querySelector('#transition-dialog').open,
       methods: [...document.querySelectorAll('#transition-dialog input[name="transition-method"]')].map(input => input.value),
       classicHidden: document.querySelector('#classic-mosh-options').hidden,
+      effectHidden: document.querySelector('#nal-effect-options').hidden,
       endingOptions: [...document.querySelectorAll('#transition-ending option')].map(option => option.textContent),
       ending: document.querySelector('#transition-ending').value,
       durationMax: Number(duration.max),
@@ -447,8 +451,9 @@ try {
     };
   })()`);
   assert.equal(dialogMethods.open, true);
-  assert.deepEqual(dialogMethods.methods, ['cut', 'classic-mosh']);
+  assert.deepEqual(dialogMethods.methods, ['cut', 'classic-mosh', 'melt', 'loop']);
   assert.equal(dialogMethods.classicHidden, false);
+  assert.equal(dialogMethods.effectHidden, true);
   assert.deepEqual(dialogMethods.endingOptions, ['Restore clear image', 'Continue motion']);
   assert.equal(dialogMethods.ending, 'restore');
   assert.ok(dialogMethods.durationMax >= 1);
@@ -461,6 +466,28 @@ try {
     const ending = document.querySelector('#transition-ending');
     ending.value = 'continue';
     ending.dispatchEvent(new Event('change', {bubbles: true}));
+    const melt = document.querySelector('#transition-dialog input[value="melt"]');
+    melt.checked = true;
+    melt.dispatchEvent(new Event('change', {bubbles: true}));
+    const effect = document.querySelector('#effect-parameter');
+    const meltState = {
+      classicHidden: document.querySelector('#classic-mosh-options').hidden,
+      effectHidden: document.querySelector('#nal-effect-options').hidden,
+      label: document.querySelector('#effect-parameter-label').textContent,
+      min: Number(effect.min),
+      max: Number(effect.max),
+      value: Number(effect.value),
+      valueText: document.querySelector('#effect-parameter-value').textContent,
+    };
+    const loop = document.querySelector('#transition-dialog input[value="loop"]');
+    loop.checked = true;
+    loop.dispatchEvent(new Event('change', {bubbles: true}));
+    const loopState = {
+      label: document.querySelector('#effect-parameter-label').textContent,
+      max: Number(effect.max),
+      value: Number(effect.value),
+      valueText: document.querySelector('#effect-parameter-value').textContent,
+    };
     const cut = document.querySelector('#transition-dialog input[value="cut"]');
     cut.checked = true;
     cut.dispatchEvent(new Event('change', {bubbles: true}));
@@ -468,12 +495,27 @@ try {
       valueText: document.querySelector('#transition-duration-value').textContent,
       mode: document.querySelector('#transition-duration-mode').textContent,
       classicHiddenForCut: document.querySelector('#classic-mosh-options').hidden,
+      effectHiddenForCut: document.querySelector('#nal-effect-options').hidden,
+      meltState,
+      loopState,
     };
   })()`);
   assert.match(durationControls.valueText, /5 frames/);
   assert.equal(durationControls.mode, 'custom');
   assert.equal(durationControls.classicHiddenForCut, true);
-  console.log('PASS Classic Mosh dialog exposes a frame-quantized duration, grouped seconds feedback, and Restore clear image / Continue motion; controls hide for Cut');
+  assert.equal(durationControls.effectHiddenForCut, true);
+  assert.equal(durationControls.meltState.classicHidden, true);
+  assert.equal(durationControls.meltState.effectHidden, false);
+  assert.equal(durationControls.meltState.label, 'repeat');
+  assert.equal(durationControls.meltState.min, 2);
+  assert.equal(durationControls.meltState.max, 12);
+  assert.equal(durationControls.meltState.value, 4);
+  assert.match(durationControls.meltState.valueText, /4×/);
+  assert.equal(durationControls.loopState.label, 'loop frames');
+  assert.equal(durationControls.loopState.max, 48);
+  assert.equal(durationControls.loopState.value, 4);
+  assert.match(durationControls.loopState.valueText, /4 frames/);
+  console.log('PASS transition dialog exposes Classic duration/ending plus bounded Melt and Loop controls, and hides method-specific controls appropriately');
   await client.evaluate("document.querySelector('#transition-apply').click()");
   await client.waitFor("JSON.parse(document.querySelector('#report').textContent).transitions?.[0]?.method === 'cut' && document.querySelector('#status').textContent.includes('samples')", 30000);
   const mixedTimeline = await client.evaluate(`(() => ({
@@ -546,6 +588,93 @@ try {
   assert.match(multiProbe.stdout, new RegExp(`nb_read_frames=${finalReport.merge.expectedDecodedFrames}`));
   command('ffmpeg', ['-v', 'error', '-i', multiTimelineExportPath, '-f', 'null', '-'], 'multi-timeline strict decode');
   console.log(`PASS full three-clip export decodes ${finalReport.merge.expectedDecodedFrames} frames at 540x720; Cut + Classic Mosh NAL sequence and preview are intact`);
+
+  await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?nal-effects=1'});
+  await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
+  await client.setFile('#file-input-a', fixtures.effectA);
+  await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 15000);
+  await client.setFile('#file-input-b', fixtures.effectB);
+  await client.waitFor("document.querySelector('#status').textContent.includes('samples') || !document.querySelector('#error').hidden", 30000);
+  const applyEffect = async (method, value) => {
+    await client.evaluate(`(() => {
+      document.querySelector('.connector').click();
+      const radio = document.querySelector('#transition-dialog input[value="${method}"]');
+      radio.checked = true;
+      radio.dispatchEvent(new Event('change', {bubbles: true}));
+      const parameter = document.querySelector('#effect-parameter');
+      parameter.value = '${value}';
+      parameter.dispatchEvent(new Event('input', {bubbles: true}));
+      document.querySelector('#transition-apply').click();
+    })()`);
+    await client.waitFor(`(() => {
+      const node = document.querySelector('#report');
+      if (!node.textContent) return false;
+      const report = JSON.parse(node.textContent);
+      return report.stage === 'merged' && report.transitions?.[0]?.method === '${method}';
+    })()`, 30000);
+    return client.evaluate(`(() => {
+      const report = JSON.parse(document.querySelector('#report').textContent);
+      return {
+        error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
+        mergedSamples: report.merge.mergedSamples,
+        method: report.transitions[0].method,
+        effect: report.merge.effect,
+        patchedSamples: report.merge.frameAlignment.patchedSamples,
+        previewEnabled: !document.querySelector('#show-modified').disabled,
+      };
+    })()`);
+  };
+  const meltUi = await applyEffect('melt', 4);
+  assert.equal(meltUi.error, null, meltUi.error);
+  assert.equal(meltUi.method, 'melt');
+  assert.equal(meltUi.mergedSamples, 315);
+  assert.equal(meltUi.effect.repeat, 4);
+  assert.equal(meltUi.effect.scheduledSourceSamples.length, 290);
+  assert.equal(meltUi.patchedSamples, 288);
+  assert.equal(meltUi.previewEnabled, true);
+  const loopUi = await applyEffect('loop', 4);
+  assert.equal(loopUi.error, null, loopUi.error);
+  assert.equal(loopUi.method, 'loop');
+  assert.equal(loopUi.mergedSamples, 103);
+  assert.deepEqual(loopUi.effect.loopWindow, [1, 2, 3, 4]);
+  assert.equal(loopUi.effect.scheduledSourceSamples.length, 78);
+  assert.equal(loopUi.patchedSamples, 76);
+  await client.evaluate("document.querySelector('#show-modified').click()");
+  await client.waitFor("document.querySelector('#preview-video').readyState >= 2 || document.querySelector('#preview-video').error", 15000);
+  const effectPlayback = await client.evaluate(`({
+    error: document.querySelector('#preview-video').error?.code ?? null,
+    width: document.querySelector('#preview-video').videoWidth,
+    height: document.querySelector('#preview-video').videoHeight
+  })`);
+  assert.equal(effectPlayback.error, null);
+  assert.equal(effectPlayback.width, 320);
+  assert.equal(effectPlayback.height, 240);
+  console.log('PASS browser Melt and Loop controls produce 315- and 103-sample sequences with fresh slice numbering and decodable preview');
+
+  await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?normalize-effect=1'});
+  await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
+  await client.setFile('#file-input-a', fixtures.a);
+  await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 15000);
+  await client.setFile('#file-input-b', fixtures.bFrameB);
+  await client.waitFor("document.querySelector('#status').textContent.includes('samples') || !document.querySelector('#error').hidden", 30000);
+  const normalizedEffect = await applyEffect('melt', 4);
+  assert.equal(normalizedEffect.error, null, normalizedEffect.error);
+  assert.equal(normalizedEffect.method, 'melt');
+  assert.ok(normalizedEffect.mergedSamples > 49);
+  const normalizedEffectSources = await client.evaluate(`(() => {
+    const report = JSON.parse(document.querySelector('#report').textContent);
+    return {
+      a: report.sources.a.conversion?.mode ?? null,
+      b: report.sources.b.conversion?.mode ?? null,
+      aEncode: report.sources.a.conversion?.encodeEngine ?? null,
+      bEncode: report.sources.b.conversion?.encodeEngine ?? null,
+    };
+  })()`);
+  assert.equal(normalizedEffectSources.a, 'normalized');
+  assert.equal(normalizedEffectSources.b, 'normalized');
+  assert.equal(normalizedEffectSources.aEncode, 'WebCodecs');
+  assert.equal(normalizedEffectSources.bEncode, 'WebCodecs');
+  console.log('PASS selecting Melt on native B-frame clips auto-normalizes both sources before applying the NAL effect');
 
   await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?single-pair=1'});
   await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);

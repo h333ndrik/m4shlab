@@ -53,7 +53,7 @@
         </div>
       </div>
       <div id="source-tiers" class="timeline"></div>
-      <p class="drop-hint">Drop video files here · up to 12 clips · each connector chooses Cut or Classic Mosh</p>
+      <p class="drop-hint">Drop video files here · up to 12 clips · each connector chooses Cut, Classic Mosh, Melt or Loop</p>
     </section>
 
     <section id="conversion-panel" class="conversion-panel" aria-labelledby="conversion-heading" aria-live="polite" hidden>
@@ -84,6 +84,8 @@
           <legend>Boundary method</legend>
           <label><input type="radio" name="transition-method" value="cut"> <span><strong>Cut</strong><small>Append the incoming clip byte-for-byte.</small></span></label>
           <label><input type="radio" name="transition-method" value="classic-mosh" checked> <span><strong>Classic Mosh</strong><small>Remove the incoming first IDR and continue its references.</small></span></label>
+          <label><input type="radio" name="transition-method" value="melt"> <span><strong>Melt</strong><small>Repeat every non-IDR sample after the first GOP boundary.</small></span></label>
+          <label><input type="radio" name="transition-method" value="loop"> <span><strong>Loop</strong><small>Repeat a short non-IDR window, then continue chronologically.</small></span></label>
         </fieldset>
         <div id="classic-mosh-options" class="classic-mosh-options">
           <div class="mosh-control-heading">
@@ -101,6 +103,18 @@
             <option value="continue">Continue motion</option>
           </select>
           <p class="mosh-control-note">Restore re-inserts the original IDR after the effect window. Continue keeps the full prediction chain.</p>
+        </div>
+        <div id="nal-effect-options" class="classic-mosh-options" hidden>
+          <div class="mosh-control-heading">
+            <label id="effect-parameter-label" for="effect-parameter">repeat</label>
+            <span id="effect-parameter-mode" class="mosh-mode">nal effect</span>
+          </div>
+          <input id="effect-parameter" type="range" min="2" max="12" step="1" value="4">
+          <div class="mosh-control-meta">
+            <output id="effect-parameter-value" for="effect-parameter">4×</output>
+            <span id="effect-parameter-max">12 max</span>
+          </div>
+          <p class="mosh-control-note">Melt and Loop renumber slice headers so each emitted sample has fresh frame and POC counters. B-frame sources are normalized first.</p>
         </div>
         <div class="dialog-actions">
           <button type="submit" value="cancel">cancel</button>

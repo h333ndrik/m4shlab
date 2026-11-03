@@ -4,6 +4,8 @@ import {
   CompatibilityError,
   appendCutH264,
   checkCompatibility,
+  inspectEffectEligibility,
+  mergeEffectH264,
   mergeMoshH264,
   mergeSequenceH264,
 } from './merge.js';
@@ -45,6 +47,11 @@ const transitionDurationValue = document.querySelector('#transition-duration-val
 const transitionDurationMode = document.querySelector('#transition-duration-mode');
 const transitionDurationMax = document.querySelector('#transition-duration-max');
 const transitionEnding = document.querySelector('#transition-ending');
+const nalEffectOptions = document.querySelector('#nal-effect-options');
+const effectParameter = document.querySelector('#effect-parameter');
+const effectParameterLabel = document.querySelector('#effect-parameter-label');
+const effectParameterValue = document.querySelector('#effect-parameter-value');
+const effectParameterMax = document.querySelector('#effect-parameter-max');
 
 let clips = [];
 let merged = null;
@@ -154,8 +161,29 @@ function moshSettingsForClip(clip) {
   };
 }
 
+function effectSettingsForClip(clip) {
+  if (clip?.transition === 'melt') {
+    const repeat = Number(clip.meltRepeat);
+    return {
+      method: 'melt',
+      repeat: Number.isInteger(repeat) && repeat >= 2 && repeat <= 12 ? repeat : 4,
+    };
+  }
+  if (clip?.transition === 'loop') {
+    const loopFrames = Number(clip.loopFrames);
+    return {
+      method: 'loop',
+      loopFrames: Number.isInteger(loopFrames) && loopFrames >= 2 && loopFrames <= 48 ? loopFrames : 4,
+    };
+  }
+  return null;
+}
+
 function transitionLabel(method) {
-  return method === 'cut' ? 'Cut' : 'Classic Mosh';
+  if (method === 'cut') return 'Cut';
+  if (method === 'melt') return 'Melt';
+  if (method === 'loop') return 'Loop';
+  return 'Classic Mosh';
 }
 
 function clipDisplayLabel(index) {
@@ -278,6 +306,10 @@ function renderConnector(index) {
     duration.textContent = settings.maximumFrames > 0
       ? `${settings.durationSeconds.toFixed(2)} s · ${settings.ending}`
       : (seconds === null ? 'incoming clip' : `${seconds.toFixed(2)} s`);
+  } else if (incoming.transition === 'melt') {
+    duration.textContent = `${effectSettingsForClip(incoming).repeat}× non-IDR`;
+  } else if (incoming.transition === 'loop') {
+    duration.textContent = `${effectSettingsForClip(incoming).loopFrames}-frame window`;
   } else {
     duration.textContent = seconds === null ? 'incoming clip' : `${seconds.toFixed(2)} s`;
   }
@@ -483,9 +515,10 @@ function redoTimeline() {
   restoreState(next);
 }
 
-function updateClassicMoshVisibility() {
+function updateTransitionOptionsVisibility() {
   const method = transitionDialog.querySelector('input[name="transition-method"]:checked')?.value;
   classicMoshOptions.hidden = method !== 'classic-mosh';
+  nalEffectOptions.hidden = method !== 'melt' && method !== 'loop';
 }
 
 function updateTransitionDurationDisplay(custom = false) {
@@ -494,6 +527,29 @@ function updateTransitionDurationDisplay(custom = false) {
   transitionDurationValue.textContent = `${seconds.toFixed(2)} s · ${frames} frame${frames === 1 ? '' : 's'}`;
   transitionDurationMax.textContent = `${activeMoshMaximum} available`;
   if (custom) transitionDurationMode.textContent = 'custom';
+}
+
+function updateEffectParameterDisplay() {
+  const method = transitionDialog.querySelector('input[name="transition-method"]:checked')?.value;
+  const value = Math.round(Number(effectParameter.value));
+  effectParameterLabel.textContent = method === 'loop' ? 'loop frames' : 'repeat';
+  effectParameterValue.textContent = method === 'loop' ? `${value} frames` : `${value}×`;
+  effectParameterMax.textContent = `${effectParameter.max} max`;
+}
+
+function setEffectParameterControl(method, clip) {
+  if (method !== 'melt' && method !== 'loop') return;
+  if (method === 'loop') {
+    effectParameter.min = '2';
+    effectParameter.max = '48';
+    effectParameter.value = String(effectSettingsForClip({...clip, transition: 'loop'}).loopFrames);
+  } else {
+    effectParameter.min = '2';
+    effectParameter.max = '12';
+    effectParameter.value = String(effectSettingsForClip({...clip, transition: 'melt'}).repeat);
+  }
+  effectParameter.step = '1';
+  updateEffectParameterDisplay();
 }
 
 function openTransition(boundaryIndex) {
@@ -516,14 +572,19 @@ function openTransition(boundaryIndex) {
     ? 'full length'
     : 'custom';
   updateTransitionDurationDisplay(false);
+  setEffectParameterControl(method, clip);
   transitionTitle.textContent = `${clipDisplayLabel(boundaryIndex - 1)} → ${clipDisplayLabel(boundaryIndex)}`;
-  updateClassicMoshVisibility();
+  updateTransitionOptionsVisibility();
   transitionDialog.showModal();
 }
 
 for (const radio of transitionDialog.querySelectorAll('input[name="transition-method"]')) {
-  radio.addEventListener('change', updateClassicMoshVisibility);
+  radio.addEventListener('change', () => {
+    updateTransitionOptionsVisibility();
+    setEffectParameterControl(radio.value, clips[activeBoundary]);
+  });
 }
+effectParameter.addEventListener('input', updateEffectParameterDisplay);
 transitionDuration.addEventListener('input', () => updateTransitionDurationDisplay(true));
 transitionEnding.addEventListener('change', () => {
   transitionDurationMode.textContent = 'custom';
@@ -533,7 +594,7 @@ transitionApply.addEventListener('click', event => {
   event.preventDefault();
   if (activeBoundary === null) return;
   const selected = transitionDialog.querySelector('input[name="transition-method"]:checked')?.value;
-  if (selected !== 'cut' && selected !== 'classic-mosh') return;
+  if (!['cut', 'classic-mosh', 'melt', 'loop'].includes(selected)) return;
   const current = clips[activeBoundary];
   const next = {
     ...current,
@@ -542,14 +603,23 @@ transitionApply.addEventListener('click', event => {
       moshDurationFrames: Math.round(Number(transitionDuration.value)),
       moshEnding: transitionEnding.value,
     } : {}),
+    ...(selected === 'melt' ? {
+      meltRepeat: Math.round(Number(effectParameter.value)),
+    } : {}),
+    ...(selected === 'loop' ? {
+      loopFrames: Math.round(Number(effectParameter.value)),
+    } : {}),
   };
   if (current.transition !== next.transition
     || current.moshDurationFrames !== next.moshDurationFrames
-    || current.moshEnding !== next.moshEnding) {
+    || current.moshEnding !== next.moshEnding
+    || current.meltRepeat !== next.meltRepeat
+    || current.loopFrames !== next.loopFrames) {
     rememberState();
     clips = clips.map((clip, index) => index === activeBoundary ? next : clip);
   }
   transitionDialog.close('apply');
+  if (selected === 'melt' || selected === 'loop') normalizationAttempted = false;
   if (selected) refreshSequence();
 });
 
@@ -630,6 +700,8 @@ async function readClipFile(file, index, token) {
     transition: 'classic-mosh',
     moshDurationFrames: null,
     moshEnding: 'restore',
+    meltRepeat: 4,
+    loopFrames: 4,
   };
 }
 
@@ -701,6 +773,33 @@ function compatibleChecks(checks) {
 
 function needsNormalization(checks) {
   return checks.some(compatibility => !compatibility.compatible || !compatibility.spsMatch);
+}
+
+function effectNormalizationBoundaries() {
+  const failures = [];
+  for (let index = 1; index < clips.length; index += 1) {
+    const incoming = clips[index];
+    if (incoming.transition !== 'melt' && incoming.transition !== 'loop') continue;
+    const outgoing = clips[index - 1];
+    const a = inspectEffectEligibility(outgoing.bytes, outgoing.mp4);
+    const b = inspectEffectEligibility(incoming.bytes, incoming.mp4);
+    if (!a.eligible || !b.eligible) {
+      failures.push({
+        boundaryIndex: index - 1,
+        method: incoming.transition,
+        outgoing: clipDisplayLabel(index - 1),
+        incoming: clipDisplayLabel(index),
+        a,
+        b,
+      });
+    }
+  }
+  return failures;
+}
+
+function effectNormalizationError(failure) {
+  const effects = failure.method === 'melt' ? 'Melt' : 'Loop';
+  return `${effects} needs clips without B-frames. Normalize this sequence first, or choose Cut/Classic Mosh.`;
 }
 
 async function checkSequenceCompatibility() {
@@ -866,7 +965,8 @@ async function refreshSequence() {
   }
   if (token !== refreshToken) return;
 
-  if (needsNormalization(checks) && !normalizationAttempted) {
+  let effectFailures = effectNormalizationBoundaries();
+  if ((needsNormalization(checks) || effectFailures.length > 0) && !normalizationAttempted) {
     const target = chooseNormalizationTarget(...clips.map(clip => ({
       width: clip.mp4.videoTrack.width,
       height: clip.mp4.videoTrack.height,
@@ -878,6 +978,7 @@ async function refreshSequence() {
       target,
       incompatibleBoundaries: checks.map((compatibility, offset) => ({boundaryIndex: offset, ...compatibilityReport(compatibility)}))
         .filter(item => !item.compatible),
+      effectNormalizationBoundaries: effectFailures,
     }, null, 2);
     reportPanel.hidden = false;
     status.textContent = `Normalizing clips to ${target.width}×${target.height}…`;
@@ -885,6 +986,7 @@ async function refreshSequence() {
       const normalized = await normalizeAllClips(token, target);
       if (!normalized || token !== refreshToken) return;
       checks = await checkSequenceCompatibility();
+      effectFailures = effectNormalizationBoundaries();
     } catch (cause) {
       if (token !== refreshToken) return;
       report.textContent = JSON.stringify({
@@ -907,6 +1009,12 @@ async function refreshSequence() {
     return;
   }
 
+  if (effectFailures.length > 0) {
+    status.textContent = 'Melt/Loop needs normalized clips.';
+    setError(effectNormalizationError(effectFailures[0]));
+    return;
+  }
+
   if (!compatibleChecks(checks)) {
     const firstFailure = checks.find(compatibility => !compatibility.compatible);
     status.textContent = 'These clips cannot be merged automatically.';
@@ -922,23 +1030,26 @@ async function refreshSequence() {
     if (clips.length === 2) {
       pairCompatibility = checks[0];
       const settings = moshSettingsForClip(clips[1]);
-      result = clips[1].transition === 'cut'
-        ? await appendCutH264(clips[0].bytes, clips[1].bytes, clips[0].mp4, clips[1].mp4)
-        : await mergeMoshH264(clips[0].bytes, clips[1].bytes, clips[0].mp4, clips[1].mp4, {
+      const effect = effectSettingsForClip(clips[1]);
+      if (clips[1].transition === 'cut') {
+        result = await appendCutH264(clips[0].bytes, clips[1].bytes, clips[0].mp4, clips[1].mp4);
+      } else if (effect) {
+        result = await mergeEffectH264(clips[0].bytes, clips[1].bytes, clips[0].mp4, clips[1].mp4, effect);
+      } else {
+        result = await mergeMoshH264(clips[0].bytes, clips[1].bytes, clips[0].mp4, clips[1].mp4, {
           durationFrames: settings.durationFrames,
           ending: settings.ending,
         });
+      }
     } else {
       result = await mergeSequenceH264(
         clips.map(clip => ({bytes: clip.bytes, parsed: clip.mp4})),
         clips.slice(1).map(clip => {
           if (clip.transition === 'cut') return {method: 'cut'};
+          const effect = effectSettingsForClip(clip);
+          if (effect) return effect;
           const settings = moshSettingsForClip(clip);
-          return {
-            method: 'classic-mosh',
-            durationFrames: settings.durationFrames,
-            ending: settings.ending,
-          };
+          return {method: 'classic-mosh', durationFrames: settings.durationFrames, ending: settings.ending};
         }),
       );
     }
@@ -966,12 +1077,15 @@ async function refreshSequence() {
       },
       transitions: clips.slice(1).map((clip, offset) => {
         const settings = clip.transition === 'classic-mosh' ? moshSettingsForClip(clip) : null;
+        const effect = effectSettingsForClip(clip);
         return {
           boundaryIndex: offset,
           method: clip.transition,
           durationFrames: settings?.durationFrames ?? null,
           durationSeconds: settings?.durationSeconds ?? null,
           ending: settings?.ending ?? null,
+          repeat: effect?.repeat ?? null,
+          loopFrames: effect?.loopFrames ?? null,
         };
       }),
       merge: result.report,
