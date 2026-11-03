@@ -300,44 +300,92 @@ try {
     return {
       status: document.querySelector('#status').textContent,
       error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
-      compatibility: document.querySelector('#compatibility-status').textContent,
+      compatibilityMarkup: document.querySelector('#compatibility-panel, #compatibility-status, .compatibility-table'),
+      cards: document.querySelectorAll('.clip-card').length,
+      connector: document.querySelector('.connector')?.textContent ?? '',
+      reportText: reportNode.textContent,
       report: reportNode.textContent ? JSON.parse(reportNode.textContent) : null,
     };
   })()`);
-  assert.equal(poc0Pair.compatibility, 'compatible', poc0Pair.error || 'POC0 pair was not compatible');
   assert.equal(poc0Pair.error, null, 'A successful merge must clear stale errors');
+  assert.equal(poc0Pair.compatibilityMarkup, null, 'Compatibility UI must not exist');
+  assert.equal(poc0Pair.cards, 2);
+  assert.match(poc0Pair.connector, /Classic Mosh/);
+  assert.ok(!poc0Pair.reportText.includes('spsHash'), 'SPS/PPS hashes must not be rendered');
+  assert.equal(poc0Pair.report.compatibility.compatible, true);
   assert.equal(poc0Pair.report.merge.mergedSamples, 99);
   assert.equal(poc0Pair.report.merge.frameAlignment.applied, true);
   assert.equal(poc0Pair.report.merge.frameAlignment.picOrderCntType, 0);
   assert.equal(poc0Pair.report.merge.frameAlignment.pictureReordering.noReordering, true);
   console.log('PASS Safari-style POC type 0 multi-GOP pair merges in the browser and clears stale errors');
 
+  await client.send('Emulation.setDeviceMetricsOverride', {width: 390, height: 1000, deviceScaleFactor: 1, mobile: true});
+  await client.send('Emulation.setTouchEmulationEnabled', {enabled: true, maxTouchPoints: 5});
+  await new Promise(resolve => setTimeout(resolve, 150));
+  const mobileLayout = await client.evaluate(`(() => ({
+    headerDirection: getComputedStyle(document.querySelector('header')).flexDirection,
+    previewDirection: getComputedStyle(document.querySelector('.preview-meta')).flexDirection,
+    importHeight: document.querySelector('.file-actions .button').getBoundingClientRect().height,
+    clipControlHeight: document.querySelector('.clip-controls button').getBoundingClientRect().height,
+    timelineScrolls: document.querySelector('.timeline').scrollWidth > document.querySelector('.timeline').clientWidth,
+  }))()`);
+  assert.equal(mobileLayout.headerDirection, 'column');
+  assert.equal(mobileLayout.previewDirection, 'column');
+  assert.ok(mobileLayout.importHeight >= 44);
+  assert.ok(mobileLayout.clipControlHeight >= 44);
+  assert.equal(mobileLayout.timelineScrolls, true);
+  console.log('PASS mobile layout stacks under 600px and keeps 44px touch targets on the scrolling timeline');
+  await client.send('Emulation.setTouchEmulationEnabled', {enabled: false});
+  await client.send('Emulation.setDeviceMetricsOverride', {width: 1200, height: 1600, deviceScaleFactor: 1, mobile: false});
+
+  await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?merge-error=1'});
+  await client.waitFor("document.querySelector('#file-input-a') !== null", 10000);
+  await client.setFile('#file-input-a', join(projectRoot, 'testmedia', 'synthetic-h264.mp4'));
+  await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 15000);
+  await client.setFile('#file-input-b', join(projectRoot, 'testmedia', 'synthetic-h264.mp4'));
+  await client.waitFor("!document.querySelector('#error').hidden || /no merged mp4/i.test(document.querySelector('#status').textContent)", 30000);
+  const mergeError = await client.evaluate(`(() => ({
+    text: document.querySelector('#error').textContent,
+    hidden: document.querySelector('#error').hidden,
+    status: document.querySelector('#status').textContent,
+    compatibilityMarkup: document.querySelector('#compatibility-panel, #compatibility-status, .compatibility-table'),
+  }))()`);
+  assert.equal(mergeError.hidden, false);
+  assert.match(mergeError.text, /picture reordering|frame-number alignment/i);
+  assert.ok(mergeError.text.length < 320, 'Blocking error should stay short and actionable');
+  assert.equal(mergeError.compatibilityMarkup, null, 'Error case must not render a compatibility panel');
+  console.log('PASS blocking merge errors stay short and do not render a compatibility panel');
+
   await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?large-native=1'});
   await client.waitFor("document.querySelector('#file-input-a') !== null", 10000);
   await client.setFile('#file-input-a', fixtures.largeA);
   await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 15000);
   await client.evaluate(`(() => {
-    window.__compatibilityStates = [document.querySelector('#compatibility-status').textContent];
-    new MutationObserver(() => window.__compatibilityStates.push(document.querySelector('#compatibility-status').textContent))
-      .observe(document.querySelector('#compatibility-status'), {childList: true, characterData: true, subtree: true});
+    window.__uiStates = [document.querySelector('#status').textContent, document.querySelector('#conversion-status').textContent];
+    const observer = new MutationObserver(() => window.__uiStates.push(
+      document.querySelector('#status').textContent,
+      document.querySelector('#conversion-status').textContent,
+    ));
+    observer.observe(document.querySelector('#status'), {childList: true, characterData: true, subtree: true});
+    observer.observe(document.querySelector('#conversion-status'), {childList: true, characterData: true, subtree: true});
   })()`);
   await client.setFile('#file-input-b', fixtures.largeB);
-  await client.waitFor("document.querySelector('#compatibility-status').textContent === 'compatible' || /failed/i.test(document.querySelector('#conversion-status').textContent)", 120000);
+  await client.waitFor("document.querySelector('#status').textContent.includes('samples') || !document.querySelector('#error').hidden", 120000);
   const largePair = await client.evaluate(`(() => {
     const reportNode = document.querySelector('#report');
     return {
-      compatibility: document.querySelector('#compatibility-status').textContent,
       error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
-      states: window.__compatibilityStates,
+      states: window.__uiStates,
+      compatibilityMarkup: document.querySelector('#compatibility-panel, #compatibility-status, .compatibility-table'),
       conversionStatus: document.querySelector('#conversion-status').textContent,
       progressA: document.querySelector('#conversion-progress').value,
       progressB: document.querySelector('#conversion-progress-b').value,
       report: reportNode.textContent ? JSON.parse(reportNode.textContent) : null,
     };
   })()`);
-  assert.equal(largePair.compatibility, 'compatible', largePair.error || 'large native pair did not normalize');
-  assert.ok(largePair.states.some(state => state.includes('normalizing clips')), 'UI never exposed the normalizing state');
-  assert.ok(!largePair.states.includes('not compatible'), 'UI exposed a final incompatible verdict before normalization');
+  assert.equal(largePair.error, null, largePair.error || 'large native pair did not normalize');
+  assert.equal(largePair.compatibilityMarkup, null, 'Compatibility UI must not exist');
+  assert.ok(largePair.states.some(state => /normaliz/i.test(state)), 'UI never exposed the normalizing state');
   assert.equal(largePair.report.normalization.autoNormalized, true);
   assert.equal(largePair.report.normalization.parallel, true);
   assert.deepEqual(largePair.report.normalization.target, {width: 540, height: 720});
@@ -348,27 +396,28 @@ try {
   assert.ok(largePair.report.merge.mergedSamples > 0);
   assert.equal(largePair.progressA, 1);
   assert.equal(largePair.progressB, 1);
-  console.log(`PASS large native mismatch auto-normalized to ${largePair.report.normalization.target.width}x${largePair.report.normalization.target.height}; UI showed normalizing before compatible and merge produced ${largePair.report.merge.mergedSamples} samples`);
+  console.log(`PASS large native mismatch auto-normalized to ${largePair.report.normalization.target.width}x${largePair.report.normalization.target.height}; UI showed the normalizing state and merge produced ${largePair.report.merge.mergedSamples} samples`);
 
   await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?single-pair=1'});
   await client.waitFor("document.querySelector('#file-input-a') !== null", 10000);
   await client.setFile('#file-input-a', fixtures.a);
   await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 15000);
   await client.setFile('#file-input-b', fixtures.b);
-  await client.waitFor("document.querySelector('#compatibility-status').textContent === 'compatible' || /failed/i.test(document.querySelector('#conversion-status').textContent)", 120000);
+  await client.waitFor("document.querySelector('#status').textContent.includes('samples') || !document.querySelector('#error').hidden", 120000);
   const state = await client.evaluate(`(() => {
     const reportNode = document.querySelector('#report');
     return {
       status: document.querySelector('#status').textContent,
-      compatibility: document.querySelector('#compatibility-status').textContent,
       error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
+      compatibilityMarkup: document.querySelector('#compatibility-panel, #compatibility-status, .compatibility-table'),
       conversionStatus: document.querySelector('#conversion-status').textContent,
       modifiedEnabled: !document.querySelector('#show-modified').disabled,
       exportEnabled: !document.querySelector('#export-button').disabled,
       report: reportNode.textContent ? JSON.parse(reportNode.textContent) : null,
     };
   })()`);
-  assert.equal(state.compatibility, 'compatible', state.error);
+  assert.equal(state.error, null, state.error);
+  assert.equal(state.compatibilityMarkup, null, 'Compatibility UI must not exist');
   assert.equal(state.conversionStatus, 'normalized via WebCodecs');
   assert.equal(state.modifiedEnabled, true);
   assert.equal(state.exportEnabled, true);
@@ -444,11 +493,10 @@ try {
     await client.setFile('#file-input-a', join(projectRoot, 'testmedia', 'synthetic-hevc.mov'));
     await client.waitFor("document.querySelector('#status').textContent.includes('clip A') || /failed/i.test(document.querySelector('#conversion-status').textContent)", 180000);
     await client.setFile('#file-input-b', join(projectRoot, 'testmedia', 'synthetic-hevc-small.mov'));
-    await client.waitFor("document.querySelector('#compatibility-status').textContent === 'compatible' || /failed/i.test(document.querySelector('#conversion-status').textContent)", 300000);
+    await client.waitFor("document.querySelector('#status').textContent.includes('samples') || !document.querySelector('#error').hidden", 300000);
     const hybrid = await client.evaluate(`(() => {
       const reportNode = document.querySelector('#report');
       return {
-        compatibility: document.querySelector('#compatibility-status').textContent,
         conversionStatus: document.querySelector('#conversion-status').textContent,
         error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
         progressA: document.querySelector('#conversion-progress').value,
@@ -457,7 +505,7 @@ try {
         report: reportNode.textContent ? JSON.parse(reportNode.textContent) : null,
       };
     })()`);
-    assert.equal(hybrid.compatibility, 'compatible', hybrid.error || 'hybrid pair was not compatible');
+    assert.equal(hybrid.error, null, hybrid.error || 'hybrid pair was not compatible');
     assert.match(hybrid.conversionStatus, /ffmpeg\.wasm \+ WebCodecs/);
     assert.equal(hybrid.report.sources.a.conversion.decodeEngine, 'ffmpeg.wasm');
     assert.equal(hybrid.report.sources.a.conversion.encodeEngine, 'WebCodecs');
@@ -491,17 +539,16 @@ try {
     await client.setFile('#file-input-a', fixtures.a);
     await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 15000);
     await client.setFile('#file-input-b', fixtures.b);
-    await client.waitFor("document.querySelector('#compatibility-status').textContent === 'compatible' || /failed/i.test(document.querySelector('#conversion-status').textContent)", 600000);
+    await client.waitFor("document.querySelector('#status').textContent.includes('samples') || !document.querySelector('#error').hidden", 600000);
     const fallback = await client.evaluate(`(() => {
       const report = JSON.parse(document.querySelector('#report').textContent);
       return {
-        compatibility: document.querySelector('#compatibility-status').textContent,
         conversionStatus: document.querySelector('#conversion-status').textContent,
         error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
         sources: report.sources,
       };
     })()`);
-    assert.equal(fallback.compatibility, 'compatible', fallback.error);
+    assert.equal(fallback.error, null, fallback.error);
     assert.equal(fallback.conversionStatus, 'normalized via ffmpeg.wasm');
     assert.equal(fallback.sources.a.mode, 'normalized via ffmpeg.wasm');
     assert.equal(fallback.sources.b.mode, 'normalized via ffmpeg.wasm');

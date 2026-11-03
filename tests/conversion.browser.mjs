@@ -52,17 +52,21 @@ try {
   await page.setInputFiles('#file-input-a', fixtureA);
   await page.waitForFunction(() => document.querySelector('#status').textContent.includes('clip A'), null, {timeout: 120000});
   await page.setInputFiles('#file-input-b', fixtureB);
-  await page.waitForFunction(() => document.querySelector('#compatibility-status').textContent === 'compatible', null, {timeout: 180000});
+  await page.waitForFunction(() => document.querySelector('#status').textContent.includes('samples') || !document.querySelector('#error').hidden, null, {timeout: 180000});
 
   const state = await page.evaluate(() => {
     const report = JSON.parse(document.querySelector('#report').textContent);
     return {
       conversionStatus: document.querySelector('#conversion-status').textContent,
+      error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
+      compatibilityMarkup: document.querySelector('#compatibility-panel, #compatibility-status, .compatibility-table'),
       modifiedEnabled: !document.querySelector('#show-modified').disabled,
       sources: report.sources,
       mergedSamples: report.merge.mergedSamples,
     };
   });
+  assert.equal(state.error, null, state.error);
+  assert.equal(state.compatibilityMarkup, null, 'Compatibility UI must not exist');
   assert.match(state.conversionStatus, /^normalized via ffmpeg\.wasm(?: \+ WebCodecs)?$/);
   assert.equal(state.modifiedEnabled, true);
   assert.equal(state.sources.a.tier, 'tier-2');

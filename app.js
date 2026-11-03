@@ -21,10 +21,6 @@ const originalButton = document.querySelector('#show-original');
 const modifiedButton = document.querySelector('#show-modified');
 const exportButton = document.querySelector('#export-button');
 const previewLabel = document.querySelector('#preview-label');
-const compatibilityPanel = document.querySelector('#compatibility-panel');
-const compatibilityStatus = document.querySelector('#compatibility-status');
-const compatibilityMessage = document.querySelector('#compatibility-message');
-const compatibilityRows = document.querySelector('#compatibility-rows');
 const reportPanel = document.querySelector('#report-panel');
 const report = document.querySelector('#report');
 
@@ -62,15 +58,6 @@ function formatDuration(milliseconds) {
   return milliseconds < 1000 ? `${Math.round(milliseconds)} ms` : `${(milliseconds / 1000).toFixed(1)} s`;
 }
 
-function clipDescription(clip) {
-  if (!clip) return '';
-  if (!clip.conversion) return 'native H.264';
-  const target = clip.conversion.target;
-  const destination = target ? ` at ${target.width}×${target.height}` : '';
-  const action = clip.conversion.mode === 'normalized' ? 'normalized' : 'converted';
-  return `${action} via ${conversionEngine(clip)}${destination} · ${encodingPath(clip.conversion)} (${formatDuration(clip.conversion.elapsedMs)})`;
-}
-
 function clipReport(clip) {
   if (!clip) return null;
   return {
@@ -79,6 +66,41 @@ function clipReport(clip) {
     mode: clip.conversion ? `${clip.conversion.mode === 'normalized' ? 'normalized' : 'converted'} via ${conversionEngine(clip)}` : 'native H.264',
     conversion: clip.conversion ? {...clip.conversion} : null,
   };
+}
+
+function clipDurationSeconds(clip) {
+  const track = clip?.mp4?.videoTrack;
+  if (!track?.stts || !track.mdhd?.timescale) return null;
+  const units = track.stts.durations.reduce((total, value) => total + value, 0);
+  return units / track.mdhd.timescale;
+}
+
+function compatibilityReport(compatibility) {
+  if (!compatibility) return null;
+  return {
+    compatible: compatibility.compatible,
+    spsMatch: compatibility.spsMatch ?? false,
+    ppsMatch: compatibility.ppsMatch ?? false,
+    failedChecks: compatibility.checks
+      .filter(check => check.required && !check.match)
+      .map(check => check.key),
+  };
+}
+
+function compatibilityErrorText(compatibility) {
+  const labels = compatibility?.checks
+    ?.filter(check => check.required && !check.match)
+    .map(check => check.label)
+    .slice(0, 3)
+    .join(', ');
+  const detail = labels ? ` (${labels})` : '';
+  return `This pair cannot be merged automatically${detail}. Record both clips with the same device and settings, or convert them to H.264 with matching parameters.`;
+}
+
+function shortErrorText(message, fallback) {
+  const compact = String(message ?? '').replace(/\s+/g, ' ').trim();
+  if (!compact) return fallback;
+  return compact.length > 230 ? `${compact.slice(0, 227)}…` : compact;
 }
 
 function setError(message = '') {
@@ -104,19 +126,67 @@ function showConversion(label, state, message, progress = null, slot = null) {
   if (slot) setConversionProgress(progress, slot);
 }
 
+function clipCard(slot, clip) {
+  const card = document.createElement('article');
+  card.className = `clip-card${clip ? '' : ' is-empty'}`;
+
+  const thumb = document.createElement('div');
+  thumb.className = 'clip-thumb';
+  if (clip) {
+    const preview = document.createElement('video');
+    preview.src = `${clip.url}#t=0.001`;
+    preview.muted = true;
+    preview.playsInline = true;
+    preview.preload = 'metadata';
+    preview.setAttribute('aria-hidden', 'true');
+    thumb.append(preview);
+  } else {
+    thumb.textContent = `clip ${slot}`;
+  }
+
+  const name = document.createElement('span');
+  name.className = 'clip-name';
+  name.textContent = clip?.file.name ?? `Add clip ${slot.toUpperCase()}`;
+
+  const detail = document.createElement('span');
+  detail.className = 'clip-detail';
+  const duration = clipDurationSeconds(clip);
+  detail.textContent = clip
+    ? `${duration === null ? 'video' : `${duration.toFixed(2)} s`} · ${clipMode(clip)}`
+    : 'use the import control';
+
+  const controls = document.createElement('div');
+  controls.className = 'clip-controls';
+  for (const [glyph, label, title] of [
+    ['←', `Move clip ${slot.toUpperCase()} left`, 'A → B order is fixed in this phase'],
+    ['→', `Move clip ${slot.toUpperCase()} right`, 'A → B order is fixed in this phase'],
+    ['×', `Remove clip ${slot.toUpperCase()}`, 'Use the import control to replace this clip'],
+  ]) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = glyph;
+    button.setAttribute('aria-label', label);
+    button.title = title;
+    button.disabled = true;
+    controls.append(button);
+  }
+
+  card.append(thumb, name, detail, controls);
+  return card;
+}
+
 function renderSourceTiers() {
-  const entries = [];
-  for (const slot of ['a', 'b']) {
-    const clip = clips[slot];
-    if (clip) entries.push(`Clip ${slot.toUpperCase()}: ${clip.file.name} — ${clipDescription(clip)}`);
-  }
-  sourceTiers.replaceChildren();
-  sourceTiers.hidden = entries.length === 0;
-  for (const entry of entries) {
-    const line = document.createElement('div');
-    line.textContent = entry;
-    sourceTiers.append(line);
-  }
+  const connector = document.createElement('div');
+  connector.className = 'connector';
+  const effect = document.createElement('span');
+  effect.textContent = 'Classic Mosh';
+  const duration = document.createElement('span');
+  duration.textContent = clipDurationSeconds(clips.b) === null
+    ? 'choose clip B'
+    : `${clipDurationSeconds(clips.b).toFixed(2)} s`;
+  connector.append(effect, duration);
+  sourceTiers.replaceChildren(clipCard('a', clips.a), connector, clipCard('b', clips.b));
+  sourceTiers.hidden = false;
 }
 
 function finishConversionPanel() {
@@ -194,36 +264,6 @@ function showVersion(version) {
   setPreview(isMerged ? merged.mergedUrl : merged.cutUrl, isMerged ? 'merged A→B · video only' : cutLabel);
 }
 
-function renderCompatibility(compatibility) {
-  compatibilityRows.replaceChildren();
-  for (const check of compatibility.checks) {
-    const row = document.createElement('tr');
-    const label = document.createElement('td');
-    const a = document.createElement('td');
-    const b = document.createElement('td');
-    const result = document.createElement('td');
-    label.textContent = check.label;
-    a.textContent = check.a;
-    b.textContent = check.b;
-    result.className = `compatibility-result ${check.match ? 'is-match' : check.required ? 'is-mismatch' : 'is-warning'}`;
-    result.textContent = check.match ? '✓ match' : check.required ? '✕ mismatch' : `⚠ ${check.note}`;
-    row.append(label, a, b, result);
-    compatibilityRows.append(row);
-  }
-  compatibilityStatus.textContent = compatibility.compatible ? 'compatible' : 'not compatible';
-  compatibilityStatus.className = `compatibility-status ${compatibility.compatible ? 'is-compatible' : 'is-incompatible'}`;
-  compatibilityMessage.textContent = compatibility.message;
-  compatibilityPanel.hidden = false;
-}
-
-function renderCompatibilityPending(target) {
-  compatibilityRows.replaceChildren();
-  compatibilityStatus.textContent = 'normalizing clips…';
-  compatibilityStatus.className = 'compatibility-status is-working';
-  compatibilityMessage.textContent = `The native parameters are incompatible. Normalizing both clips to a shared ${target.width}×${target.height} target before re-checking compatibility…`;
-  compatibilityPanel.hidden = false;
-}
-
 function pairNormalizationReport() {
   const conversions = ['a', 'b'].map(slot => clips[slot]?.conversion).filter(Boolean);
   if (conversions.length === 0) return null;
@@ -239,7 +279,6 @@ function pairNormalizationReport() {
 }
 
 function updateSingleClipState() {
-  compatibilityPanel.hidden = true;
   reportPanel.hidden = true;
   resetMerged();
   renderSourceTiers();
@@ -259,9 +298,9 @@ function updateSingleClipState() {
   }
 
   if (clips.a && !clips.b) {
-    status.textContent = `${clips.a.file.name} loaded as clip A (${clipMode(clips.a)}) · load clip B to check compatibility.`;
+    status.textContent = `${clips.a.file.name} loaded as clip A (${clipMode(clips.a)}) · load clip B to create the transition.`;
   } else if (!clips.a && clips.b) {
-    status.textContent = `${clips.b.file.name} loaded as clip B (${clipMode(clips.b)}) · load clip A to check compatibility.`;
+    status.textContent = `${clips.b.file.name} loaded as clip B (${clipMode(clips.b)}) · load clip A to create the transition.`;
   } else {
     status.textContent = 'No videos loaded.';
   }
@@ -452,14 +491,13 @@ async function refreshPair() {
 
   renderSourceTiers();
   finishConversionPanel();
-  compatibilityPanel.hidden = true;
   reportPanel.hidden = true;
   originalButton.disabled = false;
   modifiedButton.disabled = true;
   exportButton.disabled = true;
   setPreview(clips.a.url, clips.a.conversion ? 'A cut (converted source)' : 'A cut (input)');
   emptyPreview.hidden = true;
-  status.textContent = 'Checking GOP, parameter, resolution, and timing compatibility…';
+  status.textContent = 'Preparing the transition…';
 
   let compatibility;
   try {
@@ -476,12 +514,11 @@ async function refreshPair() {
       {width: clips.a.mp4.videoTrack.width, height: clips.a.mp4.videoTrack.height},
       {width: clips.b.mp4.videoTrack.width, height: clips.b.mp4.videoTrack.height},
     );
-    renderCompatibilityPending(target);
     report.textContent = JSON.stringify({
       stage: 'normalizing-pair',
       sources: {a: clipReport(clips.a), b: clipReport(clips.b)},
       target,
-      compatibility,
+      compatibility: compatibilityReport(compatibility),
     }, null, 2);
     reportPanel.hidden = false;
     modifiedButton.disabled = true;
@@ -494,33 +531,32 @@ async function refreshPair() {
       return;
     } catch (cause) {
       if (token !== refreshToken) return;
-      renderCompatibility(compatibility);
       report.textContent = JSON.stringify({
         stage: 'normalization-failed',
         sources: {a: clipReport(clips.a), b: clipReport(clips.b)},
         target,
-        compatibility,
+        compatibility: compatibilityReport(compatibility),
         error: cause instanceof Error ? cause.message : String(cause),
       }, null, 2);
       showConversion('Conversion', 'failed', cause instanceof Error ? cause.message : String(cause));
-      status.textContent = 'Pair normalization failed.';
-      setError(`${compatibility.message} Normalization failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+      status.textContent = 'Could not prepare this pair for merging.';
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      setError(shortErrorText(`Normalization failed. ${detail} Try shorter clips or matching H.264 settings.`, 'Normalization failed. Try shorter clips or matching H.264 settings.'));
       return;
     }
   }
 
-  renderCompatibility(compatibility);
   report.textContent = JSON.stringify({
     stage: 'compatibility',
     sources: {a: clipReport(clips.a), b: clipReport(clips.b)},
     normalization: pairNormalizationReport(),
-    ...compatibility,
+    compatibility: compatibilityReport(compatibility),
   }, null, 2);
   reportPanel.hidden = false;
 
   if (!compatibility.compatible) {
-    status.textContent = 'Pair loaded; merge is blocked by compatibility checks.';
-    setError(compatibility.message);
+    status.textContent = 'This pair cannot be merged automatically.';
+    setError(compatibilityErrorText(compatibility));
     modifiedButton.disabled = true;
     exportButton.disabled = true;
     return;
@@ -547,15 +583,19 @@ async function refreshPair() {
     report.textContent = JSON.stringify({
       sources: {a: clipReport(clips.a), b: clipReport(clips.b)},
       normalization: pairNormalizationReport(),
-      compatibility: result.compatibility,
+      compatibility: compatibilityReport(result.compatibility),
       merge: result.report,
       cutByteIdentical: result.cut.byteLength === clips.a.bytes.byteLength && result.cut.every((value, index) => value === clips.a.bytes[index]),
     }, null, 2);
   } catch (cause) {
     if (token !== refreshToken) return;
-    status.textContent = 'Pair loaded; no merged MP4 was produced.';
-    setError(cause instanceof Error ? cause.message : String(cause));
-    if (cause instanceof CompatibilityError) renderCompatibility(cause.report);
+    status.textContent = 'No merged MP4 was produced.';
+    if (cause instanceof CompatibilityError) {
+      setError(compatibilityErrorText(cause.report));
+    } else {
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      setError(shortErrorText(detail, 'The merge failed. Try shorter clips or matching H.264 settings.'));
+    }
   }
 }
 
@@ -568,7 +608,6 @@ async function loadClip(slot, file) {
   clips[slot] = null;
   setError('');
   reportPanel.hidden = true;
-  compatibilityPanel.hidden = true;
   renderSourceTiers();
   status.textContent = `Reading ${file.name} as ${label}…`;
 
@@ -624,6 +663,8 @@ inputB.addEventListener('change', () => {
 });
 originalButton.addEventListener('click', () => showVersion('original'));
 modifiedButton.addEventListener('click', () => showVersion('merged'));
+
+updateSingleClipState();
 
 window.addEventListener('beforeunload', () => {
   revokeClip('a');

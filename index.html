@@ -10,31 +10,42 @@
 <body>
   <main>
     <header>
-      <h1>m4shlab</h1>
-      <p>H.264 bitstream moshing, entirely in your browser.</p>
+      <div class="brand">
+        <h1>m4shlab</h1>
+        <p>H.264 bitstream moshing, entirely in your browser.</p>
+      </div>
+      <div class="file-actions" aria-label="Import clips">
+        <label class="button">Clip A<input id="file-input-a" type="file" accept="video/*,.mp4,.mov,.m4v,.mkv,.webm,.avi"></label>
+        <label class="button primary">Clip B<input id="file-input-b" type="file" accept="video/*,.mp4,.mov,.m4v,.mkv,.webm,.avi"></label>
+      </div>
     </header>
 
-    <section class="panel file-panel" aria-labelledby="source-heading">
-      <div>
-        <h2 id="source-heading">sources</h2>
-        <p class="muted">Choose MP4, MOV, or another video. H.264 parses natively; incompatible H.264 pairs normalize with WebCodecs when available, with ffmpeg.wasm as fallback. Files never leave this page.</p>
-      </div>
-      <div class="file-actions">
-        <label class="file-button">
-          Clip A (base)
-          <input id="file-input-a" type="file" accept="video/*,.mp4,.mov,.m4v,.mkv,.webm,.avi">
-        </label>
-        <label class="file-button">
-          Clip B (incoming)
-          <input id="file-input-b" type="file" accept="video/*,.mp4,.mov,.m4v,.mkv,.webm,.avi">
-        </label>
-      </div>
+    <section class="viewer" aria-labelledby="preview-heading">
+      <h2 id="preview-heading" class="visually-hidden">preview</h2>
+      <video id="preview-video" controls playsinline muted></video>
+      <div id="empty-preview" class="empty-preview">load clip A and clip B to begin</div>
     </section>
 
-    <p id="status" class="status" role="status">No videos loaded.</p>
-    <p id="source-tiers" class="source-tiers" hidden></p>
+    <div class="preview-meta">
+      <div class="preview-options">
+        <span id="preview-label">No video selected</span>
+        <div class="toggle" role="group" aria-label="Preview version">
+          <button id="show-original" type="button" aria-pressed="true" disabled>A cut</button>
+          <button id="show-modified" type="button" aria-pressed="false" disabled>merged A→B</button>
+        </div>
+      </div>
+      <button id="export-button" class="primary" type="button" disabled>export merged MP4</button>
+    </div>
 
-    <section id="conversion-panel" class="panel conversion-panel" aria-labelledby="conversion-heading" aria-live="polite" hidden>
+    <section class="sequence" aria-labelledby="source-heading">
+      <div class="section-label">
+        <h2 id="source-heading">clips</h2>
+        <span>classic mosh · A → B</span>
+      </div>
+      <div id="source-tiers" class="timeline"></div>
+    </section>
+
+    <section id="conversion-panel" class="conversion-panel" aria-labelledby="conversion-heading" aria-live="polite" hidden>
       <div class="conversion-heading">
         <h2 id="conversion-heading">conversion</h2>
         <span id="conversion-status" class="conversion-status">preparing</span>
@@ -44,52 +55,17 @@
       <div id="conversion-progress-b-row" class="conversion-progress-row" hidden><span>B</span><progress id="conversion-progress-b" aria-label="Clip B conversion progress"></progress></div>
     </section>
 
+    <p id="status" class="status" role="status">No videos loaded.</p>
     <p id="error" class="error" role="alert" hidden></p>
 
-    <section id="compatibility-panel" class="panel compatibility-panel" aria-labelledby="compatibility-heading" hidden>
-      <div class="compatibility-heading">
-        <h2 id="compatibility-heading">compatibility</h2>
-        <span id="compatibility-status" class="compatibility-status"></span>
-      </div>
-      <p id="compatibility-message" class="compatibility-message"></p>
-      <div class="compatibility-table-wrap">
-        <table class="compatibility-table">
-          <thead>
-            <tr><th scope="col">criterion</th><th scope="col">clip A</th><th scope="col">clip B</th><th scope="col">result</th></tr>
-          </thead>
-          <tbody id="compatibility-rows"></tbody>
-        </table>
-      </div>
-      <p class="audio-note">Merged A→B export has no audio yet; audio arrives with the normalization phase.</p>
-    </section>
-
-    <section class="preview" aria-labelledby="preview-heading">
-      <div class="preview-heading">
-        <h2 id="preview-heading">preview</h2>
-        <div class="toggle" role="group" aria-label="Preview version">
-          <button id="show-original" type="button" aria-pressed="true" disabled>A cut</button>
-          <button id="show-modified" type="button" aria-pressed="false" disabled>merged A→B</button>
-        </div>
-      </div>
-      <div class="video-shell">
-        <video id="preview-video" controls playsinline muted></video>
-        <div id="empty-preview" class="empty-preview">load clips A and B to begin</div>
-      </div>
-      <div class="preview-meta">
-        <span id="preview-label">—</span>
-        <button id="export-button" type="button" disabled>export merged MP4</button>
-      </div>
-    </section>
-
-    <details id="report-panel" class="panel report-panel" hidden>
+    <details id="report-panel" class="report-panel" hidden>
       <summary>bitstream report</summary>
       <pre id="report"></pre>
     </details>
 
-    <aside class="limits" aria-labelledby="limits-heading">
-      <h2 id="limits-heading">limits</h2>
-      <p>H.264 MP4/MOV parses natively. Incompatible H.264 pairs are normalized with WebCodecs when available, otherwise ffmpeg.wasm. Normalization re-encodes video-only H.264 at 30 fps with a closed 30-frame GOP, an IDR at frame 0, no B-frames, and a common larger letterboxed frame. Other containers and codecs use the lazily loaded ffmpeg.wasm fallback. Conversion is local; large files can exceed device memory or fail on iOS Safari, and hardware acceleration is not guaranteed. Merged exports still have no audio.</p>
-    </aside>
+    <footer class="limits" aria-labelledby="limits-heading">
+      <p id="limits-heading">H.264 MP4/MOV parses natively. Other containers and codecs use the lazily loaded ffmpeg.wasm fallback. Incompatible H.264 pairs normalize locally at a 720px long-side cap. Conversion is local; large files can exceed device memory or fail on iOS Safari, and hardware acceleration is not guaranteed. Merged exports have no audio.</p>
+    </footer>
   </main>
   <script type="module" src="./app.js"></script>
 </body>

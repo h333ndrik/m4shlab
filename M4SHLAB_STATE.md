@@ -10,6 +10,7 @@ Updated: 2026-11-03
 - Phase C: WebCodecs normalization with ffmpeg.wasm fallback.
 - Phase B multi-GOP repair: retain later B IDR anchors and align the first B GOP's `frame_num`.
 - Automatic incompatible-pair normalization, capped pair targets, parallel workers, and ffmpeg.wasm decode plus WebCodecs encode.
+- h4moshlab-style interface with a dark preview well, header import control, and horizontal A→B clip timeline. The visible compatibility panel, criterion table, badges, and SPS/PPS hashes are removed; validation remains in the background.
 
 ## Phase C implementation
 
@@ -19,7 +20,8 @@ Updated: 2026-11-03
 - B's first-GOP non-key slices are aligned to continue A's `frame_num`. This is required because separately encoded clips restart at zero and decoders otherwise discard early B frames after its first IDR is removed.
 - Classic Phase B now removes only B's first IDR sample. Later B IDR samples stay as reference anchors, and the first B GOP's slice headers are patched modulo `2^log2_max_frame_num`. Emulation-prevention bytes are regenerated through RBSP unescape/re-escape.
 - Safari WebCodecs output with `pic_order_cnt_type=0` is accepted for multi-GOP merge when B has no B-slices and `ctts` has no non-zero composition offsets. Both `frame_num` and type-0 `pic_order_cnt_lsb` are aligned; genuinely reordered streams remain rejected.
-- `app.js` shows `normalizing clips…` immediately when a native pair fails compatibility. It normalizes both clips, re-checks the converted bytes, and shows the actionable incompatibility only when normalization itself fails. The report marks `autoNormalized`, `parallel`, the shared target, decode path, encode path, and fallback details.
+- `app.js` shows the normalizing state immediately when a native pair fails compatibility. It normalizes both clips, re-checks the converted bytes, and surfaces only short blocking errors. No compatibility table or badges are rendered; the internal report records `autoNormalized`, `parallel`, the shared target, decode path, encode path, and fallback details.
+- The timeline renders two clip cards with thumbnails, names, durations, format status, order-arrow affordances, remove affordances, and a dashed Classic Mosh connector. Phase B remains fixed at A→B, so reorder/remove controls stay disabled in this design-only block. The layout is responsive below 600px and uses 44px touch controls on coarse pointers.
 - Native H.264 pairs normalize in parallel with two WebCodecs jobs. Codec/container failures fall back to two concurrent ffmpeg.wasm workers when possible.
 - `converter-worker.js` can emit a capped `yuv420p` Y4M stream. `hybrid-encoder.js` then encodes those frames with WebCodecs and muxes with the existing MP4 writer; the full WASM encoder remains the fallback.
 - HEVC, WebM, fragmented MP4, and other containers still use ffmpeg.wasm because the current native demuxer is H.264-only.
@@ -35,7 +37,10 @@ Updated: 2026-11-03
   - the 75-frame fixture produced keyframes at samples 1, 31, and 61; its merge retained two later IDRs and decoded all 149 frames;
   - a Safari-style POC type 0 multi-GOP pair merged with POC-LSB alignment and decoded 99/99 frames; the browser test also cleared a deliberately stale error;
   - POC type 0 with true B-frame reordering was rejected with an explicit picture-reordering message;
+  - the mobile layout stacked under 600px while import and clip controls retained 44px touch targets;
+  - blocking merge errors stayed short and rendered no compatibility panel;
   - a 1440×1920 + 768×1024 native pair showed `normalizing clips…`, normalized both clips to 540×720 with WebCodecs, re-checked compatibility, and merged 49 samples;
+  - the browser DOM contained no compatibility panel, status badge, criterion table, or SPS/PPS hash display;
   - merged export: 49 frames, H.264 320×240, `yuv420p`/`tv`, `has_b_frames=0`, video-only;
   - merged SHA-256: `b4bb6c4827b2f7a8fe6d93777ff63f4491dd0b8eb497148dd3b2d07da1666bef`;
   - ffmpeg.wasm decode plus WebCodecs encode completed both progress bars and produced a decodable export;
