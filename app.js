@@ -1,6 +1,8 @@
 import { parseMp4 } from './parser/mp4.js';
 import { CompatibilityError, checkCompatibility, mergeMoshH264 } from './merge.js';
 import { convertToH264, MAX_CONVERSION_BYTES } from './converter.js';
+import { isWebCodecsAvailable, normalizeWithWebCodecs } from './webcodecs.js';
+import { chooseNormalizationTarget } from './webcodecs-muxer.js';
 
 const inputA = document.querySelector('#file-input-a');
 const inputB = document.querySelector('#file-input-b');
@@ -38,8 +40,17 @@ function formatBytes(value) {
 
 function clipMode(clip) {
   if (!clip) return '';
-  if (clip.conversion) return 'converted via ffmpeg.wasm';
+  if (clip.conversion) return `${clip.conversion.mode === 'normalized' ? 'normalized' : 'converted'} via ${conversionEngine(clip)}`;
   return 'native H.264';
+}
+
+function conversionEngine(clip) {
+  return clip?.conversion?.engine === 'WebCodecs' ? 'WebCodecs' : 'ffmpeg.wasm';
+}
+
+function formatDuration(milliseconds) {
+  if (!Number.isFinite(milliseconds)) return '';
+  return milliseconds < 1000 ? `${Math.round(milliseconds)} ms` : `${(milliseconds / 1000).toFixed(1)} s`;
 }
 
 function clipDescription(clip) {
@@ -47,7 +58,8 @@ function clipDescription(clip) {
   if (!clip.conversion) return 'native H.264';
   const target = clip.conversion.target;
   const destination = target ? ` at ${target.width}×${target.height}` : '';
-  return `converted via ffmpeg.wasm${destination}`;
+  const action = clip.conversion.mode === 'normalized' ? 'normalized' : 'converted';
+  return `${action} via ${conversionEngine(clip)}${destination} (${formatDuration(clip.conversion.elapsedMs)})`;
 }
 
 function clipReport(clip) {
@@ -55,7 +67,7 @@ function clipReport(clip) {
   return {
     name: clip.file.name,
     tier: clip.conversion ? 'tier-2' : 'tier-1',
-    mode: clip.conversion ? 'converted via ffmpeg.wasm' : 'native H.264',
+    mode: clip.conversion ? `${clip.conversion.mode === 'normalized' ? 'normalized' : 'converted'} via ${conversionEngine(clip)}` : 'native H.264',
     conversion: clip.conversion ? {...clip.conversion} : null,
   };
 }
@@ -102,8 +114,13 @@ function finishConversionPanel() {
     return;
   }
   const normalized = converted.length === 2 && converted.every(slot => clips[slot].conversion.mode === 'normalized');
-  conversionStatus.textContent = normalized ? 'normalized via ffmpeg.wasm' : 'converted via ffmpeg.wasm';
-  conversionMessage.textContent = converted.map(slot => `${slot.toUpperCase()}: ${clips[slot].file.name} → H.264 at ${clips[slot].mp4.videoTrack.width}×${clips[slot].mp4.videoTrack.height}`).join(' · ');
+  const engines = [...new Set(converted.map(slot => conversionEngine(clips[slot])))];
+  const engineLabel = engines.join(' + ');
+  conversionStatus.textContent = `${normalized ? 'normalized' : 'converted'} via ${engineLabel}`;
+  conversionMessage.textContent = converted.map(slot => {
+    const conversion = clips[slot].conversion;
+    return `${slot.toUpperCase()}: ${clips[slot].file.name} → H.264 at ${clips[slot].mp4.videoTrack.width}×${clips[slot].mp4.videoTrack.height} · ${formatDuration(conversion.elapsedMs)}`;
+  }).join(' · ');
   setConversionProgress(1);
   conversionPanel.hidden = false;
 }
@@ -250,16 +267,91 @@ async function convertClipSource(slot, sourceBytes, options, parseError = null) 
 }
 
 async function normalizePair(token) {
-  const target = {
-    width: Math.max(clips.a.mp4.videoTrack.width, clips.b.mp4.videoTrack.width),
-    height: Math.max(clips.a.mp4.videoTrack.height, clips.b.mp4.videoTrack.height),
-  };
+  const target = chooseNormalizationTarget(
+    {width: clips.a.mp4.videoTrack.width, height: clips.a.mp4.videoTrack.height},
+    {width: clips.b.mp4.videoTrack.width, height: clips.b.mp4.videoTrack.height},
+  );
   pairNormalizationAttempted = true;
+
+  if (isWebCodecsAvailable() && !clips.a.conversion && !clips.b.conversion) {
+    const normalizedClips = {};
+    const discardNormalizedClips = () => {
+      for (const clip of Object.values(normalizedClips)) {
+        if (clip.url) URL.revokeObjectURL(clip.url);
+      }
+    };
+    try {
+      for (const slot of ['a', 'b']) {
+        if (token !== refreshToken) {
+          discardNormalizedClips();
+          return false;
+        }
+        const clip = clips[slot];
+        const label = `Clip ${slot.toUpperCase()}`;
+        if (clip.file.size > MAX_CONVERSION_BYTES) {
+          throw new Error(`${label} is ${formatBytes(clip.file.size)}; conversion is limited to 100 MB.`);
+        }
+        showConversion(label, 'normalizing', `Decoding and re-encoding both clips with WebCodecs to a common ${target.width}×${target.height} H.264 layout…`, null);
+        const sourceBytes = new Uint8Array(await clip.file.arrayBuffer());
+        const normalized = await normalizeWithWebCodecs(sourceBytes, {
+          target,
+          frameNumberBase: slot === 'b' ? normalizedClips.a.conversion.outputSamples - 1 : undefined,
+          onStatus: message => {
+            if (token === refreshToken) showConversion(label, 'working', message, null);
+          },
+          onProgress: progress => {
+            if (token !== refreshToken) return;
+            const percent = Math.round(progress * 100);
+            showConversion(label, 'working', `Normalizing with WebCodecs · ${percent}%`, progress);
+          },
+        });
+        if (token !== refreshToken) {
+          discardNormalizedClips();
+          return false;
+        }
+        const mp4 = parseMp4(normalized.bytes);
+        normalizedClips[slot] = {
+          file: clip.file,
+          bytes: normalized.bytes,
+          mp4,
+          url: URL.createObjectURL(new Blob([normalized.bytes], {type: 'video/mp4'})),
+          conversion: {
+            converted: true,
+            engine: 'WebCodecs',
+            inputBytes: sourceBytes.byteLength,
+            outputBytes: normalized.bytes.byteLength,
+            elapsedMs: normalized.elapsedMs,
+            target: normalized.target,
+            mode: 'normalized',
+            reason: 'pair-normalization',
+            decoderCodec: normalized.decoderCodec,
+            encoderCodec: normalized.encoderCodec,
+            fps: normalized.fps,
+            keyframes: normalized.keyframes,
+            outputSamples: normalized.outputSamples,
+            frameAlignment: normalized.frameAlignment,
+          },
+        };
+      }
+      for (const slot of ['a', 'b']) {
+        revokeClip(slot);
+        clips[slot] = normalizedClips[slot];
+      }
+      renderSourceTiers();
+      finishConversionPanel();
+      return true;
+    } catch (cause) {
+      discardNormalizedClips();
+      if (token !== refreshToken) return false;
+      showConversion('WebCodecs', 'falling back', `${cause instanceof Error ? cause.message : String(cause)} Loading the ffmpeg.wasm fallback…`, null);
+    }
+  }
+
   for (const slot of ['a', 'b']) {
     if (token !== refreshToken) return false;
     const clip = clips[slot];
     const label = `Clip ${slot.toUpperCase()}`;
-    showConversion(label, 'normalizing', `Converting both clips to a common ${target.width}×${target.height} H.264 layout…`, null);
+    showConversion(label, 'normalizing', `Converting both clips with ffmpeg.wasm to a common ${target.width}×${target.height} H.264 layout…`, null);
     if (clip.file.size > MAX_CONVERSION_BYTES) {
       throw new Error(`${label} is ${formatBytes(clip.file.size)}; convert-on-load is limited to 100 MB.`);
     }
@@ -323,8 +415,8 @@ async function refreshPair() {
   reportPanel.hidden = false;
 
   if (!compatibility.compatible) {
-    if (!pairNormalizationAttempted && (clips.a.conversion || clips.b.conversion)) {
-      status.textContent = 'Converted pair is not yet aligned; normalizing both sources with ffmpeg.wasm…';
+    if (!pairNormalizationAttempted) {
+      status.textContent = 'Pair is not natively compatible; normalizing both sources with WebCodecs when available, otherwise ffmpeg.wasm…';
       try {
         const normalized = await normalizePair(token);
         if (!normalized || token !== refreshToken) return;

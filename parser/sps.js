@@ -99,7 +99,7 @@ export function parseSps(nalBytes) {
     }
   }
 
-  reader.readUnsignedExpGolomb();
+  const log2MaxFrameNumMinus4 = reader.readUnsignedExpGolomb();
   const picOrderCountType = reader.readUnsignedExpGolomb();
   if (picOrderCountType === 0) {
     reader.readUnsignedExpGolomb();
@@ -110,7 +110,7 @@ export function parseSps(nalBytes) {
     const cycle = reader.readUnsignedExpGolomb();
     for (let i = 0; i < cycle; i += 1) reader.readSignedExpGolomb();
   }
-  reader.readUnsignedExpGolomb();
+  const maxNumRefFrames = reader.readUnsignedExpGolomb();
   reader.readBit();
   const picWidthInMbsMinus1 = reader.readUnsignedExpGolomb();
   const picHeightInMapUnitsMinus1 = reader.readUnsignedExpGolomb();
@@ -145,6 +145,9 @@ export function parseSps(nalBytes) {
     separateColourPlaneFlag,
     bitDepthLuma,
     bitDepthChroma,
+    log2MaxFrameNum: log2MaxFrameNumMinus4 + 4,
+    picOrderCntType: picOrderCountType,
+    maxNumRefFrames,
     width,
     height,
     frameMbsOnlyFlag,

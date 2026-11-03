@@ -17,7 +17,7 @@
     <section class="panel file-panel" aria-labelledby="source-heading">
       <div>
         <h2 id="source-heading">sources</h2>
-        <p class="muted">Choose MP4, MOV, or another video. H.264 parses natively; everything else is converted locally with ffmpeg.wasm. Files never leave this page.</p>
+        <p class="muted">Choose MP4, MOV, or another video. H.264 parses natively; incompatible H.264 pairs normalize with WebCodecs when available, with ffmpeg.wasm as fallback. Files never leave this page.</p>
       </div>
       <div class="file-actions">
         <label class="file-button">
@@ -39,7 +39,7 @@
         <h2 id="conversion-heading">conversion</h2>
         <span id="conversion-status" class="conversion-status">preparing</span>
       </div>
-      <p id="conversion-message" class="conversion-message">ffmpeg.wasm loads only when a source needs conversion.</p>
+      <p id="conversion-message" class="conversion-message">WebCodecs is preferred when the browser can decode and encode H.264; ffmpeg.wasm loads only as fallback.</p>
       <progress id="conversion-progress" aria-label="Conversion progress"></progress>
     </section>
 
@@ -87,7 +87,7 @@
 
     <aside class="limits" aria-labelledby="limits-heading">
       <h2 id="limits-heading">limits</h2>
-      <p>H.264 MP4/MOV parses natively. Other formats are converted only when needed by ffmpeg.wasm: video-only H.264 High profile, yuv420p, 30 fps, closed GOP, IDR at frame 0, and no B-frames. Pairs that need conversion are scaled and letterboxed to one common larger frame. Conversion is local, slow on large files, and may exceed memory limits or fail on iOS Safari. Merged exports still have no audio.</p>
+      <p>H.264 MP4/MOV parses natively. Incompatible H.264 pairs are normalized with WebCodecs when available, otherwise ffmpeg.wasm. Normalization re-encodes video-only H.264 at 30 fps with a closed 30-frame GOP, an IDR at frame 0, no B-frames, and a common larger letterboxed frame. Other containers and codecs use the lazily loaded ffmpeg.wasm fallback. Conversion is local; large files can exceed device memory or fail on iOS Safari, and hardware acceleration is not guaranteed. Merged exports still have no audio.</p>
     </aside>
   </main>
   <script type="module" src="./app.js"></script>

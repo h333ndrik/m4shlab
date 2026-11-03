@@ -359,8 +359,10 @@ function makeChunkOffset(offset, use64) {
   return fullBox('stco', 0, 0, [u32(1), u32(offset)]);
 }
 
-function makeStss() {
-  return fullBox('stss', 0, 0, [u32(1), u32(1)]);
+function makeStss(sampleNumbers = [1]) {
+  const parts = [u32(sampleNumbers.length)];
+  for (const sampleNumber of sampleNumbers) parts.push(u32(sampleNumber));
+  return fullBox('stss', 0, 0, parts);
 }
 
 function copiedBox(bytes, box) {
@@ -559,3 +561,5 @@ export async function mergeMoshH264(inputA, inputB, parsedA = parseMp4(inputA), 
     },
   };
 }
+
+export { fullBox, makeBox, makeChunkOffset, makeStsc, makeStss, makeStsz, makeStts, u32 };

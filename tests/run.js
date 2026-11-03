@@ -3,10 +3,11 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { parseBoxes, parseMp4 } from '../parser/mp4.js';
+import { childBoxes, parseBoxes, parseMp4 } from '../parser/mp4.js';
 import { extractNals } from '../parser/nal.js';
 import { moshH264 } from '../mosh.js';
 import { CompatibilityError, checkCompatibility, mergeMoshH264 } from '../merge.js';
+import { buildNormalizedMp4, chooseNormalizationTarget } from '../webcodecs-muxer.js';
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const fixturePath = join(projectRoot, 'testmedia', 'synthetic-h264.mp4');
@@ -24,6 +25,7 @@ const phaseBFixtures = {
   timescale: join(projectRoot, 'testmedia', 'synthetic-b-timescale.mp4'),
 };
 const mergedPath = join(projectRoot, 'testmedia', 'synthetic-b-merged-test-output.mp4');
+const normalizedMuxPath = join(projectRoot, 'testmedia', 'synthetic-webcodecs-mux-output.mp4');
 
 function command(program, args, label) {
   const result = spawnSync(program, args, { cwd: projectRoot, encoding: 'utf8' });
@@ -140,6 +142,52 @@ const sizeZeroParsed = parseMp4(sizeZeroInput);
 assert.equal(sizeZeroParsed.videoTrack.samples.length, 75);
 assert.equal(sizeZeroParsed.mdatRanges[0].size, sourceMdat.size);
 pass('top-level size-0 mdat extends to EOF and parses all 75 samples');
+
+const normalizationTarget = chooseNormalizationTarget({width: 320, height: 240}, {width: 256, height: 240});
+assert.deepEqual(normalizationTarget, {width: 320, height: 240});
+assert.deepEqual(
+  chooseNormalizationTarget({width: 321, height: 241}, {width: 200, height: 100}),
+  {width: 320, height: 240},
+  'The common normalization target must be even and shared by both clips',
+);
+pass('normalization resolution logic selects one identical even target using the larger width and height');
+
+const muxDescription = input.subarray(parsed.videoTrack.avcC.payloadStart, parsed.videoTrack.avcC.payloadEnd);
+const muxChunks = parsed.videoTrack.samples.slice(0, 8).map((sample, index) => ({
+  data: input.slice(sample.offset, sample.offset + sample.size),
+  key: index === 0,
+}));
+const normalizedMux = buildNormalizedMp4({chunks: muxChunks, description: muxDescription, width: 320, height: 240});
+writeFileSync(normalizedMuxPath, normalizedMux.bytes);
+const normalizedMuxParsed = parseMp4(normalizedMux.bytes);
+const normalizedMuxTrack = normalizedMuxParsed.videoTrack;
+const normalizedStszSum = normalizedMuxTrack.sampleSizes.sizes.reduce((total, value) => total + value, 0);
+const normalizedMdatLength = normalizedMuxParsed.mdatRanges[0].payloadEnd - normalizedMuxParsed.mdatRanges[0].payloadStart;
+const normalizedSttsSum = normalizedMuxTrack.stts.durations.reduce((total, value) => total + value, 0);
+assert.equal(normalizedMuxTrack.samples.length, muxChunks.length);
+assert.equal(normalizedStszSum, normalizedMdatLength);
+assert.equal(normalizedStszSum, normalizedMux.report.mdatPayloadBytes);
+assert.ok(normalizedMuxTrack.samples.every((sample, index, samples) => index === 0 || sample.offset > samples[index - 1].offset));
+assert.deepEqual(Array.from(normalizedMuxTrack.sampleSizes.sizes), muxChunks.map(chunk => chunk.data.byteLength));
+assert.equal(normalizedSttsSum, normalizedMuxTrack.mdhd.duration);
+assert.equal(normalizedSttsSum, normalizedMux.report.durationUnits);
+assert.equal(normalizedMuxTrack.stsc.length, 1);
+assert.equal(normalizedMuxTrack.stsc[0].samplesPerChunk, muxChunks.length);
+const normalizedTrak = childBoxes(normalizedMux.bytes, normalizedMuxTrack.trak);
+const normalizedMdia = normalizedTrak.find(box => box.type === 'mdia');
+const normalizedMinf = childBoxes(normalizedMux.bytes, normalizedMdia).find(box => box.type === 'minf');
+const normalizedStbl = childBoxes(normalizedMux.bytes, normalizedMinf).find(box => box.type === 'stbl');
+const normalizedStss = childBoxes(normalizedMux.bytes, normalizedStbl).find(box => box.type === 'stss');
+const normalizedStssView = new DataView(normalizedMux.bytes.buffer, normalizedMux.bytes.byteOffset, normalizedMux.bytes.byteLength);
+assert.equal(normalizedStssView.getUint32(normalizedStss.payloadStart + 4), 1);
+assert.equal(normalizedStssView.getUint32(normalizedStss.payloadStart + 8), 1);
+assert.throws(() => buildNormalizedMp4({
+  chunks: muxChunks.map(chunk => ({...chunk, key: false})),
+  description: muxDescription,
+  width: 320,
+  height: 240,
+}), /must begin with a key chunk/);
+pass(`WebCodecs muxer emits ${muxChunks.length} samples with matching stsz/mdat (${normalizedStszSum} B), monotonic offsets, one stss entry, and ${normalizedSttsSum} time units`);
 
 function patchChunkOffsets(bytes, chunkOffsets, delta) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
