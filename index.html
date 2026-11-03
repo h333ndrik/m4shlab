@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Client-side H.264 bitstream moshing.">
+  <title>m4shlab</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main>
+    <header>
+      <h1>m4shlab</h1>
+      <p>H.264 bitstream moshing, entirely in your browser.</p>
+    </header>
+
+    <section class="panel file-panel" aria-labelledby="source-heading">
+      <div>
+        <h2 id="source-heading">source</h2>
+        <p class="muted">Choose one H.264 MP4. The file never leaves this page.</p>
+      </div>
+      <label class="file-button">
+        choose video
+        <input id="file-input" type="file" accept="video/mp4,.mp4">
+      </label>
+    </section>
+
+    <p id="status" class="status" role="status">No video loaded.</p>
+    <p id="error" class="error" role="alert" hidden></p>
+
+    <section class="preview" aria-labelledby="preview-heading">
+      <div class="preview-heading">
+        <h2 id="preview-heading">preview</h2>
+        <div class="toggle" role="group" aria-label="Preview version">
+          <button id="show-original" type="button" aria-pressed="true" disabled>original</button>
+          <button id="show-modified" type="button" aria-pressed="false" disabled>modified</button>
+        </div>
+      </div>
+      <div class="video-shell">
+        <video id="preview-video" controls playsinline muted></video>
+        <div id="empty-preview" class="empty-preview">load an H.264 MP4 to begin</div>
+      </div>
+      <div class="preview-meta">
+        <span id="preview-label">—</span>
+        <button id="export-button" type="button" disabled>export modified MP4</button>
+      </div>
+    </section>
+
+    <details id="report-panel" class="panel report-panel" hidden>
+      <summary>bitstream report</summary>
+      <pre id="report"></pre>
+    </details>
+
+    <aside class="limits" aria-labelledby="limits-heading">
+      <h2 id="limits-heading">limits</h2>
+      <p>The effect depends on the source GOP structure, and decode behavior is device-dependent. Some sources may simply refuse to play after IDR removal, or show black/held frames when you seek directly into a modified GOP. Play from the start for the clearest result. This is expected behavior, not a bug.</p>
+    </aside>
+  </main>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

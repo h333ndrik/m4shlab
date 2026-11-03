@@ -1,0 +1,16 @@
+{
+  "name": "m4shlab",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Client-side H.264 bitstream moshing in the browser",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node scripts/serve.mjs",
+    "test": "node tests/run.js",
+    "test:fixture": "bash testmedia/generate.sh"
+  }
+}
