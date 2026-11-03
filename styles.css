@@ -204,3 +204,27 @@ video {
   .preview-meta { align-items: flex-start; flex-direction: column; }
   .video-shell { min-height: 200px; }
 }
+
+.file-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.compatibility-panel{margin:0 0 24px}
+.compatibility-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:10px}
+.compatibility-heading h2{margin:0}
+.compatibility-status{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding:4px 8px;border:1px solid var(--line);border-radius:999px}
+.compatibility-status.is-compatible{color:#245c3d;border-color:#9cb9a8;background:#edf6f0}
+.compatibility-status.is-incompatible{color:#8b2f20;border-color:#d5aaa0;background:#fff1ec}
+.compatibility-message{margin:0 0 14px;color:var(--muted);line-height:1.55}
+.compatibility-table-wrap{overflow-x:auto;border:1px solid var(--line)}
+.compatibility-table{width:100%;border-collapse:collapse;font-size:.82rem}
+.compatibility-table th,.compatibility-table td{padding:8px 10px;border-bottom:1px solid #e5e5df;text-align:left;vertical-align:top}
+.compatibility-table th{font-size:.7rem;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);background:#f5f5f1}
+.compatibility-table tr:last-child td{border-bottom:0}
+.compatibility-result{white-space:nowrap;font-weight:700}
+.compatibility-result.is-match{color:#245c3d}
+.compatibility-result.is-warning{color:#8d6117}
+.compatibility-result.is-mismatch{color:var(--accent)}
+.audio-note{margin:14px 0 0;color:var(--muted);font-size:.82rem}
+@media (max-width: 620px) {
+  .file-actions{width:100%}
+  .file-actions .file-button{flex:1;text-align:center}
+  .compatibility-heading{align-items:flex-start;flex-direction:column;gap:8px}
+}

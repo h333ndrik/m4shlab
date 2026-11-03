@@ -16,33 +16,56 @@
 
     <section class="panel file-panel" aria-labelledby="source-heading">
       <div>
-        <h2 id="source-heading">source</h2>
-        <p class="muted">Choose one H.264 MP4. The file never leaves this page.</p>
+        <h2 id="source-heading">sources</h2>
+        <p class="muted">Choose two compatible H.264 MP4 clips. Files never leave this page.</p>
       </div>
-      <label class="file-button">
-        choose video
-        <input id="file-input" type="file" accept="video/mp4,.mp4">
-      </label>
+      <div class="file-actions">
+        <label class="file-button">
+          Clip A (base)
+          <input id="file-input-a" type="file" accept="video/mp4,.mp4">
+        </label>
+        <label class="file-button">
+          Clip B (incoming)
+          <input id="file-input-b" type="file" accept="video/mp4,.mp4">
+        </label>
+      </div>
     </section>
 
-    <p id="status" class="status" role="status">No video loaded.</p>
+    <p id="status" class="status" role="status">No videos loaded.</p>
     <p id="error" class="error" role="alert" hidden></p>
+
+    <section id="compatibility-panel" class="panel compatibility-panel" aria-labelledby="compatibility-heading" hidden>
+      <div class="compatibility-heading">
+        <h2 id="compatibility-heading">compatibility</h2>
+        <span id="compatibility-status" class="compatibility-status"></span>
+      </div>
+      <p id="compatibility-message" class="compatibility-message"></p>
+      <div class="compatibility-table-wrap">
+        <table class="compatibility-table">
+          <thead>
+            <tr><th scope="col">criterion</th><th scope="col">clip A</th><th scope="col">clip B</th><th scope="col">result</th></tr>
+          </thead>
+          <tbody id="compatibility-rows"></tbody>
+        </table>
+      </div>
+      <p class="audio-note">Merged A→B export has no audio yet; audio arrives with the normalization phase.</p>
+    </section>
 
     <section class="preview" aria-labelledby="preview-heading">
       <div class="preview-heading">
         <h2 id="preview-heading">preview</h2>
         <div class="toggle" role="group" aria-label="Preview version">
-          <button id="show-original" type="button" aria-pressed="true" disabled>original</button>
-          <button id="show-modified" type="button" aria-pressed="false" disabled>modified</button>
+          <button id="show-original" type="button" aria-pressed="true" disabled>A cut</button>
+          <button id="show-modified" type="button" aria-pressed="false" disabled>merged A→B</button>
         </div>
       </div>
       <div class="video-shell">
         <video id="preview-video" controls playsinline muted></video>
-        <div id="empty-preview" class="empty-preview">load an H.264 MP4 to begin</div>
+        <div id="empty-preview" class="empty-preview">load clips A and B to begin</div>
       </div>
       <div class="preview-meta">
         <span id="preview-label">—</span>
-        <button id="export-button" type="button" disabled>export modified MP4</button>
+        <button id="export-button" type="button" disabled>export merged MP4</button>
       </div>
     </section>
 
@@ -53,7 +76,7 @@
 
     <aside class="limits" aria-labelledby="limits-heading">
       <h2 id="limits-heading">limits</h2>
-      <p>The effect depends on the source GOP structure, and decode behavior is device-dependent. Some sources may simply refuse to play after IDR removal, or show black/held frames when you seek directly into a modified GOP. Play from the start for the clearest result. This is expected behavior, not a bug.</p>
+      <p>Phase B merges compatible pairs only: identical resolution, profile, level, chroma, timescale, and PPS are required. Clip A remains the base; B’s IDR and parameter units are removed so its slices reference A’s final decoded state. Decode behavior remains device-dependent. Play from the start for the clearest result. Arbitrary pairs need the future normalization phase.</p>
     </aside>
   </main>
   <script type="module" src="./app.js"></script>

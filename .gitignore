@@ -1,5 +1,6 @@
 node_modules/
 work/
 dist/
-testmedia/
+testmedia/*
+!testmedia/generate.sh
 .DS_Store

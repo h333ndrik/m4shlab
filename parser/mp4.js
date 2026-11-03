@@ -149,6 +149,101 @@ function parseStz2(bytes, box) {
   };
 }
 
+function parseTimeInfo(bytes, box) {
+  if (box.payloadEnd - box.payloadStart < 20) throw new Mp4Error(`Truncated ${box.type} box`);
+  const version = bytes[box.payloadStart];
+  const view = viewOf(bytes);
+  if (version === 1) {
+    if (box.payloadEnd - box.payloadStart < 32) throw new Mp4Error(`Truncated version 1 ${box.type} box`);
+    return {
+      box,
+      version,
+      creationTime: readUint64(view, box.payloadStart + 4),
+      modificationTime: readUint64(view, box.payloadStart + 12),
+      timescale: view.getUint32(box.payloadStart + 20),
+      duration: readUint64(view, box.payloadStart + 24),
+      timescaleOffset: box.payloadStart + 20,
+      durationOffset: box.payloadStart + 24,
+    };
+  }
+  return {
+    box,
+    version,
+    creationTime: view.getUint32(box.payloadStart + 4),
+    modificationTime: view.getUint32(box.payloadStart + 8),
+    timescale: view.getUint32(box.payloadStart + 12),
+    duration: view.getUint32(box.payloadStart + 16),
+    timescaleOffset: box.payloadStart + 12,
+    durationOffset: box.payloadStart + 16,
+  };
+}
+
+function parseTkhd(bytes, box) {
+  if (box.payloadEnd - box.payloadStart < 24) return null;
+  const version = bytes[box.payloadStart];
+  const payloadLength = box.payloadEnd - box.payloadStart;
+  if (version === 1) {
+    if (payloadLength < 36) throw new Mp4Error('Truncated version 1 tkhd box');
+    return {
+      box,
+      version,
+      trackId: viewOf(bytes).getUint32(box.payloadStart + 20),
+      duration: readUint64(viewOf(bytes), box.payloadStart + 28),
+      durationOffset: box.payloadStart + 28,
+    };
+  }
+  return {
+    box,
+    version,
+    trackId: viewOf(bytes).getUint32(box.payloadStart + 12),
+    duration: viewOf(bytes).getUint32(box.payloadStart + 20),
+    durationOffset: box.payloadStart + 20,
+  };
+}
+
+function parseCtts(bytes, box) {
+  const payloadLength = box.payloadEnd - box.payloadStart;
+  if (payloadLength < 8) throw new Mp4Error('Truncated ctts box');
+  const version = bytes[box.payloadStart];
+  if (version !== 0 && version !== 1) throw new Mp4Error(`Unsupported ctts version ${version}`);
+  const entryCount = uint32At(bytes, box.payloadStart + 4);
+  if (payloadLength < 8 + entryCount * 8) throw new Mp4Error('Truncated ctts entries');
+  const entries = [];
+  const offsets = [];
+  let sampleCount = 0;
+  for (let i = 0; i < entryCount; i += 1) {
+    const offset = box.payloadStart + 8 + i * 8;
+    const count = uint32At(bytes, offset);
+    const rawOffset = uint32At(bytes, offset + 4);
+    const sampleOffset = version === 1 && rawOffset >= 0x80000000 ? rawOffset - 0x100000000 : rawOffset;
+    if (count === 0) throw new Mp4Error(`Invalid ctts entry ${i}`);
+    entries.push({ count, offset: sampleOffset });
+    for (let sample = 0; sample < count; sample += 1) offsets.push(sampleOffset);
+    sampleCount += count;
+  }
+  return { box, version, entries, offsets, sampleCount };
+}
+
+function parseStts(bytes, box) {
+  const payloadLength = box.payloadEnd - box.payloadStart;
+  if (payloadLength < 8) throw new Mp4Error('Truncated stts box');
+  const entryCount = uint32At(bytes, box.payloadStart + 4);
+  if (payloadLength < 8 + entryCount * 8) throw new Mp4Error('Truncated stts entries');
+  const entries = [];
+  const durations = [];
+  let sampleCount = 0;
+  for (let i = 0; i < entryCount; i += 1) {
+    const offset = box.payloadStart + 8 + i * 8;
+    const count = uint32At(bytes, offset);
+    const delta = uint32At(bytes, offset + 4);
+    if (count === 0 || delta === 0) throw new Mp4Error(`Invalid stts entry ${i}`);
+    entries.push({ count, delta });
+    sampleCount += count;
+    for (let sample = 0; sample < count; sample += 1) durations.push(delta);
+  }
+  return { box, entries, durations, sampleCount };
+}
+
 function parseStsc(bytes, box) {
   const payloadLength = box.payloadEnd - box.payloadStart;
   if (payloadLength < 8) throw new Mp4Error('Truncated stsc box');
@@ -227,11 +322,17 @@ function parseTrack(bytes, trak, mdatRanges) {
   const minf = childBox(mdia, mdiaChildren, 'minf', handler === 'vide' || handler === 'soun');
   if (!minf) return { handler, trak, complete: false };
 
+  const mdhdBox = childBox(mdia, mdiaChildren, 'mdhd', false);
+  const tkhdBox = childBox(trak, trakChildren, 'tkhd', false);
+  const mdhd = mdhdBox ? parseTimeInfo(bytes, mdhdBox) : null;
+  const tkhd = tkhdBox ? parseTkhd(bytes, tkhdBox) : null;
   const minfChildren = childBoxes(bytes, minf);
   const stbl = childBox(minf, minfChildren, 'stbl');
   const stblBoxes = childBoxes(bytes, stbl);
   const stsdBox = childBox(stbl, stblBoxes, 'stsd');
   const stscBox = childBox(stbl, stblBoxes, 'stsc');
+  const sttsBox = childBox(stbl, stblBoxes, 'stts', false);
+  const cttsBox = childBox(stbl, stblBoxes, 'ctts', false);
   const stcoBox = stblBoxes.find((candidate) => candidate.type === 'stco' || candidate.type === 'co64');
   const stszBox = stblBoxes.find((candidate) => candidate.type === 'stsz' || candidate.type === 'stz2');
   if (!stcoBox || !stszBox) throw new Mp4Error(`Track handler ${handler} has no supported sample size/chunk offset table`);
@@ -239,6 +340,8 @@ function parseTrack(bytes, trak, mdatRanges) {
   const sampleSizes = stszBox.type === 'stsz' ? parseStsz(bytes, stszBox) : parseStz2(bytes, stszBox);
   const chunkOffsets = parseChunkOffsets(bytes, stcoBox);
   const stsc = parseStsc(bytes, stscBox);
+  const stts = sttsBox ? parseStts(bytes, sttsBox) : null;
+  const ctts = cttsBox ? parseCtts(bytes, cttsBox) : null;
   const sampleEntries = parseStsd(bytes, stsdBox);
   const samples = [];
 
@@ -291,6 +394,10 @@ function parseTrack(bytes, trak, mdatRanges) {
     complete: true,
     stsd: { box: stsdBox, entries: sampleEntries },
     stsc,
+    stts,
+    ctts,
+    mdhd,
+    tkhd,
     sampleSizes,
     chunkOffsets,
     samples,
@@ -311,6 +418,8 @@ export function parseMp4(bytes) {
   if (mdatRanges.length === 0) throw new Mp4Error('No mdat box found');
 
   const moovChildren = childBoxes(bytes, moov);
+  const mvhdBox = childBox(moov, moovChildren, 'mvhd', false);
+  const mvhd = mvhdBox ? parseTimeInfo(bytes, mvhdBox) : null;
   const tracks = moovChildren.filter((box) => box.type === 'trak').map((trak) => parseTrack(bytes, trak, mdatRanges));
   const videoTracks = tracks.filter((track) => track.video);
   if (videoTracks.length === 0) throw new Mp4Error('No H.264 video track found');
@@ -320,6 +429,7 @@ export function parseMp4(bytes) {
     bytes,
     boxes,
     moov,
+    mvhd,
     mdatRanges,
     tracks,
     videoTrack: videoTracks[0],
