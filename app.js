@@ -70,6 +70,8 @@ const effectParameter = document.querySelector('#effect-parameter');
 const effectParameterLabel = document.querySelector('#effect-parameter-label');
 const effectParameterValue = document.querySelector('#effect-parameter-value');
 const effectParameterMax = document.querySelector('#effect-parameter-max');
+const meltCadenceControl = document.querySelector('#melt-cadence-control');
+const meltCadence = document.querySelector('#melt-cadence');
 const resetPulseOptions = document.querySelector('#reset-pulse-options');
 const resetInterval = document.querySelector('#reset-interval');
 const resetIntervalValue = document.querySelector('#reset-interval-value');
@@ -290,6 +292,7 @@ function effectSettingsForClip(clip) {
       durationFrames: settings.durationFrames,
       durationSeconds: settings.durationSeconds,
       ending: settings.ending,
+      smooth: clip.meltSmooth === true,
     };
   }
   if (clip?.transition === 'loop') {
@@ -449,7 +452,7 @@ function renderConnector(index) {
       : (seconds === null ? 'incoming clip' : `${seconds.toFixed(2)} s`);
   } else if (incoming.transition === 'melt') {
     const effect = effectSettingsForClip(incoming);
-    duration.textContent = `${effect.durationSeconds.toFixed(2)} s · ${effect.repeat}× · ${effect.ending}`;
+    duration.textContent = `${effect.durationSeconds.toFixed(2)} s · ${effect.repeat}× · ${effect.smooth ? 'gentler' : 'original'} · ${effect.ending}`;
   } else if (incoming.transition === 'loop') {
     const effect = effectSettingsForClip(incoming);
     duration.textContent = `${effect.durationSeconds.toFixed(2)} s · ${effect.loopFrames}f · ${effect.ending}`;
@@ -665,6 +668,7 @@ function updateTransitionOptionsVisibility() {
   const method = transitionDialog.querySelector('input[name="transition-method"]:checked')?.value;
   classicMoshOptions.hidden = method === 'cut';
   nalEffectOptions.hidden = method !== 'melt' && method !== 'loop';
+  meltCadenceControl.hidden = method !== 'melt';
   resetPulseOptions.hidden = method !== 'reset-pulse';
 }
 
@@ -693,7 +697,9 @@ function setEffectParameterControl(method, clip) {
   } else {
     effectParameter.min = '2';
     effectParameter.max = '12';
-    effectParameter.value = String(effectSettingsForClip({...clip, transition: 'melt'}).repeat);
+    const melt = effectSettingsForClip({...clip, transition: 'melt'});
+    effectParameter.value = String(melt.repeat);
+    meltCadence.value = melt.smooth ? 'gentler' : 'original';
   }
   effectParameter.step = '1';
   updateEffectParameterDisplay();
@@ -790,6 +796,7 @@ transitionApply.addEventListener('click', event => {
     } : {}),
     ...(selected === 'melt' ? {
       meltRepeat: Math.round(Number(effectParameter.value)),
+      meltSmooth: meltCadence.value === 'gentler',
     } : {}),
     ...(selected === 'loop' ? {
       loopFrames: Math.round(Number(effectParameter.value)),
@@ -803,6 +810,7 @@ transitionApply.addEventListener('click', event => {
     || current.moshDurationFrames !== next.moshDurationFrames
     || current.moshEnding !== next.moshEnding
     || current.meltRepeat !== next.meltRepeat
+    || current.meltSmooth !== next.meltSmooth
     || current.loopFrames !== next.loopFrames
     || current.resetInterval !== next.resetInterval
     || current.resetRepeat !== next.resetRepeat) {
@@ -900,6 +908,7 @@ async function readClipFile(file, index, token) {
     moshDurationFrames: null,
     moshEnding: 'restore',
     meltRepeat: 4,
+    meltSmooth: false,
     loopFrames: 4,
     resetInterval: 12,
     resetRepeat: 4,
@@ -1137,7 +1146,9 @@ function videoSampleCountsForResult(result, clips) {
 }
 
 async function addMergedAudio(result, clips) {
-  const methods = clips.slice(1).map(clip => clip.transition);
+  const methods = clips.slice(1).map(clip => clip.transition === 'melt'
+    ? {method: 'melt', dropFrames: 1}
+    : clip.transition);
   const fps = frameRateForTrack(clips[0].mp4.videoTrack);
   const timeline = assembleAudioTimeline({
     clips: clips.map(clip => clip.audio ?? silentClipAudio(clip.mp4.videoTrack.samples.length)),
@@ -1247,7 +1258,7 @@ async function addMergedAudio(result, clips) {
     webcodecsFallbackReason: fallbackReason,
     segments: timeline.segments,
     sources: sourceClipReport,
-    policy: 'audio follows the clip timeline; Classic Mosh drops one incoming frame; Melt/Loop add silence for extra picture-only frames',
+    policy: 'audio follows the clip timeline; Classic Mosh, Loop and Reset Pulse drop one incoming frame; explicit-window Melt starts one frame in; extra picture-only frames are padded with silence',
   };
   finishConversionPanel();
   return result;
@@ -1413,6 +1424,7 @@ async function refreshSequence() {
           durationSeconds: settings?.durationSeconds ?? null,
           ending: settings?.ending ?? null,
           repeat: effect?.repeat ?? null,
+          smooth: effect?.smooth ?? false,
           loopFrames: effect?.loopFrames ?? null,
           resetInterval: effect?.resetInterval ?? null,
           resetRepeat: effect?.repeat ?? null,

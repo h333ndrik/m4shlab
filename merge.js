@@ -660,18 +660,41 @@ function resolveEffectSettings(track, firstIdrSample, method, options) {
   return resolveClassicMoshSettings(track, firstIdrSample, resolvedOptions);
 }
 
+function softenDonorPositions(positions) {
+  const count = positions.length;
+  const releaseOutputIndex = count - Math.max(1, Math.floor(count / 4));
+  const softened = [];
+  let previous = 0;
+  for (let index = 0; index < count; index += 1) {
+    const desired = positions[index];
+    const lower = Math.max(0, releaseOutputIndex - 2 * (releaseOutputIndex - index));
+    const value = index >= releaseOutputIndex
+      ? index
+      : Math.min(previous + 2, Math.max(previous, desired, lower));
+    softened.push(value);
+    previous = value;
+  }
+  return {positions: softened, releaseOutputIndex};
+}
+
 function effectParameters(method, options = {}) {
   if (method === 'melt') {
+    if (options.smooth !== undefined && typeof options.smooth !== 'boolean') {
+      throw new Mp4Error('Melt smooth must be a boolean.');
+    }
     return {
       method,
       repeat: integerOption(options.repeat, 4, MELT_REPEAT_MIN, MELT_REPEAT_MAX, 'Melt repeat'),
+      smooth: options.smooth === true,
       loopFrames: null,
     };
   }
+  if (options.smooth === true) throw new Mp4Error('Gentler cadence is only available for Melt.');
   if (method === 'loop') {
     return {
       method,
       repeat: null,
+      smooth: false,
       loopFrames: integerOption(options.loopFrames ?? options.loop_frames, 4, LOOP_FRAMES_MIN, LOOP_FRAMES_MAX, 'Loop frames'),
     };
   }
@@ -680,6 +703,7 @@ function effectParameters(method, options = {}) {
       method,
       repeat: integerOption(options.repeat, 4, MELT_REPEAT_MIN, MELT_REPEAT_MAX, 'Reset Pulse repeat'),
       resetInterval: integerOption(options.resetInterval ?? options.reset_interval, 12, RESET_INTERVAL_MIN, RESET_INTERVAL_MAX, 'Reset interval'),
+      smooth: false,
       loopFrames: null,
     };
   }
@@ -758,6 +782,7 @@ function prepareEffectB(inputB, parsedB, method, options = {}) {
   const firstIdr = nals.find(nal => nal.type === IDR_NAL_TYPE);
   if (!firstIdr) throw new Mp4Error('Clip B has no IDR NAL unit');
   const settings = resolveEffectSettings(track, firstIdr.sampleIndex, method, options);
+  if (effect.smooth && !explicitDuration) throw new Mp4Error('Gentler Melt cadence requires an explicit duration window.');
   const sourceSamples = track.samples.map(sample => {
     const sampleNals = bySample.get(sample.index) ?? [];
     const retainedNals = sampleNals.filter(nal => {
@@ -798,6 +823,7 @@ function prepareEffectB(inputB, parsedB, method, options = {}) {
   let loopSecondWindow = [];
   let loopSchedule = null;
   let loopPlan = null;
+  let meltReleaseOutputIndex = null;
   if (effect.method === 'loop') {
     const windowFrames = explicitDuration ? settings.durationFrames : availableAfterBoundary.length;
     loopPlan = loopReleaseSchedule(windowFrames, effect.loopFrames);
@@ -825,7 +851,10 @@ function prepareEffectB(inputB, parsedB, method, options = {}) {
   if (effect.method === 'melt' && explicitDuration) {
     if (settings.durationFrames < 1) throw new Mp4Error('Melt needs a non-empty duration window.');
     if (nonIdrDonors.length === 0) throw new Mp4Error('Melt needs at least one non-IDR donor sample in clip B.');
-    const donorPositions = Array.from({length: settings.durationFrames}, (_, index) => Math.floor(index / effect.repeat));
+    const baseDonorPositions = Array.from({length: settings.durationFrames}, (_, index) => Math.floor(index / effect.repeat));
+    const softened = effect.smooth ? softenDonorPositions(baseDonorPositions) : null;
+    const donorPositions = softened?.positions ?? baseDonorPositions;
+    meltReleaseOutputIndex = softened?.releaseOutputIndex ?? null;
     const donorSources = donorPositions.map(position => nonIdrDonors[position]);
     const missing = donorSources.findIndex(source => !source);
     if (missing >= 0) {
@@ -833,7 +862,7 @@ function prepareEffectB(inputB, parsedB, method, options = {}) {
     }
     const tailStartSample = donorSources[donorSources.length - 1].sample.index + 1;
     const tailSources = sourceSamples.filter(source => source.sample.index >= tailStartSample && source.data);
-    meltPlan = {donorPositions, donorSources, tailStartSample, tailSources};
+    meltPlan = {baseDonorPositions, donorPositions, donorSources, tailStartSample, tailSources};
   }
   const scheduled = [];
   const repeatedSourceSamples = new Set();
@@ -1013,6 +1042,9 @@ function prepareEffectB(inputB, parsedB, method, options = {}) {
     ending: settings.ending,
     clamped: settings.clamped,
     windowOutputSamples,
+    smooth: effect.smooth === true,
+    releaseOutputIndex: meltReleaseOutputIndex,
+    baseDonorPositions: meltPlan?.baseDonorPositions ?? null,
     scheduledSourceSamples: windowOutputSamples === null
       ? []
       : scheduled.slice(0, windowOutputSamples).map(sample => sample.sourceSampleIndex),
@@ -1672,6 +1704,7 @@ export async function mergeSequenceH264(clips, methods = []) {
       durationSeconds: value.durationSeconds ?? value.duration,
       ending: value.ending ?? (value.method === 'melt' || value.method === 'loop' ? 'continue' : 'restore'),
       repeat: value.repeat,
+      smooth: value.smooth === true,
       loopFrames: value.loopFrames ?? value.loop_frames,
       resetInterval: value.resetInterval ?? value.reset_interval,
     };
@@ -1708,6 +1741,7 @@ export async function mergeSequenceH264(clips, methods = []) {
         durationFrames: transition.durationFrames,
         durationSeconds: transition.durationSeconds,
         ending: transition.ending,
+        smooth: transition.smooth,
       });
     } else {
       step = await mergeMoshH264(currentBytes, incoming.bytes, currentParsed, incomingParsed, {

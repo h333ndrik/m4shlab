@@ -101,11 +101,20 @@ export function assembleAudioTimeline({clips, methods = [], videoSampleCounts, f
   for (let index = 0; index < methods.length; index += 1) {
     const target = videoSampleCounts[index + 1] - videoSampleCounts[index];
     if (target < 0) throw new RuntimeError(`Boundary ${index + 1} reduced the cumulative video sample count.`);
-    const method = methods[index];
+    const transition = typeof methods[index] === 'string' ? {method: methods[index]} : methods[index];
+    if (!transition || typeof transition.method !== 'string') {
+      throw new RuntimeError(`Boundary ${index + 1} has no audio transition method.`);
+    }
+    const method = transition.method;
+    const defaultDropFrames = method === 'classic-mosh' || method === 'loop' || method === 'reset-pulse' ? 1 : 0;
+    const dropFrames = transition.dropFrames ?? defaultDropFrames;
+    if (!Number.isInteger(dropFrames) || dropFrames < 0) {
+      throw new RuntimeError(`Boundary ${index + 1} has an invalid audio drop-frame count.`);
+    }
     appendSegment({
       entry: clips[index + 1],
       target,
-      dropFrames: method === 'classic-mosh' || method === 'loop' || method === 'reset-pulse' ? 1 : 0,
+      dropFrames,
       method,
       boundaryIndex: index + 1,
     });

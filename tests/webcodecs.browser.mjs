@@ -478,6 +478,8 @@ try {
       classicHidden: document.querySelector('#classic-mosh-options').hidden,
       effectHidden: document.querySelector('#nal-effect-options').hidden,
       ending: document.querySelector('#transition-ending').value,
+      cadenceHidden: document.querySelector('#melt-cadence-control').hidden,
+      cadence: document.querySelector('#melt-cadence').value,
       label: document.querySelector('#effect-parameter-label').textContent,
       min: Number(effect.min),
       max: Number(effect.max),
@@ -490,6 +492,7 @@ try {
     const loopState = {
       classicHidden: document.querySelector('#classic-mosh-options').hidden,
       ending: document.querySelector('#transition-ending').value,
+      cadenceHidden: document.querySelector('#melt-cadence-control').hidden,
       label: document.querySelector('#effect-parameter-label').textContent,
       max: Number(effect.max),
       value: Number(effect.value),
@@ -531,6 +534,8 @@ try {
   assert.equal(durationControls.meltState.classicHidden, false);
   assert.equal(durationControls.meltState.effectHidden, false);
   assert.equal(durationControls.meltState.ending, 'continue');
+  assert.equal(durationControls.meltState.cadenceHidden, false);
+  assert.equal(durationControls.meltState.cadence, 'original');
   assert.equal(durationControls.meltState.label, 'repeat');
   assert.equal(durationControls.meltState.min, 2);
   assert.equal(durationControls.meltState.max, 12);
@@ -539,6 +544,7 @@ try {
   assert.equal(durationControls.loopState.label, 'loop frames');
   assert.equal(durationControls.loopState.classicHidden, false);
   assert.equal(durationControls.loopState.ending, 'continue');
+  assert.equal(durationControls.loopState.cadenceHidden, true);
   assert.equal(durationControls.loopState.max, 48);
   assert.equal(durationControls.loopState.value, 4);
   assert.match(durationControls.loopState.valueText, /4 frames/);
@@ -642,6 +648,11 @@ try {
         parameter.value = '${value}';
         parameter.dispatchEvent(new Event('input', {bubbles: true}));
       }
+      if (${JSON.stringify(method)} === 'melt' && ${options.smooth !== undefined}) {
+        const cadence = document.querySelector('#melt-cadence');
+        cadence.value = '${options.smooth ? 'gentler' : 'original'}';
+        cadence.dispatchEvent(new Event('change', {bubbles: true}));
+      }
       if (${JSON.stringify(method)} !== 'cut' && ${options.durationFrames !== undefined}) {
         const duration = document.querySelector('#transition-duration');
         duration.value = '${options.durationFrames ?? 12}';
@@ -664,7 +675,9 @@ try {
       const node = document.querySelector('#report');
       if (!node.textContent) return false;
       const report = JSON.parse(node.textContent);
-      return report.stage === 'merged' && report.transitions?.[0]?.method === '${method}';
+      return report.stage === 'merged'
+        && report.transitions?.[0]?.method === '${method}'
+        && report.merge?.effect?.smooth === ${options.smooth === true};
     })()`, 30000);
     return client.evaluate(`(() => {
       const report = JSON.parse(document.querySelector('#report').textContent);
@@ -689,6 +702,18 @@ try {
   assert.equal(meltUi.effect.scheduledSourceSamples.length, 80);
   assert.equal(meltUi.patchedSamples, 78);
   assert.equal(meltUi.previewEnabled, true);
+  const gentleUi = await applyEffect('melt', 2, {durationFrames: 12, ending: 'continue', smooth: true});
+  assert.equal(gentleUi.error, null, gentleUi.error);
+  assert.equal(gentleUi.method, 'melt');
+  assert.equal(gentleUi.mergedSamples, 99);
+  assert.equal(gentleUi.effect.repeat, 2);
+  assert.equal(gentleUi.effect.smooth, true);
+  assert.equal(gentleUi.effect.window.releaseOutputIndex, 9);
+  assert.deepEqual(gentleUi.effect.window.scheduledSourceSamples, [1, 1, 2, 2, 3, 3, 4, 6, 8, 10, 11, 12]);
+  assert.equal(gentleUi.effect.window.tail.donorStartSample, 13);
+  assert.equal(gentleUi.effect.scheduledSourceSamples.length, 74);
+  assert.equal(gentleUi.patchedSamples, 72);
+  assert.equal(gentleUi.previewEnabled, true);
   const loopUi = await applyEffect('loop', 4, {durationFrames: 12, ending: 'continue'});
   assert.equal(loopUi.error, null, loopUi.error);
   assert.equal(loopUi.method, 'loop');
@@ -718,7 +743,7 @@ try {
   assert.equal(effectPlayback.error, null);
   assert.equal(effectPlayback.width, 320);
   assert.equal(effectPlayback.height, 240);
-  console.log('PASS browser Melt, Loop Release, and Reset Pulse produce 105-, 99-, and 99-sample decodable sequences with duration windows');
+  console.log('PASS browser Melt, Gentler Melt, Loop Release, and Reset Pulse produce 105-, 99-, 99-, and 99-sample decodable sequences');
 
   await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?normalize-effect=1'});
   await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);

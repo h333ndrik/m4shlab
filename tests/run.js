@@ -51,6 +51,7 @@ const loopOutputPath = join(projectRoot, 'testmedia', 'synthetic-loop-test-outpu
 const poc0MeltOutputPath = join(projectRoot, 'testmedia', 'synthetic-poc0-melt-test-output.mp4');
 const meltDurationOutputPath = join(projectRoot, 'testmedia', 'synthetic-melt-duration-test-output.mp4');
 const meltRestoreOutputPath = join(projectRoot, 'testmedia', 'synthetic-melt-restore-test-output.mp4');
+const meltGentleOutputPath = join(projectRoot, 'testmedia', 'synthetic-melt-gentle-test-output.mp4');
 const loopDurationOutputPath = join(projectRoot, 'testmedia', 'synthetic-loop-duration-test-output.mp4');
 const resetPulseOutputPath = join(projectRoot, 'testmedia', 'synthetic-reset-pulse-test-output.mp4');
 const resetPulsePoc0OutputPath = join(projectRoot, 'testmedia', 'synthetic-reset-pulse-poc0-test-output.mp4');
@@ -784,6 +785,72 @@ assert.match(meltDurationProbe.stdout, /has_b_frames=0/);
 command('ffmpeg', ['-v', 'error', '-i', meltDurationOutputPath, '-f', 'null', '-'], 'Melt duration strict decode');
 pass(`Melt duration=12 emits an exact 12-frame hold window, then donor 7 tail, and decodes ${meltDurationDecoded}/105 frames`);
 
+const gentleWindowSources = [1, 1, 2, 2, 3, 3, 4, 6, 8, 10, 11, 12];
+const gentleSchedule = [
+  ...gentleWindowSources,
+  ...Array.from({length: 62}, (_, index) => index + 13),
+];
+const gentleMelt = await mergeEffectH264(multiGopAInput, multiGopBInput, multiGopAParsed, multiGopBParsed, {
+  method: 'melt',
+  repeat: 2,
+  durationFrames: 12,
+  ending: 'continue',
+  smooth: true,
+});
+assert.equal(gentleMelt.report.effect.smooth, true);
+assert.equal(gentleMelt.report.effect.window.smooth, true);
+assert.equal(gentleMelt.report.effect.window.releaseOutputIndex, 9);
+assert.deepEqual(gentleMelt.report.effect.window.baseDonorPositions, [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5]);
+assert.deepEqual(gentleMelt.report.effect.window.scheduledSourceSamples, gentleWindowSources);
+assert.deepEqual(gentleMelt.report.effect.scheduledSourceSamples, gentleSchedule);
+assert.deepEqual(gentleMelt.report.effect.window.tail, {
+  outputStart: 37,
+  donorStartSample: 13,
+  restoreResetPosition: null,
+});
+const gentleDonorPositions = gentleWindowSources.map(sampleIndex => sampleIndex - 1);
+for (let index = 1; index < gentleMelt.report.effect.window.releaseOutputIndex; index += 1) {
+  assert.ok(gentleDonorPositions[index] - gentleDonorPositions[index - 1] <= 2);
+}
+assert.deepEqual(gentleDonorPositions.slice(9), [9, 10, 11]);
+assert.equal(gentleMelt.report.mergedSamples, 99);
+assert.equal(gentleMelt.report.frameAlignment.patchedSamples, 72);
+const gentleParsed = parseMp4(gentleMelt.output);
+assertEffectNalPayloads(
+  extractNals(gentleMelt.output, gentleParsed.videoTrack),
+  extractNals(multiGopAInput, multiGopAParsed.videoTrack).length,
+  multiGopBNals,
+  gentleMelt.report.effect.scheduledSourceSamples,
+  meltSps,
+  'melt-gentler',
+);
+writeFileSync(meltGentleOutputPath, gentleMelt.output);
+const gentleProbe = command('ffprobe', [
+  '-v', 'error', '-select_streams', 'v:0', '-count_frames',
+  '-show_entries', 'stream=nb_read_frames,has_b_frames', '-of', 'default=noprint_wrappers=1', meltGentleOutputPath,
+], 'Gentler Melt decode probe');
+assert.match(gentleProbe.stdout, /nb_read_frames=99/);
+assert.match(gentleProbe.stdout, /has_b_frames=0/);
+command('ffmpeg', ['-v', 'error', '-i', meltGentleOutputPath, '-f', 'null', '-'], 'Gentler Melt strict decode');
+pass('Gentler Melt bounds donor advances to two frames, uses consecutive donors in the final quarter, and decodes 99/99');
+
+const gentleRestore = await mergeEffectH264(multiGopAInput, multiGopBInput, multiGopAParsed, multiGopBParsed, {
+  method: 'melt',
+  repeat: 2,
+  durationFrames: 12,
+  ending: 'restore',
+  smooth: true,
+});
+assert.equal(gentleRestore.report.mergedSamples, 100);
+assert.deepEqual(gentleRestore.report.reInsertedIdrPositions, [37]);
+await assert.rejects(
+  () => mergeEffectH264(multiGopAInput, multiGopBInput, multiGopAParsed, multiGopBParsed, {
+    method: 'melt', repeat: 2, smooth: true,
+  }),
+  error => /Gentler Melt cadence requires an explicit duration window/.test(error.message),
+);
+pass('Gentler Restore keeps the IDR anchor and Gentler without an explicit duration fails loudly');
+
 const meltRestore = await mergeEffectH264(multiGopAInput, multiGopBInput, multiGopAParsed, multiGopBParsed, {
   method: 'melt',
   repeat: 2,
@@ -1197,23 +1264,24 @@ pass('Melt audio follows the linear clip timeline and pads extra picture-only fr
 
 const meltDurationAudio = assembleAudioTimeline({
   clips: [audioA, audioB],
-  methods: ['melt'],
+  methods: [{method: 'melt', dropFrames: 1}],
   videoSampleCounts: [25, 105],
   fps: 25,
 });
 assert.equal(meltDurationAudio.expectedSamples, 105 * 1920);
 assert.equal(meltDurationAudio.pcm.length, 105 * 1920 * 2);
-assert.equal(meltDurationAudio.segments[1].targetFrames ?? meltDurationAudio.segments[1].videoFrames, 80);
-assert.equal(meltDurationAudio.segments[1].paddedFrames, 55);
+assert.equal(meltDurationAudio.segments[1].dropFrames, 1);
+assert.equal(meltDurationAudio.segments[1].videoFrames, 80);
+assert.equal(meltDurationAudio.segments[1].paddedFrames, 56);
 const meltRestoreAudio = assembleAudioTimeline({
   clips: [audioA, audioB],
-  methods: ['melt'],
+  methods: [{method: 'melt', dropFrames: 1}],
   videoSampleCounts: [25, 106],
   fps: 25,
 });
 assert.equal(meltRestoreAudio.expectedSamples, 106 * 1920);
 assert.equal(meltRestoreAudio.segments[1].videoFrames, 81);
-assert.equal(meltRestoreAudio.segments[1].paddedFrames, 56);
+assert.equal(meltRestoreAudio.segments[1].paddedFrames, 57);
 const loopDurationAudio = assembleAudioTimeline({
   clips: [audioA, audioB],
   methods: ['loop'],
@@ -1224,7 +1292,16 @@ assert.equal(loopDurationAudio.expectedSamples, 99 * 1920);
 assert.equal(loopDurationAudio.segments[1].dropFrames, 1);
 assert.equal(loopDurationAudio.segments[1].videoFrames, 74);
 assert.equal(loopDurationAudio.segments[1].paddedFrames, 50);
-pass('Melt and Loop duration/ending windows keep audio sample-exact with linear timeline padding');
+const gentleAudio = assembleAudioTimeline({
+  clips: [audioA, audioB],
+  methods: [{method: 'melt', dropFrames: 1}],
+  videoSampleCounts: [25, 99],
+  fps: 25,
+});
+assert.equal(gentleAudio.expectedSamples, 99 * 1920);
+assert.equal(gentleAudio.segments[1].videoFrames, 74);
+assert.equal(gentleAudio.segments[1].paddedFrames, 50);
+pass('Melt, Gentler Melt, and Loop duration/ending windows keep audio sample-exact with linear timeline padding');
 
 const loopAudio = assembleAudioTimeline({
   clips: [audioA, audioB],
