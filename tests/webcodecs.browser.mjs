@@ -35,6 +35,8 @@ const speedMergedPath = join(projectRoot, 'testmedia', 'webcodecs-speed-merged.m
 const multiGopMergedPath = join(projectRoot, 'testmedia', 'webcodecs-browser-multigop-merged.mp4');
 const hybridExportPath = join(projectRoot, 'testmedia', 'webcodecs-hybrid-export.mp4');
 const multiTimelineExportPath = join(projectRoot, 'testmedia', 'webcodecs-multitimeline-export.mp4');
+const looksMergedPath = join(projectRoot, 'testmedia', 'webcodecs-looks-merged.mp4');
+const looksFramePath = join(projectRoot, 'testmedia', 'webcodecs-looks-frame.rgb');
 const chromeCandidates = [
   process.env.CHROME_BIN,
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -1116,6 +1118,95 @@ try {
   assert.equal(targetSpeed.height, 720);
   assert.equal(targetSpeed.resetDisabled, false);
   console.log('PASS single clip speed=2 and 720px normalization run in one 540×720 WebCodecs pass');
+
+  await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?clip-looks=1'});
+  await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
+  await client.setFile('#file-input-a', fixtures.speed);
+  await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 30000);
+  await client.setFile('#file-input-b', fixtures.speed);
+  await client.waitFor(`(() => {
+    if (!document.querySelector('#error').hidden) return true;
+    try { return JSON.parse(document.querySelector('#report').textContent).stage === 'merged'; } catch { return false; }
+  })()`, 120000);
+  const lookControls = await client.evaluate(`(() => ({
+    count: document.querySelectorAll('.clip-look select').length,
+    values: [...document.querySelectorAll('.clip-look select')].map(select => select.value),
+    options: [...document.querySelector('.clip-look select').options].map(option => option.textContent),
+    disabled: [...document.querySelectorAll('.clip-look select')].some(select => select.disabled),
+  }))()`);
+  assert.equal(lookControls.count, 2);
+  assert.deepEqual(lookControls.values, ['original', 'original']);
+  assert.deepEqual(lookControls.options, ['Original', 'Black & white', 'B&W negative', 'Color negative']);
+  assert.equal(lookControls.disabled, false);
+
+  const setClipLook = async (index, look) => {
+    await client.evaluate(`(() => {
+      const select = document.querySelectorAll('.clip-look select')[${index}];
+      select.value = ${JSON.stringify(look)};
+      select.dispatchEvent(new Event('change', {bubbles: true}));
+    })()`);
+    await client.waitFor(`(() => {
+      if (!document.querySelector('#error').hidden) return true;
+      try {
+        const report = JSON.parse(document.querySelector('#report').textContent);
+        return report.stage === 'merged' && report.sources?.clips?.[${index}]?.lookReport?.look === ${JSON.stringify(look)};
+      } catch { return false; }
+    })()`, 120000);
+  };
+  await setClipLook(0, 'black-white');
+  await setClipLook(1, 'color-negative');
+  const lookReport = await client.evaluate(`(() => {
+    const report = JSON.parse(document.querySelector('#report').textContent);
+    return {
+      error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
+      looks: report.sources.clips.map(clip => clip.look),
+      prepared: report.sources.clips.map(clip => clip.preparedLook),
+      reports: report.sources.clips.map(clip => clip.lookReport),
+      reasons: report.sources.clips.map(clip => clip.conversion?.reason),
+      boundaryLooks: report.transitions.map(transition => transition.look),
+      selectValues: [...document.querySelectorAll('.clip-look select')].map(select => select.value),
+    };
+  })()`);
+  assert.equal(lookReport.error, null, lookReport.error);
+  assert.deepEqual(lookReport.looks, ['black-white', 'color-negative']);
+  assert.deepEqual(lookReport.prepared, ['black-white', 'color-negative']);
+  assert.deepEqual(lookReport.reasons, ['look-normalization', 'look-normalization']);
+  assert.deepEqual(lookReport.boundaryLooks, ['color-negative']);
+  assert.deepEqual(lookReport.selectValues, ['black-white', 'color-negative']);
+  assert.ok(lookReport.reports.every(report => report.encodePasses === 1));
+  assert.notEqual(lookReport.reports[0].cacheKey, lookReport.reports[1].cacheKey);
+  assert.match(lookReport.reports[0].cacheKey, /black-white$/);
+  assert.match(lookReport.reports[1].cacheKey, /color-negative$/);
+
+  await client.evaluate("document.querySelector('#undo-button').click()");
+  await client.waitFor("document.querySelectorAll('.clip-look select')[1]?.value === 'original' && JSON.parse(document.querySelector('#report').textContent).sources?.clips?.[1]?.look === 'original'", 120000);
+  await client.evaluate("document.querySelector('#redo-button').click()");
+  await client.waitFor("document.querySelectorAll('.clip-look select')[1]?.value === 'color-negative' && JSON.parse(document.querySelector('#report').textContent).sources?.clips?.[1]?.look === 'color-negative'", 120000);
+
+  rmSync(mergedPath, {force: true});
+  rmSync(looksMergedPath, {force: true});
+  await client.evaluate("document.querySelector('#export-button').click()");
+  await waitForDownload(mergedPath, 30000);
+  writeFileSync(looksMergedPath, readFileSync(mergedPath));
+  const looksProbe = command('ffprobe', [
+    '-v', 'error', '-select_streams', 'v:0', '-count_frames',
+    '-show_entries', 'stream=codec_name,width,height,nb_read_frames', '-of', 'default=noprint_wrappers=1', looksMergedPath,
+  ], 'looks merge probe');
+  const looksFrames = Number(/nb_read_frames=(\d+)/.exec(looksProbe.stdout)?.[1] ?? 0);
+  assert.ok(looksFrames > 0);
+  rmSync(looksFramePath, {force: true});
+  command('ffmpeg', ['-v', 'error', '-y', '-ss', '0.5', '-i', looksMergedPath, '-frames:v', '1', '-pix_fmt', 'rgb24', '-f', 'rawvideo', looksFramePath], 'looks frame extract');
+  const lookedRgb = readFileSync(looksFramePath);
+  let largestChannelDelta = 0;
+  for (let offset = 0; offset + 2 < lookedRgb.byteLength; offset += 3) {
+    const r = lookedRgb[offset];
+    const g = lookedRgb[offset + 1];
+    const b = lookedRgb[offset + 2];
+    largestChannelDelta = Math.max(largestChannelDelta, r - Math.min(g, b), g - Math.min(r, b), b - Math.min(r, g));
+  }
+  assert.ok(largestChannelDelta <= 4, `B&W export channel delta ${largestChannelDelta}`);
+  command('ffmpeg', ['-v', 'error', '-i', looksMergedPath, '-f', 'null', '-'], 'looks merge strict decode');
+  console.log(`PASS looks re-encode duplicate clips in one WebCodecs pass with distinct cache keys; undo/redo works and the ${looksFrames}-frame export's B&W half has channel delta <=4`);
 
   await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?single-pair=1'});
   await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);

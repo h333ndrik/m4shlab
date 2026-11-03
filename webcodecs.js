@@ -6,6 +6,7 @@ import { parseAvcConfig } from './merge.js';
 import { buildNormalizedMp4, chooseNormalizationTarget } from './webcodecs-muxer.js';
 import { frameRateForTrack } from './classic-mosh.js';
 import { normalizeSpeed, speedFramePlan } from './speed.js';
+import { applyLookToRgba, normalizeLook } from './looks.js';
 
 const OUTPUT_FPS = 30;
 const OUTPUT_DURATION_US = 1_000_000 / OUTPUT_FPS;
@@ -348,6 +349,7 @@ export async function normalizeWithWebCodecs(inputBytes, options = {}) {
 
   const started = performance.now();
   const speed = normalizeSpeed(options.speed ?? 1);
+  const look = normalizeLook(options.look ?? 'original');
   const parsed = parseMp4(inputBytes, {allowHevc: true});
   const target = chooseNormalizationTarget(options.target ?? parsed.videoTrack);
   const decoderSelection = await selectDecoderConfig(inputBytes, parsed.videoTrack);
@@ -407,6 +409,7 @@ export async function normalizeWithWebCodecs(inputBytes, options = {}) {
             context.drawImage(frame, drawX, drawY, drawWidth, drawHeight);
             const timestamp = Math.round(outputIndex * OUTPUT_DURATION_US);
             const image = context.getImageData(0, 0, target.width, target.height);
+            applyLookToRgba(image.data, look, target.width, target.height);
             const outputFrame = limitedI420Frame(image.data, target.width, target.height, timestamp);
             try {
               encoder.encode(outputFrame, {keyFrame: outputIndex % KEYFRAME_INTERVAL === 0});
@@ -433,9 +436,11 @@ export async function normalizeWithWebCodecs(inputBytes, options = {}) {
     encoder.configure(encoderSelection.config);
     decoder.configure(decoderSelection.config);
     const sourceLabel = parsed.videoTrack.codecFamily === 'hevc' ? 'HEVC' : 'H.264';
-    options.onStatus?.(speed === 1
-      ? `Decoding ${sourceLabel} and encoding a normalized ${target.width}×${target.height} stream with WebCodecs…`
-      : `Applying ${speed.toFixed(1)}× speed while decoding ${sourceLabel} and encoding a normalized ${target.width}×${target.height} stream with WebCodecs…`);
+    const operations = [];
+    if (speed !== 1) operations.push(`${speed.toFixed(1)}× speed`);
+    if (look !== 'original') operations.push(`${look.replaceAll('-', ' ')} look`);
+    const operationPrefix = operations.length ? `Applying ${operations.join(' and ')}, ` : '';
+    options.onStatus?.(`${operationPrefix}decoding ${sourceLabel} and encoding a normalized ${target.width}×${target.height} stream with WebCodecs…`);
 
     for (const source of chunks) {
       throwIfAborted(options.signal);
@@ -505,6 +510,7 @@ export async function normalizeWithWebCodecs(inputBytes, options = {}) {
       sourceSamples: chunks.length,
       outputSamples: encoded.length,
       speed,
+      look,
       sourceFps,
       inputFrames: chunks.length,
       outputFrames: encoded.length,

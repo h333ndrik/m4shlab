@@ -297,6 +297,33 @@ button:focus-visible,
   white-space: nowrap;
 }
 
+.clip-look {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px 7px;
+  border-top: 1px solid #ededeb;
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.clip-look select {
+  min-width: 0;
+  width: 100%;
+  border: 1px solid var(--soft-line);
+  border-radius: 3px;
+  background: #fff;
+  color: var(--ink);
+  padding: 4px 5px;
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
 .clip-speed {
   display: grid;
   gap: 3px;
@@ -698,6 +725,7 @@ progress {
   .button { min-height: 44px; }
   .clip-controls button { min-width: 44px; min-height: 44px; padding: 8px; }
   .clip-speed-heading button { min-height: 44px; padding: 8px; }
+  .clip-look select { min-height: 44px; }
   .clip-speed input[type="range"] { min-height: 44px; }
   .connector { min-height: 44px; }
   .transition-dialog fieldset label { min-height: 44px; }

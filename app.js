@@ -22,6 +22,7 @@ import { chooseNormalizationTarget } from './webcodecs-muxer.js';
 import { frameRateForTrack, maxMoshFrames } from './classic-mosh.js';
 import { atempoChain, normalizeSpeed, SPEED_MAX, SPEED_MIN, SPEED_STEP } from './speed.js';
 import { canRandomize, randomizeTransition } from './randomize.js';
+import { LOOKS, normalizeLook, normalizationCacheKey } from './looks.js';
 import {
   assembleAudioTimeline,
   buildAdts,
@@ -95,6 +96,7 @@ let activeRandomSeed = null;
 let normalizationAttempted = false;
 let undoStack = [];
 let redoStack = [];
+let refreshInFlight = 0;
 
 function formatBytes(value) {
   if (value < 1024) return `${value} B`;
@@ -274,6 +276,9 @@ function clipReport(clip, index) {
     mode: clipMode(clip),
     path: conversionPath(clip),
     speed: Number(clip.speed ?? 1),
+    look: normalizeLook(clip.look ?? 'original'),
+    preparedLook: normalizeLook(clip.preparedLook ?? 'original'),
+    lookReport: clip.lookReport ? {...clip.lookReport} : null,
     input_frames: clip.baseMp4?.videoTrack.samples.length ?? clip.speedReport?.inputFrames ?? clip.mp4.videoTrack.samples.length,
     output_frames: clip.mp4.videoTrack.samples.length,
     speedReport: clip.speedReport ? {...clip.speedReport} : null,
@@ -466,6 +471,25 @@ function renderClipCard(index, clip) {
   detail.textContent = `${duration === null ? 'video' : `${duration.toFixed(2)} s`} · ${clipMode(clip)}`;
   detail.title = conversionPath(clip);
 
+  const lookControl = document.createElement('label');
+  lookControl.className = 'clip-look';
+  const lookLabel = document.createElement('span');
+  lookLabel.textContent = 'look';
+  const lookSelect = document.createElement('select');
+  lookSelect.id = `clip-look-${index}`;
+  lookSelect.setAttribute('aria-label', `${clipDisplayLabel(index)} look`);
+  for (const look of LOOKS) {
+    const option = document.createElement('option');
+    option.value = look.value;
+    option.textContent = look.label;
+    lookSelect.append(option);
+  }
+  lookSelect.value = normalizeLook(clip.look ?? 'original');
+  lookSelect.disabled = refreshInFlight > 0;
+  lookSelect.addEventListener('change', () => setClipLook(index, lookSelect.value));
+  lookLabel.htmlFor = lookSelect.id;
+  lookControl.append(lookLabel, lookSelect);
+
   const speedControl = document.createElement('div');
   speedControl.className = 'clip-speed';
   const speedHeading = document.createElement('div');
@@ -516,7 +540,7 @@ function renderClipCard(index, clip) {
     controls.append(button);
   }
 
-  card.append(thumb, name, detail, speedControl, controls);
+  card.append(thumb, name, detail, lookControl, speedControl, controls);
   return card;
 }
 
@@ -597,7 +621,7 @@ function finishConversionPanel() {
 function sequenceNormalizationReport() {
   const conversions = clips.map(clip => clip.conversion).filter(Boolean);
   if (conversions.length === 0) return null;
-  const reasons = new Set(['sequence-normalization', 'pair-normalization', 'speed-normalization']);
+  const reasons = new Set(['sequence-normalization', 'pair-normalization', 'speed-normalization', 'look-normalization', 'speed-look-normalization']);
   return {
     autoNormalized: clips.length > 1 && conversions.length === clips.length
       && conversions.every(conversion => reasons.has(conversion.reason)),
@@ -715,6 +739,23 @@ function rememberState() {
   if (undoStack.length > 50) undoStack.shift();
   redoStack = [];
   updateHistoryButtons();
+}
+
+function setClipLook(index, value) {
+  if (index < 0 || index >= clips.length) return;
+  let look;
+  try {
+    look = normalizeLook(value);
+  } catch (cause) {
+    setError(cause instanceof Error ? cause.message : String(cause));
+    return;
+  }
+  if (normalizeLook(clips[index].look ?? 'original') === look) return;
+  rememberState();
+  clips = clips.map((clip, clipIndex) => clipIndex === index ? {...clip, look} : clip);
+  normalizationAttempted = false;
+  setError('');
+  refreshSequence();
 }
 
 function setClipSpeed(index, value) {
@@ -1177,6 +1218,9 @@ async function readClipFile(file, index, token) {
     speed: 1,
     preparedSpeed: 1,
     speedReport: null,
+    look: 'original',
+    preparedLook: 'original',
+    lookReport: null,
     transition: 'classic-mosh',
     moshDurationFrames: null,
     moshEnding: 'restore',
@@ -1313,11 +1357,14 @@ async function normalizeAllClips(token, target) {
   const originals = clips.map(clip => ({...clip}));
   let webcodecsFallbackReason = null;
   const speedPreparation = originals.some(clip => normalizeSpeed(clip.speed ?? 1) !== normalizeSpeed(clip.preparedSpeed ?? 1));
-  if (speedPreparation && !isWebCodecsAvailable()) {
-    throw new Error('Clip speed requires WebCodecs VideoDecoder and VideoEncoder for the one-pass frame mapping and re-encode.');
+  const lookPreparation = originals.some(clip => normalizeLook(clip.look ?? 'original') !== normalizeLook(clip.preparedLook ?? 'original'));
+  const renderPreparation = speedPreparation || lookPreparation;
+  if (renderPreparation && !isWebCodecsAvailable()) {
+    const requirement = speedPreparation && lookPreparation ? 'Clip speed and looks' : speedPreparation ? 'Clip speed' : 'Clip looks';
+    throw new Error(`${requirement} require WebCodecs VideoDecoder and VideoEncoder for the one-pass frame mapping, look, and re-encode.`);
   }
 
-  if (isWebCodecsAvailable() && (speedPreparation || originals.every(clip => !clip.conversion))) {
+  if (isWebCodecsAvailable() && (renderPreparation || originals.every(clip => !clip.conversion))) {
     try {
       for (const [index] of originals.entries()) setConversionProgress(null, progressSlot(index));
       showConversion(`${clips.length} clips`, 'normalizing', `Normalizing clips in parallel with WebCodecs to one ${target.width}×${target.height}, 30 fps H.264 layout…`, null);
@@ -1328,11 +1375,16 @@ async function normalizeAllClips(token, target) {
         }
         const label = clipDisplayLabel(index);
         const speed = normalizeSpeed(clip.speed ?? 1);
+        const look = normalizeLook(clip.look ?? 'original');
         const sourceBytes = clip.baseBytes ?? clip.bytes;
-        showConversion(label, 'normalizing', `Applying ${speed.toFixed(1)}× speed and re-encoding ${clip.file.name} with WebCodecs at ${target.width}×${target.height}…`, null, progressSlot(index));
+        const sourceKey = `${clip.file.name}:${clip.file.size}:${clip.file.lastModified}`;
+        const cacheKey = normalizationCacheKey({sourceKey, target, speed, look});
+        const lookText = look === 'original' ? 'original look' : `${look.replaceAll('-', ' ')} look`;
+        showConversion(label, 'normalizing', `Applying ${speed.toFixed(1)}× speed and ${lookText}, then re-encoding ${clip.file.name} with WebCodecs at ${target.width}×${target.height}…`, null, progressSlot(index));
         const result = await normalizeWithWebCodecs(sourceBytes, {
           target,
           speed,
+          look,
           onStatus: message => {
             if (token === refreshToken) showConversion(label, 'working', message, null, progressSlot(index));
           },
@@ -1343,19 +1395,30 @@ async function normalizeAllClips(token, target) {
           },
         });
         const audio = await applySpeedToClipAudio(clip.baseAudio ?? clip.audio, result.outputFrames, speed, label);
-        return {result, sourceBytes: sourceBytes.byteLength, audio};
+        return {result, sourceBytes: sourceBytes.byteLength, audio, cacheKey, sourceKey};
       });
       if (token !== refreshToken || normalized.some(item => !item)) return false;
       clips = originals.map((clip, index) => {
-        const {result, sourceBytes, audio} = normalized[index];
+        const {result, sourceBytes, audio, cacheKey, sourceKey} = normalized[index];
         const mp4 = parseMp4(result.bytes);
         const speed = normalizeSpeed(clip.speed ?? 1);
+        const look = normalizeLook(clip.look ?? 'original');
+        const preparationReason = speedPreparation && lookPreparation
+          ? 'speed-look-normalization'
+          : speedPreparation ? 'speed-normalization' : lookPreparation ? 'look-normalization' : 'sequence-normalization';
         return {
           ...clip,
           bytes: result.bytes,
           mp4,
           audio,
           preparedSpeed: speed,
+          preparedLook: look,
+          lookReport: {
+            look,
+            cacheKey,
+            sourceKey,
+            encodePasses: 1,
+          },
           speedReport: {
             speed,
             inputFrames: result.inputFrames,
@@ -1379,7 +1442,7 @@ async function normalizeAllClips(token, target) {
             elapsedMs: result.elapsedMs,
             target: result.target,
             mode: 'normalized',
-            reason: speedPreparation ? 'speed-normalization' : 'sequence-normalization',
+            reason: preparationReason,
             origin: clip.baseConversion ?? clip.conversion,
             sourceCodec: (clip.baseConversion ?? clip.conversion)?.sourceCodec ?? null,
             hevcWebCodecsFallbackReason: (clip.baseConversion ?? clip.conversion)?.hevcWebCodecsFallbackReason ?? null,
@@ -1389,6 +1452,7 @@ async function normalizeAllClips(token, target) {
             keyframes: result.keyframes,
             outputSamples: result.outputSamples,
             speed: result.speed,
+            look: result.look,
             inputFrames: result.inputFrames,
             outputFrames: result.outputFrames,
             frameAlignment: result.frameAlignment,
@@ -1403,14 +1467,14 @@ async function normalizeAllClips(token, target) {
     } catch (cause) {
       if (token !== refreshToken) return false;
       webcodecsFallbackReason = cause instanceof Error ? cause.message : String(cause);
-      if (speedPreparation) {
-        throw new Error(`Speed normalization failed in WebCodecs. ${webcodecsFallbackReason}`);
+      if (renderPreparation) {
+        throw new Error(`${speedPreparation && lookPreparation ? 'Speed and look' : speedPreparation ? 'Speed' : 'Look'} normalization failed in WebCodecs. ${webcodecsFallbackReason}`);
       }
       showConversion('WebCodecs', 'falling back', `${webcodecsFallbackReason} Loading the ffmpeg.wasm fallback…`, null);
     }
   }
 
-  if (speedPreparation) throw new Error('Clip speed requires the WebCodecs normalization path; ffmpeg.wasm conversion cannot preserve the exact 30 fps speed mapping.');
+  if (renderPreparation) throw new Error('Clip speed and looks require the WebCodecs normalization path; ffmpeg.wasm conversion cannot preserve the exact frame mapping and pixel-look pass.');
 
   const converted = await Promise.all(originals.map(async (clip, index) => {
     if (token !== refreshToken) return null;
@@ -1571,7 +1635,23 @@ async function addMergedAudio(result, clips) {
   return result;
 }
 
+function syncLookControlsBusy() {
+  const busy = refreshInFlight > 0;
+  for (const select of document.querySelectorAll('.clip-look select')) select.disabled = busy;
+}
+
 async function refreshSequence() {
+  refreshInFlight += 1;
+  syncLookControlsBusy();
+  try {
+    await refreshSequenceInternal();
+  } finally {
+    refreshInFlight -= 1;
+    syncLookControlsBusy();
+  }
+}
+
+async function refreshSequenceInternal() {
   const token = ++refreshToken;
   resetMerged();
   setError('');
@@ -1584,14 +1664,16 @@ async function refreshSequence() {
     return;
   }
   const speedPreparationNeeded = clips.some(clip => normalizeSpeed(clip.speed ?? 1) !== normalizeSpeed(clip.preparedSpeed ?? 1));
-  if (speedPreparationNeeded) {
+  const lookPreparationNeeded = clips.some(clip => normalizeLook(clip.look ?? 'original') !== normalizeLook(clip.preparedLook ?? 'original'));
+  if (speedPreparationNeeded || lookPreparationNeeded) {
     const target = chooseNormalizationTarget(...clips.map(clip => ({
       width: clip.mp4.videoTrack.width,
       height: clip.mp4.videoTrack.height,
     })));
-    status.textContent = `Applying clip speed at ${target.width}×${target.height}, 30 fps…`;
+    const preparationText = speedPreparationNeeded && lookPreparationNeeded ? 'clip speed and looks' : speedPreparationNeeded ? 'clip speed' : 'clip looks';
+    status.textContent = `Applying ${preparationText} at ${target.width}×${target.height}, 30 fps…`;
     report.textContent = JSON.stringify({
-      stage: 'speed-normalizing',
+      stage: 'render-normalizing',
       sources: sourcesReport(),
       target,
     }, null, 2);
@@ -1604,9 +1686,9 @@ async function refreshSequence() {
     } catch (cause) {
       if (token !== refreshToken) return;
       const detail = cause instanceof Error ? cause.message : String(cause);
-      report.textContent = JSON.stringify({stage: 'speed-normalization-failed', error: detail, sources: sourcesReport()}, null, 2);
-      status.textContent = 'Clip speed could not be prepared.';
-      setError(shortErrorText(detail, 'Clip speed could not be prepared.'));
+      report.textContent = JSON.stringify({stage: 'render-normalization-failed', error: detail, sources: sourcesReport()}, null, 2);
+      status.textContent = 'Clip speed or look could not be prepared.';
+      setError(shortErrorText(detail, 'Clip speed or look could not be prepared.'));
       return;
     }
   }
@@ -1755,6 +1837,7 @@ async function refreshSequence() {
           boundaryIndex: offset,
           method: clip.transition,
           speed: Number(clip.speed ?? 1),
+          look: normalizeLook(clip.look ?? 'original'),
           input_frames: clip.baseMp4?.videoTrack.samples.length ?? clip.mp4.videoTrack.samples.length,
           output_frames: clip.mp4.videoTrack.samples.length,
           durationFrames: settings?.durationFrames ?? null,

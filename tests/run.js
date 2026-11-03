@@ -15,6 +15,7 @@ import { parseSps } from '../parser/sps.js';
 import { ValueError, frameRateForTrack } from '../classic-mosh.js';
 import { assembleAudioTimeline, buildAdts, retimeMuxedAudio, RuntimeError, samplesPerFrame, wavBytes } from '../audio.js';
 import { SpeedValueError, atempoChain, atempoFilter, normalizeSpeed, speedFramePlan } from '../speed.js';
+import { LOOKS, LookValueError, applyLookToRgba, normalizationCacheKey, normalizeLook } from '../looks.js';
 import { RANDOM_METHODS, RandomizeError, canRandomize, randomizeTransition, validateRandomTransition } from '../randomize.js';
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -1346,6 +1347,31 @@ assert.throws(() => normalizeSpeed(0.05), SpeedValueError);
 assert.throws(() => normalizeSpeed(5), SpeedValueError);
 assert.throws(() => normalizeSpeed(1.25), SpeedValueError);
 pass('Speed plans map 60 frames to 30/120/60/35 frames at 2×/0.5×/1×/1.7× and reject out-of-range values');
+
+const lookPixels = () => Uint8ClampedArray.from([10, 100, 200, 255, 255, 0, 128, 77]);
+const originalPixels = applyLookToRgba(lookPixels(), 'original');
+assert.deepEqual([...originalPixels], [10, 100, 200, 255, 255, 0, 128, 77]);
+const grayscalePixels = applyLookToRgba(lookPixels(), 'black-white');
+assert.deepEqual([...grayscalePixels], [84, 84, 84, 255, 91, 91, 91, 77]);
+const grayscaleNegativePixels = applyLookToRgba(lookPixels(), 'black-white-negative');
+assert.deepEqual([...grayscaleNegativePixels], [171, 171, 171, 255, 164, 164, 164, 77]);
+const colorNegativePixels = applyLookToRgba(lookPixels(), 'color-negative');
+assert.deepEqual([...colorNegativePixels], [245, 155, 55, 255, 0, 255, 127, 77]);
+assert.throws(() => applyLookToRgba(new Uint8ClampedArray([1, 2, 3]), 'black-white'), LookValueError);
+assert.equal(normalizeLook(undefined), 'original');
+assert.throws(() => normalizeLook('sepia'), LookValueError);
+pass(`look transforms produce exact ${LOOKS.length}-option RGBA values, preserve alpha, and reject invalid buffers`);
+
+const cacheBase = {sourceKey: 'clip.mp4:1234:9', target: {width: 540, height: 720}, speed: 1};
+const originalKey = normalizationCacheKey({...cacheBase, look: 'original'});
+const negativeKey = normalizationCacheKey({...cacheBase, look: 'color-negative'});
+const speedKey = normalizationCacheKey({...cacheBase, look: 'original', speed: 2});
+assert.notEqual(originalKey, negativeKey);
+assert.notEqual(originalKey, speedKey);
+assert.equal(originalKey, normalizationCacheKey({...cacheBase, look: 'original'}));
+assert.match(negativeKey, /color-negative$/);
+assert.throws(() => normalizationCacheKey({target: {}, look: 'original'}), LookValueError);
+pass('normalization cache keys include source, target, speed, and look; duplicate settings reproduce the same key');
 
 function readInterleavedFloat32(path) {
   const bytes = readFileSync(path);

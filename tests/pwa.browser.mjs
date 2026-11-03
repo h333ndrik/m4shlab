@@ -17,7 +17,7 @@ const shellPaths = [
   '/', '/index.html', '/styles.css', '/app.js',
   '/parser/mp4.js', '/parser/nal.js', '/parser/sps.js', '/parser/hevc.js',
   '/merge.js', '/mosh.js', '/webcodecs.js', '/webcodecs-muxer.js',
-  '/converter.js', '/conversion-settings.js', '/classic-mosh.js', '/speed.js', '/randomize.js', '/audio.js', '/hybrid-encoder.js',
+  '/converter.js', '/conversion-settings.js', '/classic-mosh.js', '/speed.js', '/looks.js', '/randomize.js', '/audio.js', '/hybrid-encoder.js',
   '/manifest.json', '/favicon.svg', '/favicon-32.png', '/icon.svg', '/icon-192.png', '/icon-512.png', '/icon-180.png',
 ];
 const chromeCandidates = [
@@ -237,7 +237,7 @@ try {
 
   const pwaState = await client.evaluate(`(async () => {
     const registration = await navigator.serviceWorker.ready;
-    const cache = await caches.open('m4shlab-v11');
+    const cache = await caches.open('m4shlab-v12');
     return {
       manifestHref: document.querySelector('link[rel="manifest"]')?.getAttribute('href'),
       themeColor: document.querySelector('meta[name="theme-color"]')?.content,
@@ -327,7 +327,7 @@ try {
   await client.waitFor("document.documentElement.dataset.appReady === 'true'", 15000);
   await client.waitFor("navigator.serviceWorker?.controller?.state === 'activated'", 20000);
   const cacheNames = await client.evaluate('caches.keys()');
-  assert.ok(cacheNames.includes('m4shlab-v11'));
+  assert.ok(cacheNames.includes('m4shlab-v12'));
   assert.ok(!cacheNames.includes('m4shlab-v10'), 'old shell cache must be deleted on activate');
   assert.ok(!cacheNames.includes('m4shlab-runtime-v10'), 'old runtime cache must be deleted on activate');
   console.log('PASS activate cleanup removed the old versioned cache and re-registered the current shell');
@@ -346,7 +346,7 @@ try {
   assert.equal(onlineConversion.error, null, onlineConversion.error);
   assert.ok(onlineConversion.report.merge.mergedSamples > 0);
   const runtimeKeys = await client.evaluate(`(async () => {
-    const cache = await caches.open('m4shlab-runtime-v11');
+    const cache = await caches.open('m4shlab-runtime-v12');
     return (await cache.keys()).map(request => request.url);
   })()`);
   assert.ok(runtimeKeys.some(url => url.endsWith('/converter-worker.js')), 'conversion worker was not runtime-cached');
