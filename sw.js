@@ -1,4 +1,4 @@
-const VERSION = 'v9';
+const VERSION = 'v10';
 const CACHE_NAME = `m4shlab-${VERSION}`;
 const RUNTIME_CACHE = `m4shlab-runtime-${VERSION}`;
 const APP_SHELL = [
@@ -20,6 +20,8 @@ const APP_SHELL = [
   './audio.js',
   './hybrid-encoder.js',
   './manifest.json',
+  './favicon.svg',
+  './favicon-32.png',
   './icon.svg',
   './icon-192.png',
   './icon-512.png',

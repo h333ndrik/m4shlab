@@ -20,6 +20,7 @@ Updated: 2026-11-03
 - Phase E Gentler: Melt has Original and Gentler repetition movement; Gentler caps donor advances at two frames before the release point and uses consecutive donors for the final quarter, without changing duration or using interpolation.
 - Phase F speed: every clip has independent 0.1×–4.0× speed in 0.1× steps, one-pass WebCodecs frame mapping plus normalization at 30 fps, chained ffmpeg.wasm `atempo` audio with preserved pitch, per-card Reset, and exact frame/audio timeline reports.
 - **State: PWA shell, merged audio, Loop Release, Reset Pulse, effect-window controls with Gentler Melt, and per-clip speed done.** m4shlab is installable, precaches its complete app shell, reloads offline, runtime-caches ffmpeg.wasm after first conversion, and exports an AAC-LC soundtrack aligned to the merged video timeline.
+- Branding: new `m4` wordmark in the sibling h4moshlab typographic system, with a rounded 32px favicon, 32px PNG tab fallback, and maskable-safe PWA/Apple icons. The h4 cursor brand remains separate.
 - h4moshlab-style interface with a dark preview well, header import control, horizontal timeline, and no visible compatibility panel.
 
 ## Multi-clip implementation
@@ -41,9 +42,9 @@ Updated: 2026-11-03
 ## PWA implementation
 
 - `manifest.json` declares standalone display, light `#f5f5f3` theme/background, `./` start/scope, SVG icon, 192px any icon, and 512px maskable PNG icon.
-- `icon.svg` is the lowercase m4 wordmark on the light background; `icon-180.png`, `icon-192.png`, and `icon-512.png` are committed fallbacks.
-- `index.html` links the manifest, SVG favicon, 180px Apple touch icon, theme color, and Apple standalone metadata.
-- `sw.js` derives both `m4shlab-v9` and `m4shlab-runtime-v9` from one `VERSION` constant. Install precaches 22 app-shell files, including `classic-mosh.js`, `speed.js`, and `audio.js`, skips `converter-worker.js` and ffmpeg.wasm, calls `skipWaiting()`, and activate deletes old versioned caches before `clients.claim()`.
+- `favicon.svg` and `icon.svg` use Arial/Helvetica Bold 700 `m4` lettering on `#f5f5f3`; the favicon adapts the sibling h4 tile proportions, while the 512px PWA master keeps the wordmark within the maskable safe area. `favicon-32.png`, `icon-180.png`, `icon-192.png`, and `icon-512.png` are committed raster fallbacks.
+- `index.html` links the manifest, SVG and 32px PNG tab icons, sized 180px Apple touch icon, theme color, and Apple standalone metadata.
+- `sw.js` derives both `m4shlab-v10` and `m4shlab-runtime-v10` from one `VERSION` constant. Install precaches 24 app-shell files, including both favicon assets, `classic-mosh.js`, `speed.js`, and `audio.js`, skips `converter-worker.js` and ffmpeg.wasm, calls `skipWaiting()`, and activate deletes old versioned caches before `clients.claim()`.
 - Static shell requests are cache-first. Navigation requests fall back to the cached `index.html`. Runtime cache-first applies only to `converter-worker.js` and the pinned jsDelivr ffmpeg core JS/WASM URLs.
 - `app.js` changes only by registering `./sw.js` after `load`; registration failures such as `file://` are swallowed so normal browser operation is unchanged.
 - Bump `VERSION` in `sw.js` whenever a shell or conversion-worker asset changes. Runtime cache separation keeps the 31 MB ffmpeg core out of shell precache; a version bump intentionally invalidates stale worker code too.
@@ -68,7 +69,7 @@ Updated: 2026-11-03
 - Normalization target coverage: 1440×1920 + 768×1024 + 320×240 selects one shared 540×720 target.
 - Classic Mosh restore: Phase A 10-frame window exact NAL sequence, byte-identical IDR reinsertion, 75/75 decoded source frames; Phase B 50/50 decoded frames; continue byte-identical to full-length output.
 - Duration 1 accepted; overlong windows clamp and report; durations below one frame raise `ValueError`; chained boundaries retain independent settings.
-- PWA browser test: manifest valid; service worker active and controlling; 22 shell assets cached; old cache removed; runtime cache contains three ffmpeg entries; offline reload works; offline HEVC conversion and merge produce a 120,718-byte, 59-frame H.264 export.
+- PWA browser test: manifest valid with resolving icons and exact favicon links; service worker active and controlling; 24 shell assets cached; old cache removed; runtime cache contains three ffmpeg entries; offline reload works; offline HEVC conversion and merge produce a 120,718-byte, 59-frame H.264 export.
 - PWA export SHA-256: `47a7fcc6972956e34b9147fead68159350bf16d5f339098436dc5cd8dd25c7b9`.
 
 `npm run test:webcodecs` produced:
@@ -95,8 +96,8 @@ Updated: 2026-11-03
 `npm run test:pwa` produced:
 
 - manifest/installability: PASS, including `beforeinstallprompt observed=true`;
-- service worker active and controlling, 22 shell assets precached off a fresh profile;
-- activation removed `m4shlab-v8` and re-registered the v9 shell;
+- service worker active and controlling, 24 shell assets precached off a fresh profile;
+- activation removed `m4shlab-v9` and re-registered the v10 shell;
 - runtime cache: `converter-worker.js`, `ffmpeg-core.js`, `ffmpeg-core.wasm`;
 - fully offline HEVC conversion, merge, preview, and export: 59/59 decoded frames.
 

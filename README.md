@@ -48,7 +48,7 @@ Service workers require HTTPS or `localhost`; GitHub Pages provides HTTPS automa
 
 The first load must reach the network so the manifest and versioned app shell can be cached. After that the UI starts offline. Import, Classic Mosh, preview, and export are local operations and continue to work without a network. New-format conversion needs the ffmpeg.wasm core; the first conversion downloads it, then `converter-worker.js`, `ffmpeg-core.js`, and `ffmpeg-core.wasm` stay in the runtime cache. The OS may evict that cache under storage pressure, in which case conversion needs network again.
 
-The current cache version is `v9` (`m4shlab-v9` plus `m4shlab-runtime-v9`). Bump `VERSION` in `sw.js` whenever app-shell or conversion-worker files change. Activation deletes older versioned caches, including the old runtime cache, so the worker cannot run stale code.
+The current cache version is `v10` (`m4shlab-v10` plus `m4shlab-runtime-v10`). Bump `VERSION` in `sw.js` whenever app-shell or conversion-worker files change. Activation deletes older versioned caches, including the old runtime cache, so the worker cannot run stale code.
 
 ## Supported formats
 
@@ -76,6 +76,10 @@ Native Tier-1 clips may contain B-frames; their `ctts` composition offsets are p
 | Reset Pulse | Re-insert the incoming original first IDR every 4–48 frames, fill each interval with repeated consecutive P-samples, and continue with the selected ending. |
 
 ## Interface
+
+### Branding
+
+The `m4` wordmark follows the sibling h4moshlab typographic system: Arial/Helvetica Bold 700, dark `#242424` text on `#f5f5f3`, negative tracking, and a compact rounded favicon tile. The scalable favicon, 32px tab fallback, PWA icons, and 180px Apple touch icon use new “m4” lettering rather than the h4 letterforms. The 512px maskable icon keeps the wordmark inside the central safe area. The separate h4 cursor brand is unchanged.
 
 The page follows the h4moshlab visual language: a light radial-gradient background, centered 1000px layout, compact bordered controls, a large dark preview well, and a horizontal clip timeline. Clip cards show a thumbnail, filename, duration, format status, a 0.1×–4.0× speed slider with Reset, active reorder arrows, and a remove button; undo/redo restores timeline and speed edits. Each dashed connector names its boundary method and opens a dialog with **Cut**, **Classic Mosh**, **Melt**, **Loop Release** and **Reset Pulse**. All non-Cut methods share duration and ending controls; Melt adds a 2–12 repeat slider and an Original/Gentler movement selector, Loop Release a 2–48-frame group slider, and Reset Pulse 4–48-frame interval plus 2–12 P-repeat sliders. The first card is the preview cut; the export is the full chained result. Compatibility criteria, badges, and SPS/PPS hashes are not rendered. Under 600px the header and preview actions stack and touch controls meet the 44px target.
 
@@ -233,7 +237,7 @@ The tests assert:
 - the browser has no compatibility panel, status badge, table, or SPS/PPS hash display;
 - blocking merge errors render as a short alert rather than a compatibility panel;
 - the manifest has standalone display, the light theme, SVG/192/512/maskable icons, and a 180px Apple touch icon;
-- the service worker activates, controls the page, precaches the 22-file app shell, and excludes the conversion worker and ffmpeg core from precache;
+- the service worker activates, controls the page, precaches the 24-file app shell, and excludes the conversion worker and ffmpeg core from precache;
 - Chrome reports no manifest or installability errors, activates `beforeinstallprompt`, and the activate handler removes an older versioned cache;
 - an offline reload serves the complete shell, after which previously cached ffmpeg.wasm converts and merges HEVC inputs locally and the exported MP4 decodes.
 
@@ -275,8 +279,9 @@ PASS WebCodecs stubbed unavailable: ffmpeg.wasm fallback ran and the report iden
 `npm run test:pwa` produced:
 
 ```text
-PASS manifest is valid with standalone display, light theme, SVG/192/512/maskable icons, and a 180px Apple touch icon
-PASS service worker registered, controlled the page, precached 22 shell assets, and Chrome reports no manifest/installability errors; beforeinstallprompt observed=true
+PASS manifest is valid with standalone display, light theme, resolving SVG/192/512-maskable icons, and favicon plus 180px Apple links
+INFO wordmark geometry: favicon 30.3×25.0 inside 32×32; maskable corner 196.7px <= 204.8px safe radius
+PASS service worker registered, controlled the page, precached 24 shell assets, and Chrome reports no manifest/installability errors; beforeinstallprompt observed=true
 PASS activate cleanup removed the old versioned cache and re-registered the current shell
 PASS first online conversion runtime-cached converter-worker.js, ffmpeg-core.js, and ffmpeg-core.wasm (3 runtime entries)
 PASS offline reload served the complete app shell from Cache Storage with no network

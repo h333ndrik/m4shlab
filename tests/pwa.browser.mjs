@@ -18,7 +18,7 @@ const shellPaths = [
   '/parser/mp4.js', '/parser/nal.js', '/parser/sps.js',
   '/merge.js', '/mosh.js', '/webcodecs.js', '/webcodecs-muxer.js',
   '/converter.js', '/conversion-settings.js', '/classic-mosh.js', '/speed.js', '/audio.js', '/hybrid-encoder.js',
-  '/manifest.json', '/icon.svg', '/icon-192.png', '/icon-512.png', '/icon-180.png',
+  '/manifest.json', '/favicon.svg', '/favicon-32.png', '/icon.svg', '/icon-192.png', '/icon-512.png', '/icon-180.png',
 ];
 const chromeCandidates = [
   process.env.CHROME_BIN,
@@ -201,11 +201,23 @@ try {
   assert.equal(manifest.icons.length, 3);
   assert.ok(manifest.icons.some(icon => icon.type === 'image/svg+xml' && icon.sizes === 'any'));
   assert.ok(manifest.icons.some(icon => icon.sizes === '192x192' && icon.type === 'image/png'));
-  assert.ok(manifest.icons.some(icon => icon.sizes === '512x512' && icon.type === 'image/png' && /maskable/.test(icon.purpose)));
+  assert.ok(manifest.icons.some(icon => icon.sizes === '512x512' && icon.type === 'image/png' && icon.purpose === 'maskable'));
+  for (const icon of manifest.icons) {
+    const response = await fetch(new URL(icon.src, baseUrl));
+    assert.equal(response.status, 200, `manifest icon did not resolve: ${icon.src}`);
+    assert.match(response.headers.get('content-type') ?? '', icon.type === 'image/svg+xml' ? /image\/svg\+xml/ : /image\/png/);
+  }
+  const indexResponse = await fetch(baseUrl);
+  const indexHtml = await indexResponse.text();
+  assert.match(indexHtml, /<link rel="icon" href="favicon\.svg" type="image\/svg\+xml">/);
+  assert.match(indexHtml, /<link rel="icon" href="favicon-32\.png" sizes="32x32" type="image\/png">/);
+  assert.match(indexHtml, /<link rel="apple-touch-icon" sizes="180x180" href="icon-180\.png">/);
+  assert.doesNotMatch(indexHtml, /<link rel="icon" href="icon\.svg"/, 'stale tab icon link');
+  assert.deepEqual(pngDimensions(readFileSync(join(projectRoot, 'favicon-32.png'))), {width: 32, height: 32});
   assert.deepEqual(pngDimensions(readFileSync(join(projectRoot, 'icon-192.png'))), {width: 192, height: 192});
   assert.deepEqual(pngDimensions(readFileSync(join(projectRoot, 'icon-512.png'))), {width: 512, height: 512});
   assert.deepEqual(pngDimensions(readFileSync(join(projectRoot, 'icon-180.png'))), {width: 180, height: 180});
-  console.log('PASS manifest is valid with standalone display, light theme, SVG/192/512/maskable icons, and a 180px Apple touch icon');
+  console.log('PASS manifest is valid with standalone display, light theme, resolving SVG/192/512-maskable icons, and favicon plus 180px Apple links');
 
   chrome = await launchChrome();
   if (!chrome) skip('Chrome/Chromium was not found. Set CHROME_BIN to run this test.');
@@ -225,7 +237,7 @@ try {
 
   const pwaState = await client.evaluate(`(async () => {
     const registration = await navigator.serviceWorker.ready;
-    const cache = await caches.open('m4shlab-v9');
+    const cache = await caches.open('m4shlab-v10');
     return {
       manifestHref: document.querySelector('link[rel="manifest"]')?.getAttribute('href'),
       themeColor: document.querySelector('meta[name="theme-color"]')?.content,
@@ -248,6 +260,50 @@ try {
   assert.ok(!pwaState.cacheKeys.includes('/converter-worker.js'), 'conversion worker must not be precached');
   assert.ok(!pwaState.cacheKeys.some(path => path.includes('/@ffmpeg/core@')), 'ffmpeg core must not be precached');
 
+  const wordmarkGeometry = await client.evaluate(`(async () => {
+    async function measure(path) {
+      const source = await (await fetch(path)).text();
+      const parsed = new DOMParser().parseFromString(source, 'image/svg+xml');
+      const svg = document.importNode(parsed.documentElement, true);
+      svg.style.cssText = 'position:fixed;left:-2000px;top:0';
+      document.body.append(svg);
+      const box = svg.querySelector('text').getBBox();
+      const result = {
+        x: box.x,
+        y: box.y,
+        width: box.width,
+        height: box.height,
+        viewWidth: svg.viewBox.baseVal.width,
+        viewHeight: svg.viewBox.baseVal.height,
+      };
+      svg.remove();
+      return result;
+    }
+    const favicon = await measure('favicon.svg');
+    const maskable = await measure('icon.svg');
+    const center = maskable.viewWidth / 2;
+    const sx = Math.abs(maskable.x - center);
+    const sy = Math.abs(maskable.y - center);
+    const ex = Math.abs(maskable.x + maskable.width - center);
+    const ey = Math.abs(maskable.y + maskable.height - center);
+    return {
+      favicon,
+      maskable,
+      maxCornerDistance: Math.max(
+        Math.hypot(sx, sy),
+        Math.hypot(ex, sy),
+        Math.hypot(sx, ey),
+        Math.hypot(ex, ey),
+      ),
+      safeRadius: maskable.viewWidth * 0.4,
+    };
+  })()`);
+  assert.ok(wordmarkGeometry.favicon.x >= 0 && wordmarkGeometry.favicon.y >= 0);
+  assert.ok(wordmarkGeometry.favicon.x + wordmarkGeometry.favicon.width <= wordmarkGeometry.favicon.viewWidth);
+  assert.ok(wordmarkGeometry.favicon.y + wordmarkGeometry.favicon.height <= wordmarkGeometry.favicon.viewHeight);
+  assert.ok(wordmarkGeometry.maxCornerDistance <= wordmarkGeometry.safeRadius, `maskable wordmark exceeded safe circle: ${JSON.stringify(wordmarkGeometry)}`);
+  console.log(`INFO wordmark geometry: favicon ${wordmarkGeometry.favicon.width.toFixed(1)}×${wordmarkGeometry.favicon.height.toFixed(1)} inside 32×32; maskable corner ${wordmarkGeometry.maxCornerDistance.toFixed(1)}px <= ${wordmarkGeometry.safeRadius.toFixed(1)}px safe radius`);
+
   const manifestInfo = await client.send('Page.getAppManifest');
   assert.deepEqual(manifestInfo.errors, [], `Manifest errors: ${JSON.stringify(manifestInfo.errors)}`);
   let installabilityErrors = [];
@@ -260,9 +316,9 @@ try {
   console.log(`PASS service worker registered, controlled the page, precached ${shellPaths.length} shell assets, and Chrome reports no manifest/installability errors; beforeinstallprompt observed=${pwaState.installPromptAvailable}`);
 
   await client.evaluate(`(async () => {
-    const old = await caches.open('m4shlab-v8');
+    const old = await caches.open('m4shlab-v9');
     await old.put('/old-shell.txt', new Response('old shell'));
-    const oldRuntime = await caches.open('m4shlab-runtime-v8');
+    const oldRuntime = await caches.open('m4shlab-runtime-v9');
     await oldRuntime.put('/old-worker.js', new Response('old worker'));
     const registration = await navigator.serviceWorker.getRegistration();
     await registration.unregister();
@@ -271,9 +327,9 @@ try {
   await client.waitFor("document.documentElement.dataset.appReady === 'true'", 15000);
   await client.waitFor("navigator.serviceWorker?.controller?.state === 'activated'", 20000);
   const cacheNames = await client.evaluate('caches.keys()');
-  assert.ok(cacheNames.includes('m4shlab-v9'));
-  assert.ok(!cacheNames.includes('m4shlab-v8'), 'old shell cache must be deleted on activate');
-  assert.ok(!cacheNames.includes('m4shlab-runtime-v8'), 'old runtime cache must be deleted on activate');
+  assert.ok(cacheNames.includes('m4shlab-v10'));
+  assert.ok(!cacheNames.includes('m4shlab-v9'), 'old shell cache must be deleted on activate');
+  assert.ok(!cacheNames.includes('m4shlab-runtime-v9'), 'old runtime cache must be deleted on activate');
   console.log('PASS activate cleanup removed the old versioned cache and re-registered the current shell');
 
   const cdnCheck = await fetch('https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm/ffmpeg-core.js', {method: 'HEAD'});
@@ -290,7 +346,7 @@ try {
   assert.equal(onlineConversion.error, null, onlineConversion.error);
   assert.ok(onlineConversion.report.merge.mergedSamples > 0);
   const runtimeKeys = await client.evaluate(`(async () => {
-    const cache = await caches.open('m4shlab-runtime-v9');
+    const cache = await caches.open('m4shlab-runtime-v10');
     return (await cache.keys()).map(request => request.url);
   })()`);
   assert.ok(runtimeKeys.some(url => url.endsWith('/converter-worker.js')), 'conversion worker was not runtime-cached');
