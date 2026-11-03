@@ -1,4 +1,4 @@
-'use strict';
+import { MAX_TARGET_LONG_SIDE } from './conversion-settings.js';
 
 const CORE_VERSION = '0.12.10';
 const CORE_BASE = `https://cdn.jsdelivr.net/npm/@ffmpeg/core@${CORE_VERSION}/dist/esm`;
@@ -45,7 +45,7 @@ function conversionFilter(target) {
     const height = Math.max(2, Math.floor(target.height / 2) * 2);
     return `scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1`;
   }
-  return 'scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1';
+  return `scale='if(gte(iw,ih),min(${MAX_TARGET_LONG_SIDE},iw),-2)':'if(gte(iw,ih),-2,min(${MAX_TARGET_LONG_SIDE},ih))',setsar=1`;
 }
 
 function conversionArgs(inputName, outputName, target) {
@@ -71,22 +71,40 @@ function conversionArgs(inputName, outputName, target) {
   ];
 }
 
+function decodeY4mArgs(inputName, outputName, target) {
+  return [
+    '-i', inputName,
+    '-map', '0:v:0',
+    '-vf', conversionFilter(target),
+    '-pix_fmt', 'yuv420p',
+    '-r', '30',
+    '-an',
+    '-f', 'yuv4mpegpipe',
+    outputName,
+  ];
+}
+
 self.onmessage = async event => {
-  const {id, type, inputBytes, target} = event.data;
+  const {id, type, inputBytes, target, mode = 'encode-wasm'} = event.data;
   if (type !== 'convert') return;
   currentRequestId = id;
   currentLogs = [];
   const inputName = 'input.bin';
-  const outputName = 'output.mp4';
+  const decodeOnly = mode === 'decode-y4m';
+  const outputName = decodeOnly ? 'output.y4m' : 'output.mp4';
   try {
     const ffmpeg = await loadCore();
     try { ffmpeg.FS.unlink(inputName); } catch {}
     try { ffmpeg.FS.unlink(outputName); } catch {}
-    post('status', {message: target
-      ? `Converting to H.264 and letterboxing to ${target.width}×${target.height}…`
-      : 'Converting to H.264…'});
+    post('status', {message: decodeOnly
+      ? 'Decoding with ffmpeg.wasm at the capped normalization size…'
+      : target
+        ? `Converting to H.264 and letterboxing to ${target.width}×${target.height}…`
+        : `Converting to H.264 with the ${MAX_TARGET_LONG_SIDE}px target cap…`});
     ffmpeg.FS.writeFile(inputName, new Uint8Array(inputBytes));
-    const status = ffmpeg.exec(...conversionArgs(inputName, outputName, target));
+    const status = ffmpeg.exec(...(decodeOnly
+      ? decodeY4mArgs(inputName, outputName, target)
+      : conversionArgs(inputName, outputName, target)));
     ffmpeg.reset();
     if (status !== 0) throw new Error(`ffmpeg exited with status ${status}`);
     const output = ffmpeg.FS.readFile(outputName);
@@ -95,7 +113,7 @@ self.onmessage = async event => {
     outputCopy.set(output);
     try { ffmpeg.FS.unlink(inputName); } catch {}
     try { ffmpeg.FS.unlink(outputName); } catch {}
-    self.postMessage({type: 'done', requestId: id, output: outputCopy.buffer}, [outputCopy.buffer]);
+    self.postMessage({type: 'done', requestId: id, output: outputCopy.buffer, container: decodeOnly ? 'y4m' : 'mp4'}, [outputCopy.buffer]);
   } catch (error) {
     const detail = currentLogs.slice(-3).join(' | ');
     const message = error?.message || String(error);

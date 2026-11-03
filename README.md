@@ -10,6 +10,8 @@ Universal import: conventional H.264 MP4/MOV parses natively; other formats are 
 
 Phase C normalization: incompatible native H.264 pairs are decoded and re-encoded locally with WebCodecs when the browser supports H.264 encode/decode. ffmpeg.wasm remains the fallback.
 
+Automatic pair normalization now starts as soon as native compatibility fails. Both clips are converted to one shared target capped at 720 pixels on the long side, using WebCodecs or ffmpeg.wasm, then compatibility is checked again on the converted bytes. Conversions can run in parallel, and HEVC-style ffmpeg.wasm decodes use WebCodecs for H.264 encoding when available.
+
 ## Run it
 
 ```sh
@@ -28,10 +30,10 @@ The app has no package dependencies and no build step. `npm start` only serves t
 | --- | --- | --- |
 | 1 — native parse | Conventional non-fragmented MP4/MOV with an H.264 `avc1`/`avc3` video track, including top-level size-zero `mdat`, 64-bit box sizes, and QuickTime `wide` placeholders | Parsed directly; compatible pairs merge without re-encoding. Audio remains available to the Phase A single-clip flow and is omitted by Phase B merge |
 | 2a — WebCodecs normalization | Native H.264 pairs whose SPS/timing details are incompatible, when `VideoDecoder` and `VideoEncoder` can handle the required H.264 profile and size | Decoded and re-encoded locally to a shared H.264 target, then processed by the unchanged Phase B compatibility check and merge |
-| 2b — ffmpeg.wasm fallback | HEVC (`hvc1`/`hev1`), VP9 WebM (verified), fragmented MP4, other supported containers/codecs, and browsers or H.264 configurations without a usable WebCodecs path | Converted locally by the pinned ffmpeg.wasm worker to the same Tier-1 target before Phase A/B processing |
+| 2b — ffmpeg.wasm fallback | HEVC (`hvc1`/`hev1`), VP9 WebM (verified), fragmented MP4, other supported containers/codecs, and browsers or H.264 configurations without a usable WebCodecs path | Decoded locally by ffmpeg.wasm. The H.264 encode runs in WebCodecs when available, otherwise fully in the pinned WASM worker |
 | Not supported | DRM/encrypted media, unavailable ffmpeg.wasm assets, conversion input over 100 MB, or conversions that exceed browser wasm memory | Actionable error; no broken merge is emitted |
 
-Normalization produces conventional faststart MP4 with H.264 baseline or main profile, `yuv420p` limited range, 30 fps, a 30-frame closed GOP with an IDR at frame 0, no B-frames, and no audio. Both clips in a pair use the same dimensions and encoder settings. Different dimensions are scaled proportionally and letterboxed to the larger width/height so SPS, PPS, frame rate, and timescale match.
+Normalization produces conventional faststart MP4 with H.264 baseline or main profile, `yuv420p` limited range, 30 fps, a requested keyframe every 30 frames, no B-frames, and no audio. Encoders may insert additional recovery IDRs. The common target is capped at **720 pixels on the long side**. Same-aspect inputs are purely scaled; different aspects are scaled proportionally and letterboxed into the shared box. The mosh effect is resolution-independent, and this cap is much faster than full-resolution software encoding, mirroring h4moshlab's deliberate 640×480 normalization.
 
 Native Tier-1 clips may contain B-frames; their `ctts` composition offsets are preserved during merge. Converted clips deliberately have no B-frames.
 
@@ -40,18 +42,25 @@ Native Tier-1 clips may contain B-frames; their `ctts` composition offsets are p
 ### Universal import
 
 1. Tier 1 walks conventional MP4/MOV boxes and H.264 sample tables. Fragmented MP4 and unsupported codecs produce explicit errors.
-2. For a native H.264 pair that fails compatibility, Phase C reuses the parsed samples and `avcC`, decodes with `VideoDecoder`, letterboxes through a canvas, converts to limited-range I420, and encodes with `VideoEncoder`. A minimal MP4 muxer writes the encoded chunks.
-3. WebCodecs is preferred only for native H.264 input because that is the project's current demuxer and decoder description. HEVC, WebM, fragmented MP4, and unsupported H.264 configurations continue through the existing lazily loaded ffmpeg.wasm worker.
-4. The UI and JSON report name the path that actually ran, `normalized via WebCodecs` or `normalized via ffmpeg.wasm`, and include conversion duration. The normalized bytes then follow the normal Phase B compatibility, preview, and merge path unchanged.
+2. A native H.264 pair that fails compatibility enters a visible **normalizing clips…** state instead of showing a final incompatibility verdict. Both clips are normalized in parallel to the shared capped target.
+3. Native H.264 normalization reuses parsed samples and `avcC`, decodes with `VideoDecoder`, scales/letterboxes through a canvas, converts to limited-range I420, and encodes with `VideoEncoder`.
+4. HEVC, WebM, fragmented MP4, and unsupported H.264 configurations use ffmpeg.wasm for decode. If WebCodecs H.264 encoding is available, ffmpeg.wasm emits a capped Y4M stream and WebCodecs performs the encode; otherwise the complete encode stays in the WASM worker.
+5. The UI and JSON report name decode path, encode path, target, parallel execution, fallback reason, and duration. Compatibility is checked again on the converted bytes before preview and merge.
 
 ### Phase C: WebCodecs normalization
 
 1. Feature-detect `VideoDecoder`, `VideoEncoder`, and `VideoFrame`; select an H.264 encoder configuration supported by the current browser.
-2. Decode the source in sample order, draw each frame into one common even-sized canvas, and letterbox without changing aspect ratio.
+2. Decode the source in sample order, draw each frame into one common even-sized canvas capped at 720 pixels on the long side, and preserve or letterbox aspect ratio as needed.
 3. Convert the canvas to explicit BT.709 limited-range I420 and encode H.264 with a keyframe every 30 frames, starting at frame 0. The output is video-only.
 4. Mux encoded chunks into `ftyp`/`moov`/`mdat` faststart MP4 with `stts`, `stss`, `stsc`, `stsz`, and `stco`/`co64`.
 5. Align B's first-GOP non-key H.264 `frame_num` values so they continue after A. Without this, a decoder can discard early B frames after the removed IDR because separately encoded clips both start at frame number zero. Later B GOPs keep their local numbering and recover at their retained IDRs.
-6. Validate that the normalized output parses, starts with one IDR, and contains no IDR in a delta chunk before running the unchanged Phase B merge.
+6. Validate that the normalized output parses, starts with an IDR frame, and contains no IDR in a delta chunk before running the unchanged Phase B merge.
+
+### Hybrid and parallel conversion
+
+1. Pair conversion uses two ffmpeg.wasm workers when native-incompatible clips are converted through WASM. The UI exposes separate A and B progress bars.
+2. ffmpeg.wasm decode writes capped `yuv420p` Y4M frames locally. WebCodecs encodes those frames as H.264 and the existing MP4 muxer assembles the result, avoiding full-resolution software x264 work.
+3. If WebCodecs encoding is unavailable or fails, the same file is retried entirely in the ffmpeg.wasm encoder. The report records `encodeEngine: "WebCodecs"` or `"ffmpeg.wasm"` and any hybrid fallback reason.
 
 ### Phase A: single-clip Classic Mosh
 
@@ -71,7 +80,7 @@ Native Tier-1 clips may contain B-frames; their `ctts` composition offsets are p
 4. For a multi-GOP B whose first frame after the removed IDR cannot continue A's `frame_num`, it parses the first B-GOP slice headers and patches `frame_num` modulo `2^log2_max_frame_num`. This alignment requires `pic_order_cnt_type=2`, so it applies to the no-reordering conversion path rather than arbitrary B-frame streams.
 5. The patcher unescapes emulation-prevention bytes to RBSP, changes the fixed-width `frame_num` bits, then regenerates the EBSP. It therefore remains safe if the original or patched bits span positions where an emulation-prevention byte was present.
 6. Appends B's remaining crop of samples and rebuilds the video sample tables, composition offsets, chunk offsets, and container durations. Later B IDRs reset `frame_num` normally and need no patch.
-7. Reports every compatibility criterion, the removed B units, output duration, sample counts, retained B IDRs, the frame-number patch, and the single leading IDR. Incompatible pairs are blocked loudly instead of producing a broken file.
+7. Reports every compatibility criterion, the removed B units, output duration, sample counts, retained B IDRs, the frame-number patch, and the leading IDR frame. Incompatible pairs are blocked loudly instead of producing a broken file.
 
 The **A cut** preview is the untouched input A. The merged export is video-only in Phase B.
 
@@ -91,6 +100,7 @@ npm run test:webcodecs
 - a 256×240 resolution mismatch;
 - a 320×240 clip with a different `mdhd` timescale;
 - a matching 25-frame A plus 75-frame multi-GOP B with B IDRs at samples 0, 25, and 50;
+- native H.264 clips at 1440×1920 and 768×1024 for the capped auto-normalization path;
 - a QuickTime H.264 MOV with a `wide` placeholder;
 - HEVC MOV fixtures, including a different-resolution pair;
 - a fragmented MP4.
@@ -103,7 +113,7 @@ The tests assert:
 - the merged NAL sequence is A plus B after its first IDR;
 - every retained merge NAL is byte-identical to its source;
 - `stsz` sum equals mdat content, sample offsets are monotonic, and timing/durations agree;
-- the merged stream starts with exactly one IDR and retains B's later IDR anchors;
+- the merged stream starts with an IDR frame and retains B's later IDR anchors;
 - a multi-GOP B keeps its later IDR anchors, aligns the first B GOP with a safe RBSP/EBSP frame-number patch, and decodes as many frames as its sample table declares;
 - Cut is byte-identical to A;
 - both exports decode with `ffprobe`;
@@ -112,18 +122,22 @@ The tests assert:
 - HEVC and fragmented MP4 return their documented actionable errors.
 - the WebCodecs muxer's `stsz`/`mdat` sizes, sample offsets, `stss`, and `stts` duration agree;
 - normalization chooses one identical even target from differently sized pair members.
+- the 1440×1920 + 768×1024 native pair auto-normalizes to 540×720, exposes `normalizing clips…`, re-checks compatibility, and merges;
+- ffmpeg.wasm decode + WebCodecs encode and the full-WASM fallback both name the encoder that ran.
 
 Current local results (2026-11-03, Node 26.13.0, FFmpeg 9.0.2, Google Chrome 156): all 27 Node checks pass. Phase A removes 11,468 bytes and decodes 73 frames. Phase B merges 25 A samples plus 24 retained B samples, decodes 49 frames, and produces the same 67,893-byte export. The multi-GOP regression merges 25 A + 75 B samples, retains two later B IDRs, patches 24 first-GOP slice headers, and decodes all 99 expected frames with three keyframes. The WebCodecs muxer test emits 8 samples with a 14,984-byte mdat payload and 4,096 duration units. Tier-1 fixtures additionally verify a QuickTime H.264 MOV (25 samples / 26 NALs), a size-zero mdat, standalone `wide`, a 64-bit mdat, the exact HEVC error, and the exact fragmented-MP4 error.
 
-The browser conversion run loaded two HEVC MOVs (320×240 and 256×240), normalized both to H.264 High profile at 320×240 / 30 fps / 15,360 timescale, merged 59 samples into a 1.97-second video-only file, and downloaded a 65,228-byte MP4. A VP9 WebM also converted and merged successfully with an HEVC MOV. Chrome played the merged Blob without a media error. Probe results: H.264, 320×240, 30/1 fps, `has_b_frames=0`, 47 decodable frames after the intended IDR removal; strict FFmpeg decode exited 0. The report marked both sources as Tier 2 `converted via ffmpeg.wasm`.
+The real `IMG_1993.MOV` + `IMG_3339.MOV` verification converted both HEVC originals with ffmpeg.wasm decode plus WebCodecs encode to 540×720. Conversion took 5.7 s and 5.8 s versus 19.8 s and 33.6 s for the earlier full-resolution WASM run. The 112 + 177 source samples merged to 288/288 decoded frames. All later B IDRs were retained, the first B GOP required 32 slice patches across 16 samples, and strict decode exited 0.
 
 `npm run test:webcodecs` uses Chrome's DevTools Protocol directly and has no Node package dependency. It exits with a clear skip if Chrome or a usable H.264 WebCodecs encoder is unavailable. The committed run produced:
 
 ```text
 PASS WebCodecs decoded and normalized both clips with one leading IDR each; 53018 B / 52775 B
 PASS WebCodecs emitted keyframes at samples 1, 31, and 61; the multi-GOP merge retained two later IDRs and decoded all 149 frames
+PASS large native mismatch auto-normalized to 540x720; UI showed normalizing before compatible and merge produced 49 samples
 PASS WebCodecs pair merged in the browser: 49 samples, one leading IDR, preview 320x240
 PASS merged export decodes: 49 frames, H.264 320x240 yuv420p/tv, SHA-256 b4bb6c4827b2f7a8fe6d93777ff63f4491dd0b8eb497148dd3b2d07da1666bef
+PASS ffmpeg.wasm decode + WebCodecs encode: 320x240, both progress bars completed, export decoded
 PASS WebCodecs stubbed unavailable: ffmpeg.wasm fallback ran and the report identifies it
 ```
 
@@ -131,7 +145,7 @@ The same test asserts the normalized A/B streams parse via `parser/nal.js` with 
 
 `npm run test:conversion` remains the optional Playwright test for the HEVC ffmpeg.wasm path. It exits with a clear skip when Playwright or the CDN is unavailable.
 
-This is **synthetic and headless-browser verification**, not a real phone-pair/device acceptance check. No physical phone media or physical device was supplied or used.
+Verification includes synthetic fixtures, two real iPhone MOVs, and headless Chrome. A physical iPhone acceptance run is still separate: Safari/WebCodecs behavior, thermal throttling, and device memory cannot be inferred from desktop Chrome.
 
 ## Honest limits
 
@@ -143,7 +157,9 @@ Phase A handles a single H.264 video track in a conventional (non-fragmented) MP
 
 WebCodecs availability does not guarantee hardware acceleration, a particular profile, or support at every resolution; the browser chooses the implementation. If its H.264 decoder/encoder configuration, I420 frame construction, or frame-number alignment is unsupported, the app falls back to ffmpeg.wasm. Current normalizing support is limited to natively parsed H.264 sources because the demuxer is H.264-only; HEVC and other codecs go directly to ffmpeg.wasm.
 
-The ffmpeg.wasm fallback depends on downloading the pinned core from jsDelivr. It is slow on large files, may exhaust wasm memory, and can still fail on iOS Safari with very large inputs. The 100 MB limit is a soft product limit for both paths, not a guarantee that a file below it will fit available device memory. No conversion is attempted for encrypted media.
+The 720-pixel long-side cap is intentional and lossy for larger sources. It substantially reduces encode time and memory, and does not reduce the visible mosh effect because bitstream reference loss is resolution-independent. WebCodecs encoders may inject extra IDRs beyond the requested 30-frame cadence; B therefore recovers at its first encoder-provided IDR, which can shorten the affected first GOP.
+
+The ffmpeg.wasm fallback depends on downloading the pinned core from jsDelivr. Parallel pair conversion deliberately starts up to two WASM workers, so peak memory is higher than a single-worker run even though each target is capped. It may still exhaust memory or fail on iOS Safari with large inputs. The 100 MB limit is a soft product limit for both paths, not a guarantee that a file below it will fit available device memory. No conversion is attempted for encrypted media.
 
 Phase B's direct merge supports compatible pairs only. Resolution, profile, level, chroma, bit depth, PPS, and video timescale must match; differing SPS payloads require equivalent parsed core fields. Phase C can normalize native H.264 mismatches to a common target first. The merged A→B export still has no audio; audio is not part of this phase. Normalized clips also drop audio before moshing. Multi-GOP B is supported: the mosh targets B's first GOP, then the retained B IDRs act as clean recovery anchors, so later B GOPs should play normally after the intended boundary corruption. Frame-number alignment currently requires `pic_order_cnt_type=2`; other reordered multi-GOP streams fail explicitly instead of silently producing a short decode. WebCodecs normalization is video-only and intentionally removes B-frames; it is not a general-purpose transcoder.
 

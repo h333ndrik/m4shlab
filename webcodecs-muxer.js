@@ -1,4 +1,5 @@
 import { makeBox, fullBox, makeChunkOffset, makeStsc, makeStss, makeStsz, makeStts, u32 } from './merge.js';
+import { capNormalizationDimensions } from './conversion-settings.js';
 
 const TIMESCALE = 15360;
 const SAMPLE_DURATION = 512;
@@ -104,10 +105,7 @@ function buildMoov(chunks, description, width, height, chunkOffset, use64, keyfr
 export function chooseNormalizationTarget(...clips) {
   const width = Math.max(...clips.map(clip => clip.width || 0), 2);
   const height = Math.max(...clips.map(clip => clip.height || 0), 2);
-  return {
-    width: Math.floor(width / 2) * 2,
-    height: Math.floor(height / 2) * 2,
-  };
+  return capNormalizationDimensions(width, height);
 }
 
 export function buildNormalizedMp4({chunks, description, width, height, timescale = TIMESCALE}) {

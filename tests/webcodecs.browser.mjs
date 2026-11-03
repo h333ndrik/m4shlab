@@ -12,6 +12,8 @@ const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const fixtures = {
   a: join(projectRoot, 'testmedia', 'synthetic-b-a.mp4'),
   b: join(projectRoot, 'testmedia', 'synthetic-b-mismatch.mp4'),
+  largeA: join(projectRoot, 'testmedia', 'synthetic-native-large-a.mp4'),
+  largeB: join(projectRoot, 'testmedia', 'synthetic-native-large-b.mp4'),
 };
 const normalizedPaths = {
   a: join(projectRoot, 'testmedia', 'webcodecs-browser-normalized-a.mp4'),
@@ -20,6 +22,7 @@ const normalizedPaths = {
 const downloadDir = join(projectRoot, 'testmedia', 'webcodecs-browser-downloads');
 const mergedPath = join(downloadDir, 'm4shlab-merge.mp4');
 const multiGopMergedPath = join(projectRoot, 'testmedia', 'webcodecs-browser-multigop-merged.mp4');
+const hybridExportPath = join(projectRoot, 'testmedia', 'webcodecs-hybrid-export.mp4');
 const chromeCandidates = [
   process.env.CHROME_BIN,
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -279,6 +282,46 @@ try {
   command('ffmpeg', ['-v', 'error', '-i', multiGopMergedPath, '-f', 'null', '-'], 'WebCodecs multi-GOP strict decode');
   console.log('PASS WebCodecs emitted keyframes at samples 1, 31, and 61; the multi-GOP merge retained two later IDRs and decoded all 149 frames');
 
+  await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?large-native=1'});
+  await client.waitFor("document.querySelector('#file-input-a') !== null", 10000);
+  await client.setFile('#file-input-a', fixtures.largeA);
+  await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 15000);
+  await client.evaluate(`(() => {
+    window.__compatibilityStates = [document.querySelector('#compatibility-status').textContent];
+    new MutationObserver(() => window.__compatibilityStates.push(document.querySelector('#compatibility-status').textContent))
+      .observe(document.querySelector('#compatibility-status'), {childList: true, characterData: true, subtree: true});
+  })()`);
+  await client.setFile('#file-input-b', fixtures.largeB);
+  await client.waitFor("document.querySelector('#compatibility-status').textContent === 'compatible' || /failed/i.test(document.querySelector('#conversion-status').textContent)", 120000);
+  const largePair = await client.evaluate(`(() => {
+    const reportNode = document.querySelector('#report');
+    return {
+      compatibility: document.querySelector('#compatibility-status').textContent,
+      error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
+      states: window.__compatibilityStates,
+      conversionStatus: document.querySelector('#conversion-status').textContent,
+      progressA: document.querySelector('#conversion-progress').value,
+      progressB: document.querySelector('#conversion-progress-b').value,
+      report: reportNode.textContent ? JSON.parse(reportNode.textContent) : null,
+    };
+  })()`);
+  assert.equal(largePair.compatibility, 'compatible', largePair.error || 'large native pair did not normalize');
+  assert.ok(largePair.states.some(state => state.includes('normalizing clips')), 'UI never exposed the normalizing state');
+  assert.ok(!largePair.states.includes('not compatible'), 'UI exposed a final incompatible verdict before normalization');
+  assert.equal(largePair.report.normalization.autoNormalized, true);
+  assert.equal(largePair.report.normalization.parallel, true);
+  assert.deepEqual(largePair.report.normalization.target, {width: 540, height: 720});
+  assert.equal(largePair.report.sources.a.conversion.mode, 'normalized');
+  assert.equal(largePair.report.sources.b.conversion.mode, 'normalized');
+  assert.equal(largePair.report.sources.a.conversion.encodeEngine, 'WebCodecs', largePair.report.sources.a.conversion.webcodecsFallbackReason || 'Clip A did not use WebCodecs');
+  assert.equal(largePair.report.sources.b.conversion.encodeEngine, 'WebCodecs', largePair.report.sources.b.conversion.webcodecsFallbackReason || 'Clip B did not use WebCodecs');
+  assert.ok(largePair.report.merge.mergedSamples > 0);
+  assert.equal(largePair.progressA, 1);
+  assert.equal(largePair.progressB, 1);
+  console.log(`PASS large native mismatch auto-normalized to ${largePair.report.normalization.target.width}x${largePair.report.normalization.target.height}; UI showed normalizing before compatible and merge produced ${largePair.report.merge.mergedSamples} samples`);
+
+  await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?single-pair=1'});
+  await client.waitFor("document.querySelector('#file-input-a') !== null", 10000);
   await client.setFile('#file-input-a', fixtures.a);
   await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 15000);
   await client.setFile('#file-input-b', fixtures.b);
@@ -303,7 +346,7 @@ try {
   assert.equal(state.report.sources.b.mode, 'normalized via WebCodecs');
   assert.ok(state.report.sources.a.conversion.elapsedMs >= 0);
   assert.ok(state.report.sources.b.conversion.elapsedMs >= 0);
-  assert.equal(state.report.sources.b.conversion.frameAlignment.patched, 24);
+  assert.equal(state.report.merge.frameAlignment.patchedSamples, 24);
   assert.equal(state.report.merge.mergedSamples, 49);
   assert.equal(state.report.merge.idrCount, 1);
   assert.equal(state.report.merge.startsWithSingleIdr, true);
@@ -366,6 +409,49 @@ try {
   if (!fallbackAssets) {
     console.log('SKIP ffmpeg.wasm fallback browser check: CDN assets are unavailable offline.');
   } else {
+    await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?hybrid=1'});
+    await client.waitFor("document.querySelector('#file-input-a') !== null", 10000);
+    await client.setFile('#file-input-a', join(projectRoot, 'testmedia', 'synthetic-hevc.mov'));
+    await client.waitFor("document.querySelector('#status').textContent.includes('clip A') || /failed/i.test(document.querySelector('#conversion-status').textContent)", 180000);
+    await client.setFile('#file-input-b', join(projectRoot, 'testmedia', 'synthetic-hevc-small.mov'));
+    await client.waitFor("document.querySelector('#compatibility-status').textContent === 'compatible' || /failed/i.test(document.querySelector('#conversion-status').textContent)", 300000);
+    const hybrid = await client.evaluate(`(() => {
+      const reportNode = document.querySelector('#report');
+      return {
+        compatibility: document.querySelector('#compatibility-status').textContent,
+        conversionStatus: document.querySelector('#conversion-status').textContent,
+        error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
+        progressA: document.querySelector('#conversion-progress').value,
+        progressB: document.querySelector('#conversion-progress-b').value,
+        progressBHidden: document.querySelector('#conversion-progress-b-row').hidden,
+        report: reportNode.textContent ? JSON.parse(reportNode.textContent) : null,
+      };
+    })()`);
+    assert.equal(hybrid.compatibility, 'compatible', hybrid.error || 'hybrid pair was not compatible');
+    assert.match(hybrid.conversionStatus, /ffmpeg\.wasm \+ WebCodecs/);
+    assert.equal(hybrid.report.sources.a.conversion.decodeEngine, 'ffmpeg.wasm');
+    assert.equal(hybrid.report.sources.a.conversion.encodeEngine, 'WebCodecs');
+    assert.equal(hybrid.report.sources.b.conversion.encodeEngine, 'WebCodecs');
+    assert.equal(hybrid.report.normalization.autoNormalized, true);
+    assert.equal(hybrid.report.normalization.parallel, true);
+    assert.ok(Math.max(hybrid.report.normalization.target.width, hybrid.report.normalization.target.height) <= 720);
+    assert.equal(hybrid.progressA, 1);
+    assert.equal(hybrid.progressB, 1);
+    assert.equal(hybrid.progressBHidden, false);
+    rmSync(hybridExportPath, {force: true});
+    const downloadedHybrid = join(downloadDir, 'm4shlab-merge.mp4');
+    rmSync(downloadedHybrid, {force: true});
+    await client.evaluate("document.querySelector('#export-button').click()");
+    await waitForDownload(downloadedHybrid);
+    writeFileSync(hybridExportPath, readFileSync(downloadedHybrid));
+    const hybridProbe = command('ffprobe', [
+      '-v', 'error', '-select_streams', 'v:0', '-count_frames',
+      '-show_entries', 'stream=codec_name,width,height,nb_read_frames', '-of', 'default=noprint_wrappers=1', hybridExportPath,
+    ], 'hybrid conversion export probe');
+    assert.match(hybridProbe.stdout, /codec_name=h264/);
+    assert.ok(Number(/nb_read_frames=(\d+)/.exec(hybridProbe.stdout)?.[1] ?? 0) > 0);
+    console.log(`PASS ffmpeg.wasm decode + WebCodecs encode: ${hybrid.report.normalization.target.width}x${hybrid.report.normalization.target.height}, both progress bars completed, export decoded`);
+
     await client.send('Page.addScriptToEvaluateOnNewDocument', {
       source: "Object.defineProperty(globalThis, 'VideoDecoder', {value: undefined, configurable: true}); Object.defineProperty(globalThis, 'VideoEncoder', {value: undefined, configurable: true});",
     });
@@ -389,6 +475,8 @@ try {
     assert.equal(fallback.conversionStatus, 'normalized via ffmpeg.wasm');
     assert.equal(fallback.sources.a.mode, 'normalized via ffmpeg.wasm');
     assert.equal(fallback.sources.b.mode, 'normalized via ffmpeg.wasm');
+    assert.equal(fallback.sources.a.conversion.encodeEngine, 'ffmpeg.wasm');
+    assert.equal(fallback.sources.b.conversion.encodeEngine, 'ffmpeg.wasm');
     assert.ok(fallback.sources.a.conversion.elapsedMs > 0);
     assert.ok(fallback.sources.b.conversion.elapsedMs > 0);
     console.log('PASS WebCodecs stubbed unavailable: ffmpeg.wasm fallback ran and the report identifies it');

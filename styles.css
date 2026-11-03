@@ -212,6 +212,7 @@ video {
 .compatibility-status{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding:4px 8px;border:1px solid var(--line);border-radius:999px}
 .compatibility-status.is-compatible{color:#245c3d;border-color:#9cb9a8;background:#edf6f0}
 .compatibility-status.is-incompatible{color:#8b2f20;border-color:#d5aaa0;background:#fff1ec}
+.compatibility-status.is-working{color:#76551b;border-color:#d7c8a6;background:#fffaf0}
 .compatibility-message{margin:0 0 14px;color:var(--muted);line-height:1.55}
 .compatibility-table-wrap{overflow-x:auto;border:1px solid var(--line)}
 .compatibility-table{width:100%;border-collapse:collapse;font-size:.82rem}
@@ -236,5 +237,6 @@ video {
 .conversion-heading h2{margin:0}
 .conversion-status{font-size:.72rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#76551b}
 .conversion-message{margin:0 0 12px;color:var(--muted);line-height:1.5}
+.conversion-progress-row{display:grid;grid-template-columns:18px minmax(0,1fr);align-items:center;gap:8px;margin-top:6px;color:var(--muted);font-size:.72rem;font-weight:700}
 .conversion-panel progress{display:block;width:100%;height:8px;accent-color:#9a6b17}
 @media (max-width: 620px){.conversion-heading{align-items:flex-start;flex-direction:column;gap:6px}}

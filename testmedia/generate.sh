@@ -30,6 +30,8 @@ encode synthetic-b-a.mp4 320x240 1 "testsrc2=size=320x240:rate=25"
 encode synthetic-b-b.mp4 320x240 1 "testsrc2=size=320x240:rate=25,hue=h=90"
 encode synthetic-b-mismatch.mp4 256x240 1 "testsrc2=size=256x240:rate=25"
 encode synthetic-b-timescale.mp4 320x240 1 "testsrc2=size=320x240:rate=25,hue=h=180" 25600
+encode synthetic-native-large-a.mp4 1440x1920 1 "testsrc2=size=1440x1920:rate=25"
+encode synthetic-native-large-b.mp4 768x1024 1 "testsrc2=size=768x1024:rate=25,hue=h=90"
 
 encode_multigop() {
   local output="$1"

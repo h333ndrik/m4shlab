@@ -40,7 +40,8 @@
         <span id="conversion-status" class="conversion-status">preparing</span>
       </div>
       <p id="conversion-message" class="conversion-message">WebCodecs is preferred when the browser can decode and encode H.264; ffmpeg.wasm loads only as fallback.</p>
-      <progress id="conversion-progress" aria-label="Conversion progress"></progress>
+      <div class="conversion-progress-row"><span>A</span><progress id="conversion-progress" aria-label="Clip A conversion progress"></progress></div>
+      <div id="conversion-progress-b-row" class="conversion-progress-row" hidden><span>B</span><progress id="conversion-progress-b" aria-label="Clip B conversion progress"></progress></div>
     </section>
 
     <p id="error" class="error" role="alert" hidden></p>

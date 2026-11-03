@@ -8,6 +8,7 @@ import { extractNals } from '../parser/nal.js';
 import { moshH264 } from '../mosh.js';
 import { CompatibilityError, checkCompatibility, mergeMoshH264 } from '../merge.js';
 import { buildNormalizedMp4, chooseNormalizationTarget } from '../webcodecs-muxer.js';
+import { MAX_TARGET_LONG_SIDE, capNormalizationDimensions } from '../conversion-settings.js';
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const fixturePath = join(projectRoot, 'testmedia', 'synthetic-h264.mp4');
@@ -155,7 +156,14 @@ assert.deepEqual(
   {width: 320, height: 240},
   'The common normalization target must be even and shared by both clips',
 );
-pass('normalization resolution logic selects one identical even target using the larger width and height');
+assert.deepEqual(
+  chooseNormalizationTarget({width: 1440, height: 1920}, {width: 768, height: 1024}),
+  {width: 540, height: 720},
+);
+assert.equal(Math.max(...Object.values(chooseNormalizationTarget({width: 3840, height: 2160}))), MAX_TARGET_LONG_SIDE);
+assert.deepEqual(capNormalizationDimensions(1000, 500), {width: 720, height: 360});
+assert.deepEqual(capNormalizationDimensions(320, 240), {width: 320, height: 240});
+pass(`normalization resolution logic selects one identical even target and caps the long side at ${MAX_TARGET_LONG_SIDE}px`);
 
 const muxDescription = input.subarray(parsed.videoTrack.avcC.payloadStart, parsed.videoTrack.avcC.payloadEnd);
 const muxChunks = parsed.videoTrack.samples.slice(0, 8).map((sample, index) => ({

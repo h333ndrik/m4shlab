@@ -63,11 +63,12 @@ try {
       mergedSamples: report.merge.mergedSamples,
     };
   });
-  assert.equal(state.conversionStatus, 'normalized via ffmpeg.wasm');
+  assert.match(state.conversionStatus, /^normalized via ffmpeg\.wasm(?: \+ WebCodecs)?$/);
   assert.equal(state.modifiedEnabled, true);
   assert.equal(state.sources.a.tier, 'tier-2');
   assert.equal(state.sources.b.tier, 'tier-2');
-  assert.equal(state.sources.a.mode, 'converted via ffmpeg.wasm');
+  assert.match(state.sources.a.mode, /^normalized via ffmpeg\.wasm(?: \+ WebCodecs)?$/);
+  assert.ok(['ffmpeg.wasm', 'WebCodecs'].includes(state.sources.a.conversion.encodeEngine));
   assert.equal(state.sources.a.conversion.target.width, 320);
   assert.equal(state.sources.a.conversion.target.height, 240);
   assert.ok(state.mergedSamples > 0);

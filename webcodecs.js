@@ -441,8 +441,9 @@ export async function normalizeWithWebCodecs(inputBytes, options = {}) {
     const outputNals = extractNals(muxed.bytes, outputMp4.videoTrack);
     const firstSample = outputNals.filter(nal => nal.sampleIndex === 0);
     const idrCount = outputNals.filter(nal => nal.type === 5).length;
-    if (firstSample.filter(nal => nal.type === 5).length !== 1) {
-      throw new WebCodecsError('The normalized stream does not start with exactly one IDR in its first sample.');
+    const firstSampleIdrCount = firstSample.filter(nal => nal.type === 5).length;
+    if (firstSampleIdrCount < 1) {
+      throw new WebCodecsError('The normalized stream does not start with an IDR frame.');
     }
     for (const chunk of muxed.report.chunks) {
       if (!chunk.key && extractNalsFromData(chunk.data, outputMp4.videoTrack.lengthSize).some(nal => nal.type === 5)) {

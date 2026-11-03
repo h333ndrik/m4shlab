@@ -161,6 +161,7 @@ export async function checkCompatibility(inputA, inputB, parsedA = parseMp4(inpu
   const aNals = extractNals(inputA, a.track);
   const bNals = extractNals(inputB, b.track);
   const aFirstSampleNals = aNals.filter(nal => nal.sampleIndex === a.track.samples[0]?.index);
+  const aFirstIdrCount = aFirstSampleNals.filter(nal => nal.type === IDR_NAL_TYPE).length;
   const bIdrNals = bNals.filter(nal => nal.type === IDR_NAL_TYPE);
   const firstBIdrSample = bIdrNals.length ? bIdrNals[0].sampleIndex : null;
   const bHasSlicesAfterIdr = firstBIdrSample !== null && bNals.some(nal => nal.sampleIndex > firstBIdrSample && !REMOVED_B_NAL_TYPES.has(nal.type));
@@ -206,10 +207,10 @@ export async function checkCompatibility(inputA, inputB, parsedA = parseMp4(inpu
       `${ppsHashA.slice(0, 12)}…`,
       `${ppsHashB.slice(0, 12)}…`,
       { predicate: () => ppsMatch, note: ppsMatch ? 'identical' : 'must match for compatible H.264 slices' }),
-    makeCheck('aIdrStart', 'A starts with one IDR',
-      `${aFirstSampleNals.filter(nal => nal.type === IDR_NAL_TYPE).length} IDR`,
+    makeCheck('aIdrStart', 'A starts with an IDR',
+      `${aFirstIdrCount} IDR NAL${aFirstIdrCount === 1 ? '' : 's'}`,
       '—',
-      { predicate: () => aFirstSampleNals.filter(nal => nal.type === IDR_NAL_TYPE).length === 1 }),
+      { predicate: () => aFirstIdrCount > 0 }),
     makeCheck('bIdrStart', 'B has an IDR to remove',
       '—',
       firstBIdrSample === null ? 'none' : `sample ${firstBIdrSample}`,
@@ -612,19 +613,20 @@ function patchSampleFrameNumber(sampleData, lengthSize, log2MaxFrameNum, frameNu
 }
 
 function alignFirstBGop(inputA, parsedA, inputB, parsedB, preparedB) {
-  if (preparedB.idrSamples.length < 2) return {applied: false, reason: 'single-gop'};
-
   const bConfig = parseAvcConfig(inputB, parsedB.videoTrack.avcC);
   const bSps = bConfig.sps.length ? parseSps(bConfig.sps[0]) : null;
   const aConfig = parseAvcConfig(inputA, parsedA.videoTrack.avcC);
   const aSps = aConfig.sps.length ? parseSps(aConfig.sps[0]) : null;
   if (!bSps) throw new Mp4Error('Clip B has no SPS for frame-number alignment');
   if (!aSps) throw new Mp4Error('Clip A has no SPS for frame-number alignment');
+  if (bSps.picOrderCntType !== 2) {
+    if (preparedB.idrSamples.length > 1) {
+      throw new Mp4Error('Multi-GOP B frame-number alignment requires pic_order_cnt_type 2 (no picture-order reordering).');
+    }
+    return {applied: false, reason: 'single-gop-picture-reordering'};
+  }
   if (aSps.log2MaxFrameNum !== bSps.log2MaxFrameNum) {
     throw new Mp4Error(`Multi-GOP B frame-number alignment requires matching log2_max_frame_num (${aSps.log2MaxFrameNum} ≠ ${bSps.log2MaxFrameNum}).`);
-  }
-  if (bSps.picOrderCntType !== 2) {
-    throw new Mp4Error('Multi-GOP B frame-number alignment requires pic_order_cnt_type 2 (no picture-order reordering).');
   }
 
   const aSlices = extractNals(inputA, parsedA.videoTrack).filter(nal => nal.type === 1 || nal.type === IDR_NAL_TYPE);
@@ -632,7 +634,7 @@ function alignFirstBGop(inputA, parsedA, inputB, parsedB, preparedB) {
   if (!lastASlice) throw new Mp4Error('Clip A has no slice for frame-number alignment');
   const aLastFrameNum = readSliceFrameNumber(lastASlice.data, bSps.log2MaxFrameNum);
   const modulo = 2 ** bSps.log2MaxFrameNum;
-  const nextIdrSample = preparedB.idrSamples[1];
+  const nextIdrSample = preparedB.idrSamples[1] ?? parsedB.videoTrack.samples.length;
   let patchedSamples = 0;
   let patchedNals = 0;
 
@@ -706,7 +708,8 @@ export async function mergeMoshH264(inputA, inputB, parsedA = parseMp4(inputA), 
   const outputNals = extractNals(output, outputMp4.videoTrack);
   const idrNals = outputNals.filter(nal => nal.type === IDR_NAL_TYPE);
   const firstSampleNals = outputNals.filter(nal => nal.sampleIndex === 0);
-  const startsWithSingleIdr = firstSampleNals.filter(nal => nal.type === IDR_NAL_TYPE).length === 1;
+  const leadingIdrNalCount = firstSampleNals.filter(nal => nal.type === IDR_NAL_TYPE).length;
+  const startsWithSingleIdr = leadingIdrNalCount === 1;
 
   return {
     output,
@@ -734,6 +737,8 @@ export async function mergeMoshH264(inputA, inputB, parsedA = parseMp4(inputA), 
       idrCount: idrNals.length,
       bIdrCountRemaining: preparedB.laterIdrCount,
       frameAlignment,
+      leadingIdrNalCount,
+      startsWithIdrFrame: leadingIdrNalCount > 0,
       startsWithSingleIdr,
       audio: 'omitted in Phase B',
     },
