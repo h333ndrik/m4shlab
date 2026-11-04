@@ -18,7 +18,7 @@
 <body>
   <main>
     <header>
-      <h1>m4shlab</h1>
+      <h1>m4 sh lab</h1>
       <div class="file-actions" aria-label="Import videos">
         <label class="button">+ Import videos<input id="file-input-a" type="file" multiple accept="video/*,.mp4,.mov,.m4v,.mkv,.webm,.avi"></label>
         <input id="file-input-b" class="legacy-input" type="file" accept="video/*,.mp4,.mov,.m4v,.mkv,.webm,.avi" tabindex="-1" aria-hidden="true">
@@ -32,26 +32,23 @@
     </section>
 
     <div class="preview-meta">
+      <span id="preview-label">No video selected</span>
       <div class="preview-options">
-        <span id="preview-label">No video selected</span>
-        <button id="assemble-preview" type="button" aria-pressed="false" disabled>Assemble preview</button>
-        <div class="preview-readout">
-          <span id="preview-time" aria-label="Preview time">0.00 / 0.00 s</span>
-          <label class="sound-toggle"><input id="sound-toggle" type="checkbox" checked> <span>Sound on</span></label>
-        </div>
+        <label class="sound-toggle"><input id="sound-toggle" type="checkbox" checked> <span>Sound on</span></label>
+        <span id="preview-time" aria-label="Preview time">0.00 / 0.00 s</span>
       </div>
-      <button id="export-button" class="primary" type="button" disabled>export merged MP4</button>
     </div>
 
     <section id="drop-zone" class="sequence" aria-labelledby="source-heading">
       <div class="section-label">
-        <div class="section-title">
-          <h2 id="source-heading">Sequence</h2>
+        <h2 id="source-heading">Sequence</h2>
+        <div class="section-tools">
+          <div class="history-tools" role="group" aria-label="Timeline history">
+            <button id="undo-button" type="button" aria-label="Undo" title="Undo" disabled>↶</button>
+            <button id="redo-button" type="button" aria-label="Redo" title="Redo" disabled>↷</button>
+          </div>
+          <input id="project-name" class="project-name" type="text" value="Project" maxlength="60" size="7" aria-label="Project name">
           <span id="sequence-label">0 clips</span>
-        </div>
-        <div class="section-tools" aria-label="Timeline history">
-          <button id="undo-button" type="button" disabled>undo</button>
-          <button id="redo-button" type="button" disabled>redo</button>
         </div>
       </div>
       <div id="source-tiers" class="timeline"></div>
@@ -150,6 +147,10 @@
 
     <footer class="limits" aria-labelledby="limits-heading">
       <p id="limits-heading">Real H.264 bitstream editing · max 720px · 30 fps · originals untouched</p>
+      <div class="actions">
+        <button id="assemble-preview" type="button" aria-pressed="false" disabled>Assemble preview</button>
+        <button id="export-button" class="primary" type="button" disabled>Export MP4 ↗</button>
+      </div>
     </footer>
   </main>
   <script type="module" src="./app.js"></script>

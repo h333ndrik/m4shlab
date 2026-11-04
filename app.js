@@ -53,7 +53,11 @@ const exportButton = document.querySelector('#export-button');
 const previewLabel = document.querySelector('#preview-label');
 const previewTime = document.querySelector('#preview-time');
 const soundToggle = document.querySelector('#sound-toggle');
+const projectName = document.querySelector('#project-name');
 const AUDIO_PREFERENCE_KEY = 'm4shlab-audio';
+const PROJECT_NAME_KEY = 'm4shlab-project';
+const DEFAULT_PROJECT_NAME = 'Project';
+const DEFAULT_EXPORT_FILENAME = 'm4shlab-merge.mp4';
 const report = document.querySelector('#report');
 const undoButton = document.querySelector('#undo-button');
 const redoButton = document.querySelector('#redo-button');
@@ -104,6 +108,7 @@ let undoStack = [];
 let redoStack = [];
 let refreshInFlight = 0;
 let soundEnabled = readSoundPreference();
+let projectNameSaveTimer = null;
 
 function readSoundPreference() {
   try {
@@ -122,6 +127,42 @@ function writeSoundPreference() {
 function applySoundPreference() {
   soundToggle.checked = soundEnabled;
   video.muted = !soundEnabled;
+}
+
+function readProjectName() {
+  try {
+    return (localStorage.getItem(PROJECT_NAME_KEY) ?? DEFAULT_PROJECT_NAME).slice(0, 60);
+  } catch {
+    return DEFAULT_PROJECT_NAME;
+  }
+}
+
+function saveProjectName() {
+  if (projectNameSaveTimer !== null) {
+    clearTimeout(projectNameSaveTimer);
+    projectNameSaveTimer = null;
+  }
+  try {
+    localStorage.setItem(PROJECT_NAME_KEY, projectName.value);
+  } catch {}
+}
+
+function scheduleProjectNameSave() {
+  if (projectNameSaveTimer !== null) clearTimeout(projectNameSaveTimer);
+  projectNameSaveTimer = setTimeout(saveProjectName, 250);
+}
+
+function autoSizeProjectName() {
+  projectName.size = Math.min(18, Math.max(7, projectName.value.length || 1));
+}
+
+function projectExportFilename() {
+  const trimmed = projectName.value.trim();
+  if (!trimmed || trimmed === DEFAULT_PROJECT_NAME) return DEFAULT_EXPORT_FILENAME;
+  const sanitized = trimmed
+    .replace(/[\u0000-\u001f\u007f\/\\:*?"<>|]/g, '')
+    .replace(/\s+/g, '-');
+  return sanitized ? `${sanitized}.mp4` : DEFAULT_EXPORT_FILENAME;
 }
 
 function formatBytes(value) {
@@ -716,9 +757,7 @@ function renderSourceTiers() {
   sourceTiers.replaceChildren(...nodes);
   sourceTiers.hidden = false;
   syncClipDragState();
-  const cuts = clips.slice(1).filter(clip => clip.transition === 'cut').length;
-  const mosh = clips.length - 1 - cuts;
-  sequenceLabel.textContent = `${clips.length} clip${clips.length === 1 ? '' : 's'} · ${cuts} cut · ${mosh} mosh`;
+  sequenceLabel.textContent = `${clips.length} clip${clips.length === 1 ? '' : 's'}`;
 }
 
 function finishConversionPanel() {
@@ -1983,7 +2022,7 @@ async function refreshSequenceInternal() {
     exportButton.onclick = () => {
       const link = document.createElement('a');
       link.href = mergedUrl;
-      link.download = 'm4shlab-merge.mp4';
+      link.download = projectExportFilename();
       link.click();
     };
     previewClip(clips.findIndex(clip => clip.id === previewedClipId) >= 0 ? clips.findIndex(clip => clip.id === previewedClipId) : 0);
@@ -2052,6 +2091,12 @@ soundToggle.addEventListener('change', () => {
   setError('');
   if (clips.length > 1) refreshSequence();
 });
+projectName.addEventListener('input', () => {
+  autoSizeProjectName();
+  scheduleProjectNameSave();
+});
+projectName.addEventListener('change', saveProjectName);
+projectName.addEventListener('blur', saveProjectName);
 assemblePreviewButton.addEventListener('click', previewAssembledSequence);
 undoButton.addEventListener('click', undoTimeline);
 redoButton.addEventListener('click', redoTimeline);
@@ -2078,11 +2123,14 @@ window.addEventListener('dragover', event => event.preventDefault());
 window.addEventListener('drop', event => event.preventDefault());
 
 applySoundPreference();
+projectName.value = readProjectName();
+autoSizeProjectName();
 updateHistoryButtons();
 updateSingleClipState();
 document.documentElement.dataset.appReady = 'true';
 
 window.addEventListener('beforeunload', () => {
+  saveProjectName();
   const urls = new Set(clips.map(clip => clip.url).filter(Boolean));
   if (merged?.cutUrl) urls.add(merged.cutUrl);
   if (merged?.mergedUrl) urls.add(merged.mergedUrl);

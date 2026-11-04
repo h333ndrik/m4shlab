@@ -256,6 +256,13 @@ try {
       header: document.querySelector('header h1').textContent,
       tagline: document.querySelector('header p'),
       importLabel: document.querySelector('.file-actions .button').textContent.trim(),
+      projectName: document.querySelector('#project-name')?.value,
+      projectMaxLength: document.querySelector('#project-name')?.maxLength,
+      projectAria: document.querySelector('#project-name')?.getAttribute('aria-label'),
+      exportLabel: button.textContent.trim(),
+      previewOrder: [...document.querySelector('.preview-options').children].map(node => node.id === 'preview-time' ? 'time' : node.classList.contains('sound-toggle') ? 'sound' : node.id),
+      sequenceOrder: [...document.querySelectorAll('.section-tools > *, .section-tools .history-tools > *')].map(node => node.id).filter(Boolean),
+      footerActionOrder: [...document.querySelectorAll('.limits .actions button')].map(node => node.id),
       footer: document.querySelector('.limits p').textContent,
       legacyReport: document.querySelector('#report-panel, .report-panel'),
       disabled: button.disabled,
@@ -267,9 +274,16 @@ try {
   })()`);
   assert.equal(emptyState.time, '0.00 / 0.00 s');
   assert.equal(emptyState.heading, 'Sequence');
-  assert.equal(emptyState.header, 'm4shlab');
+  assert.equal(emptyState.header, 'm4 sh lab');
   assert.equal(emptyState.tagline, null);
   assert.equal(emptyState.importLabel, '+ Import videos');
+  assert.equal(emptyState.projectName, 'Project');
+  assert.equal(emptyState.projectMaxLength, 60);
+  assert.equal(emptyState.projectAria, 'Project name');
+  assert.equal(emptyState.exportLabel, 'Export MP4 ↗');
+  assert.deepEqual(emptyState.previewOrder, ['sound', 'time']);
+  assert.deepEqual(emptyState.sequenceOrder, ['undo-button', 'redo-button', 'project-name', 'sequence-label']);
+  assert.deepEqual(emptyState.footerActionOrder, ['assemble-preview', 'export-button']);
   assert.equal(emptyState.footer, 'Real H.264 bitstream editing · max 720px · 30 fps · originals untouched');
   assert.equal(emptyState.legacyReport, null);
   assert.equal(emptyState.disabled, true);
@@ -277,7 +291,74 @@ try {
   assert.equal(emptyState.color, 'rgb(119, 118, 112)');
   assert.equal(emptyState.opacity, '1');
   assert.equal(emptyState.cursor, 'not-allowed');
-  console.log('PASS empty state shows 00.00 time, title-case Sequence, and a high-contrast disabled export button');
+  console.log('PASS empty state shows the shell order, project name, 00.00 time, and a high-contrast disabled export button');
+
+  const projectPersistence = await client.evaluate(`(async () => {
+    const input = document.querySelector('#project-name');
+    input.value = 'My / Project: "A"';
+    input.dispatchEvent(new Event('input', {bubbles: true}));
+    await new Promise(resolve => setTimeout(resolve, 350));
+    return {stored: localStorage.getItem('m4shlab-project'), size: input.size};
+  })()`);
+  assert.equal(projectPersistence.stored, 'My / Project: "A"');
+  assert.ok(projectPersistence.size > 7);
+  await client.send('Page.navigate', {url: `${baseUrl}?project-restore=1`});
+  await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
+  assert.equal(await client.evaluate("document.querySelector('#project-name').value"), 'My / Project: "A"');
+  await client.evaluate(`(() => {
+    const input = document.querySelector('#project-name');
+    input.value = 'Project';
+    input.dispatchEvent(new Event('input', {bubbles: true}));
+    localStorage.removeItem('m4shlab-project');
+  })()`);
+  await client.send('Page.navigate', {url: `${baseUrl}?project-reset=1`});
+  await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
+  assert.equal(await client.evaluate("document.querySelector('#project-name').value"), 'Project');
+  console.log('PASS project name persists through reload and restores the default state');
+
+  const shellLayout = await client.evaluate(`(() => {
+    const rect = selector => document.querySelector(selector).getBoundingClientRect();
+    const header = rect('header');
+    const importButton = rect('.file-actions .button');
+    const previewMeta = rect('.preview-meta');
+    const previewLabel = rect('#preview-label');
+    const previewOptions = rect('.preview-options');
+    const section = rect('.section-label');
+    const sectionHeading = rect('#source-heading');
+    const sectionTools = rect('.section-tools');
+    const projectName = rect('#project-name');
+    const sequenceLabel = rect('#sequence-label');
+    const undo = rect('#undo-button');
+    const redo = rect('#redo-button');
+    const footer = rect('.limits');
+    const limits = rect('.limits p');
+    const actions = rect('.limits .actions');
+    const assemble = rect('#assemble-preview');
+    const exportButton = rect('#export-button');
+    return {
+      importRight: importButton.right <= header.right + 1 && importButton.left > header.left,
+      previewLabelLeft: previewLabel.left < previewOptions.left,
+      previewOptionsRight: Math.abs(previewOptions.right - previewMeta.right) < 2,
+      sectionHeadingLeft: sectionHeading.left < sectionTools.left,
+      sectionToolsRight: Math.abs(sectionTools.right - section.right) < 2,
+      sequenceControlOrder: undo.left < redo.left && redo.left < projectName.left && projectName.left < sequenceLabel.left,
+      limitsLeft: limits.left < actions.left,
+      actionsRight: Math.abs(actions.right - footer.right) < 2,
+      actionRow: Math.abs(assemble.top - exportButton.top) < 2 && assemble.left < exportButton.left,
+    };
+  })()`);
+  assert.deepEqual(shellLayout, {
+    importRight: true,
+    previewLabelLeft: true,
+    previewOptionsRight: true,
+    sectionHeadingLeft: true,
+    sectionToolsRight: true,
+    sequenceControlOrder: true,
+    limitsLeft: true,
+    actionsRight: true,
+    actionRow: true,
+  });
+  console.log('PASS shell placement keeps import right, preview readout right, sequence controls ordered right, and footer actions together');
 
   const fileDropTransfer = await client.evaluate(`(async () => {
     const bytes = await (await fetch('/testmedia/synthetic-b-a.mp4')).arrayBuffer();
@@ -396,19 +477,35 @@ try {
   await client.send('Emulation.setDeviceMetricsOverride', {width: 390, height: 1000, deviceScaleFactor: 1, mobile: true});
   await client.send('Emulation.setTouchEmulationEnabled', {enabled: true, maxTouchPoints: 5});
   await new Promise(resolve => setTimeout(resolve, 150));
-  const mobileLayout = await client.evaluate(`(() => ({
-    headerDirection: getComputedStyle(document.querySelector('header')).flexDirection,
-    previewDirection: getComputedStyle(document.querySelector('.preview-meta')).flexDirection,
-    importHeight: document.querySelector('.file-actions .button').getBoundingClientRect().height,
-    clipControlHeight: document.querySelector('.clip-controls button').getBoundingClientRect().height,
-    timelineScrolls: document.querySelector('.timeline').scrollWidth > document.querySelector('.timeline').clientWidth,
-  }))()`);
-  assert.equal(mobileLayout.headerDirection, 'column');
-  assert.equal(mobileLayout.previewDirection, 'column');
+  const mobileLayout = await client.evaluate(`(() => {
+    const footer = document.querySelector('.limits').getBoundingClientRect();
+    const actions = document.querySelector('.limits .actions').getBoundingClientRect();
+    const assemble = document.querySelector('#assemble-preview').getBoundingClientRect();
+    const exportButton = document.querySelector('#export-button').getBoundingClientRect();
+    const controls = [...document.querySelectorAll('.section-tools > *, .section-tools .history-tools > *')]
+      .map(node => node.getBoundingClientRect());
+    return {
+      headerDirection: getComputedStyle(document.querySelector('header')).flexDirection,
+      previewDirection: getComputedStyle(document.querySelector('.preview-meta')).flexDirection,
+      importHeight: document.querySelector('.file-actions .button').getBoundingClientRect().height,
+      clipControlHeight: document.querySelector('.clip-controls button').getBoundingClientRect().height,
+      timelineScrolls: document.querySelector('.timeline').scrollWidth > document.querySelector('.timeline').clientWidth,
+      sequenceRow: controls.every(rect => Math.abs((rect.top + rect.height / 2) - (controls[0].top + controls[0].height / 2)) < 4),
+      projectHeight: document.querySelector('#project-name').getBoundingClientRect().height,
+      footerActionsWidth: Math.abs(actions.width - footer.width) < 2,
+      footerButtonsRow: Math.abs(assemble.top - exportButton.top) < 2 && assemble.width > 100 && exportButton.width > 100,
+    };
+  })()`);
+  assert.equal(mobileLayout.headerDirection, 'row');
+  assert.equal(mobileLayout.previewDirection, 'row');
   assert.ok(mobileLayout.importHeight >= 44);
   assert.ok(mobileLayout.clipControlHeight >= 44);
   assert.equal(mobileLayout.timelineScrolls, true);
-  console.log('PASS mobile layout stacks under 600px and keeps 44px touch targets on the scrolling timeline');
+  assert.equal(mobileLayout.sequenceRow, true);
+  assert.ok(mobileLayout.projectHeight >= 44);
+  assert.equal(mobileLayout.footerActionsWidth, true);
+  assert.equal(mobileLayout.footerButtonsRow, true);
+  console.log('PASS mobile layout keeps the reference header/meta/sequence rows and side-by-side footer actions with 44px touch targets');
   await client.send('Emulation.setTouchEmulationEnabled', {enabled: false});
   await client.send('Emulation.setDeviceMetricsOverride', {width: 1200, height: 1600, deviceScaleFactor: 1, mobile: false});
 
@@ -836,6 +933,22 @@ try {
   assert.equal(multiPlayback.error, null);
   assert.equal(multiPlayback.width, 540);
   assert.equal(multiPlayback.height, 720);
+
+  const sanitizedProjectExportName = await client.evaluate(`(() => {
+    const input = document.querySelector('#project-name');
+    input.value = 'My / Cut: "One"';
+    input.dispatchEvent(new Event('input', {bubbles: true}));
+    let filename = null;
+    const originalClick = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function() { filename = this.download; };
+    document.querySelector('#export-button').click();
+    HTMLAnchorElement.prototype.click = originalClick;
+    input.value = 'Project';
+    input.dispatchEvent(new Event('input', {bubbles: true}));
+    return filename;
+  })()`);
+  assert.equal(sanitizedProjectExportName, 'My-Cut-One.mp4');
+  console.log('PASS project name sanitizes to My-Cut-One.mp4 for export and resets to the default merge filename');
 
   rmSync(mergedPath, {force: true});
   await client.evaluate("document.querySelector('#export-button').click()");

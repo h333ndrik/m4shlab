@@ -48,13 +48,14 @@ header,
   gap: 16px;
 }
 
-header { margin-bottom: 28px; }
+header { margin-bottom: 30px; }
 
 h1 {
   margin: 0;
+  color: #242424;
   font-size: 18px;
   font-weight: 700;
-  letter-spacing: 0.01em;
+  letter-spacing: 0.1em;
 }
 
 h2 {
@@ -179,8 +180,10 @@ button:focus-visible,
 .preview-options {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: flex-end;
+  gap: 16px;
   flex-wrap: wrap;
+  margin-left: auto;
 }
 
 #preview-label { min-width: 0; overflow-wrap: anywhere; }
@@ -188,15 +191,6 @@ button:focus-visible,
 #assemble-preview[aria-pressed="true"] {
   border-color: #454545;
   background: #fff;
-}
-
-.preview-readout {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-left: auto;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
 }
 
 #preview-time {
@@ -243,21 +237,53 @@ button:focus-visible,
   background: #ffffff88;
 }
 
-.section-title,
 .section-tools {
   display: flex;
   align-items: center;
   gap: 10px;
+  margin-left: auto;
 }
 
-.section-title > span {
+.history-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.project-name {
+  width: auto;
+  min-width: 5ch;
+  max-width: 140px;
+  padding: 2px 1px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.project-name:hover { border-bottom-color: #888; }
+
+.project-name:focus { border-bottom-color: #252525; }
+
+.project-name:focus-visible {
+  outline: 2px solid #64647a;
+  outline-offset: 3px;
+}
+
+#sequence-label {
   color: var(--muted);
   font-size: 11px;
+  white-space: nowrap;
 }
 
 .section-tools button {
   padding: 7px 10px;
-  font-size: 10px;
+  font-size: 12px;
   letter-spacing: 0.04em;
 }
 
@@ -704,7 +730,12 @@ button:focus-visible,
 }
 
 .limits {
-  margin: 24px 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin: 20px 0 0;
   padding-top: 16px;
   border-top: 1px solid #e0e0db;
   color: var(--muted);
@@ -714,38 +745,48 @@ button:focus-visible,
 
 .limits p { max-width: 760px; margin: 0; }
 
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
 @media (max-width: 600px) {
   main { padding: 24px 16px; }
   header {
-    position: relative;
     min-height: 44px;
     align-items: flex-start;
-    flex-direction: column;
+    flex-direction: row;
     margin-bottom: 24px;
   }
   .file-actions {
-    position: absolute;
-    top: 0;
-    right: 0;
     width: auto;
+    margin-left: auto;
     justify-content: flex-end;
   }
   .file-actions .button { text-align: center; }
   .viewer { height: 300px; }
-  .preview-meta { align-items: flex-start; flex-direction: column; margin-bottom: 24px; }
-  .preview-options { justify-content: space-between; width: 100%; }
-  .preview-readout { width: 100%; justify-content: space-between; margin-left: 0; }
-  .preview-meta > button { width: 100%; }
-  .section-label { align-items: center; flex-direction: row; }
-  .section-tools { width: auto; gap: 4px; }
+  .preview-meta { align-items: flex-start; flex-wrap: wrap; gap: 8px; margin-bottom: 24px; }
+  .preview-options { justify-content: flex-end; gap: 8px; margin-left: auto; }
+  .section-label { align-items: center; flex-direction: row; gap: 8px; }
+  .section-tools { width: auto; gap: 6px; }
   .section-tools button { flex: 0 0 auto; }
+  .project-name { max-width: 108px; }
   .conversion-heading { align-items: flex-start; flex-direction: column; gap: 6px; }
   .limits {
+    align-items: flex-start;
+    gap: 12px;
     margin-top: 16px;
     padding-top: 14px;
     border-top: 1px solid #e0e0db;
     font-size: 10px;
   }
+  .actions {
+    width: 100%;
+    margin-left: 0;
+  }
+  .actions button { flex: 1; }
 }
 
 @media (pointer: coarse) {
@@ -754,6 +795,7 @@ button:focus-visible,
   .clip-controls button { min-width: 44px; min-height: 44px; padding: 8px; }
   .clip-speed-heading button { min-height: 44px; padding: 8px; }
   .clip-look select { min-height: 44px; }
+  .project-name { min-height: 44px; }
   .sound-toggle { min-height: 44px; }
   .sound-toggle input { width: 20px; height: 20px; }
   .clip-speed input[type="range"] { min-height: 44px; }
