@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
+import {existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -9,6 +9,8 @@ import {parseMp4} from '../parser/mp4.js';
 import {extractNals} from '../parser/nal.js';
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
+const port = Number(process.env.WEBCODECS_TEST_PORT || 4182);
+const baseUrl = `http://127.0.0.1:${port}/`;
 const fixtures = {
   a: join(projectRoot, 'testmedia', 'synthetic-b-a.mp4'),
   b: join(projectRoot, 'testmedia', 'synthetic-b-mismatch.mp4'),
@@ -28,7 +30,7 @@ const normalizedPaths = {
   a: join(projectRoot, 'testmedia', 'webcodecs-browser-normalized-a.mp4'),
   b: join(projectRoot, 'testmedia', 'webcodecs-browser-normalized-b.mp4'),
 };
-const downloadDir = join(projectRoot, 'testmedia', 'webcodecs-browser-downloads');
+const downloadDir = mkdtempSync(join(tmpdir(), 'm4shlab-webcodecs-downloads-'));
 const mergedPath = join(downloadDir, 'm4shlab-merge.mp4');
 const audioMergedPath = join(projectRoot, 'testmedia', 'webcodecs-audio-merged.mp4');
 const speedMergedPath = join(projectRoot, 'testmedia', 'webcodecs-speed-merged.mp4');
@@ -211,14 +213,14 @@ if (!requiredFixturesExist()) command('bash', ['testmedia/generate.sh'], 'fixtur
 
 server = spawn(process.execPath, ['scripts/serve.mjs'], {
   cwd: projectRoot,
-  env: {...process.env, PORT: '4182'},
+  env: {...process.env, PORT: String(port)},
   stdio: 'ignore',
 });
 try {
   const serverStarted = Date.now() + 5000;
   while (Date.now() < serverStarted) {
     try {
-      const response = await fetch('http://127.0.0.1:4182/');
+      const response = await fetch(baseUrl);
       if (response.ok) break;
     } catch {
       await new Promise(resolveWait => setTimeout(resolveWait, 100));
@@ -232,7 +234,7 @@ try {
   await client.send('DOM.enable');
   await client.send('Emulation.setDeviceMetricsOverride', {width: 1200, height: 1600, deviceScaleFactor: 1, mobile: false});
   await client.send('Browser.setDownloadBehavior', {behavior: 'allow', downloadPath: downloadDir, eventsEnabled: true});
-  await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/'});
+  await client.send('Page.navigate', {url: `${baseUrl}`});
   await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
 
   const feature = await client.evaluate(`(async () => ({
@@ -244,6 +246,28 @@ try {
   if (feature.decoder !== 'function' || feature.encoder !== 'function' || !feature.h264) {
     skip(`this Chrome build lacks usable H.264 WebCodecs encode/decode (${JSON.stringify(feature)}).`);
   }
+
+  const emptyState = await client.evaluate(`(() => {
+    const button = document.querySelector('#export-button');
+    const style = getComputedStyle(button);
+    return {
+      time: document.querySelector('#preview-time').textContent,
+      heading: document.querySelector('#source-heading').textContent,
+      disabled: button.disabled,
+      background: style.backgroundColor,
+      color: style.color,
+      opacity: style.opacity,
+      cursor: style.cursor,
+    };
+  })()`);
+  assert.equal(emptyState.time, '0.00 / 0.00 s');
+  assert.equal(emptyState.heading, 'Sequence');
+  assert.equal(emptyState.disabled, true);
+  assert.equal(emptyState.background, 'rgb(226, 225, 221)');
+  assert.equal(emptyState.color, 'rgb(119, 118, 112)');
+  assert.equal(emptyState.opacity, '1');
+  assert.equal(emptyState.cursor, 'not-allowed');
+  console.log('PASS empty state shows 00.00 time, title-case Sequence, and a high-contrast disabled export button');
 
   const normalizedBytes = await client.evaluate(`(async () => {
     const {normalizeWithWebCodecs} = await import('./webcodecs.js');
@@ -301,7 +325,7 @@ try {
   command('ffmpeg', ['-v', 'error', '-i', multiGopMergedPath, '-f', 'null', '-'], 'WebCodecs multi-GOP strict decode');
   console.log('PASS WebCodecs emitted keyframes at samples 1, 31, and 61; the multi-GOP merge retained two later IDRs and decoded all 149 frames');
 
-  await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?safari-poc0=1'});
+  await client.send('Page.navigate', {url: `${baseUrl}?safari-poc0=1`});
   await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
   await client.setFile('#file-input-a', fixtures.poc0A);
   await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 15000);
@@ -355,7 +379,7 @@ try {
   await client.send('Emulation.setTouchEmulationEnabled', {enabled: false});
   await client.send('Emulation.setDeviceMetricsOverride', {width: 1200, height: 1600, deviceScaleFactor: 1, mobile: false});
 
-  await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?merge-error=1'});
+  await client.send('Page.navigate', {url: `${baseUrl}?merge-error=1`});
   await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
   await client.setFile('#file-input-a', join(projectRoot, 'testmedia', 'synthetic-h264.mp4'));
   await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 15000);
@@ -373,7 +397,7 @@ try {
   assert.equal(mergeError.compatibilityMarkup, null, 'Error case must not render a compatibility panel');
   console.log('PASS blocking merge errors stay short and do not render a compatibility panel');
 
-  await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?large-native=1'});
+  await client.send('Page.navigate', {url: `${baseUrl}?large-native=1`});
   await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
   await client.setFile('#file-input-a', fixtures.largeA);
   await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 15000);
@@ -415,7 +439,7 @@ try {
   assert.equal(largePair.progressB, 1);
   console.log(`PASS large native mismatch auto-normalized to ${largePair.report.normalization.target.width}x${largePair.report.normalization.target.height}; UI showed the normalizing state and merge produced ${largePair.report.merge.mergedSamples} samples`);
 
-  await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?multi-timeline=1'});
+  await client.send('Page.navigate', {url: `${baseUrl}?multi-timeline=1`});
   await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
   await client.setFiles('#file-input-a', [fixtures.largeA, fixtures.largeB, fixtures.a]);
   await client.waitFor("document.querySelector('#status').textContent.includes('samples') || !document.querySelector('#error').hidden", 180000);
@@ -664,8 +688,6 @@ try {
   assert.equal(multiPlayback.width, 540);
   assert.equal(multiPlayback.height, 720);
 
-  rmSync(downloadDir, {recursive: true, force: true});
-  mkdirSync(downloadDir, {recursive: true});
   rmSync(mergedPath, {force: true});
   await client.evaluate("document.querySelector('#export-button').click()");
   await waitForDownload(mergedPath);
@@ -691,7 +713,7 @@ try {
   command('ffmpeg', ['-v', 'error', '-i', multiTimelineExportPath, '-f', 'null', '-'], 'multi-timeline strict decode');
   console.log(`PASS full three-clip export decodes ${finalReport.merge.expectedDecodedFrames} frames at 540x720; Cut + Classic Mosh NAL sequence and preview are intact`);
 
-  await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?nal-effects=1'});
+  await client.send('Page.navigate', {url: `${baseUrl}?nal-effects=1`});
   await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
   await client.setFile('#file-input-a', fixtures.effectA);
   await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 15000);
@@ -817,7 +839,7 @@ try {
   assert.equal(effectPlayback.height, 240);
   console.log('PASS browser Melt, Gentler Melt, Loop Release, and Reset Pulse produce 105-, 99-, 99-, and 99-sample decodable sequences');
 
-  await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?normalize-effect=1'});
+  await client.send('Page.navigate', {url: `${baseUrl}?normalize-effect=1`});
   await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
   await client.setFile('#file-input-a', fixtures.a);
   await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 15000);
@@ -842,7 +864,7 @@ try {
   assert.equal(normalizedEffectSources.bEncode, 'WebCodecs');
   console.log('PASS selecting Melt on native B-frame clips auto-normalizes both sources before applying the NAL effect');
 
-  await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?audio-merge=1'});
+  await client.send('Page.navigate', {url: `${baseUrl}?audio-merge=1`});
   await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
   await client.setFile('#file-input-a', fixtures.audioA);
   await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 30000);
@@ -945,7 +967,7 @@ try {
   assert.equal(soundOffProbe.streams.some(stream => stream.codec_type === 'audio'), false);
   assert.equal(soundOffProbe.streams.some(stream => stream.codec_type === 'video'), true);
 
-  await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?sound-persisted=1'});
+  await client.send('Page.navigate', {url: `${baseUrl}?sound-persisted=1`});
   await client.waitFor("document.documentElement.dataset.appReady === 'true'", 10000);
   const persistedSound = await client.evaluate(`({
     checked: document.querySelector('#sound-toggle').checked,
@@ -964,7 +986,7 @@ try {
   const audioFallbackScript = await client.send('Page.addScriptToEvaluateOnNewDocument', {
     source: "Object.defineProperty(globalThis, 'AudioEncoder', {value: undefined, configurable: true});",
   });
-  await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?audio-fallback=1'});
+  await client.send('Page.navigate', {url: `${baseUrl}?audio-fallback=1`});
   await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
   assert.equal(await client.evaluate("typeof AudioEncoder"), 'undefined');
   await client.setFile('#file-input-a', fixtures.audioA);
@@ -996,7 +1018,7 @@ try {
   console.log(`PASS AudioEncoder unavailable: PCM encoded in ffmpeg.wasm and merged audio reports delay=${audioFallback.audio.encoderDelaySamples} samples`);
   await client.send('Page.removeScriptToEvaluateOnNewDocument', {identifier: audioFallbackScript.identifier});
 
-  await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?clip-speed=1'});
+  await client.send('Page.navigate', {url: `${baseUrl}?clip-speed=1`});
   await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
   await client.setFile('#file-input-a', fixtures.speed);
   await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 30000);
@@ -1095,9 +1117,8 @@ try {
   assert.ok(speedMerge.sources.every(source => source.reason === 'speed-normalization'));
   assert.ok(speedMerge.sources.every(source => source.target.width === 320 && source.target.height === 240));
 
-  rmSync(downloadDir, {recursive: true, force: true});
-  mkdirSync(downloadDir, {recursive: true});
   rmSync(speedMergedPath, {force: true});
+  rmSync(mergedPath, {force: true});
   await client.evaluate("document.querySelector('#export-button').click()");
   await waitForDownload(join(downloadDir, 'm4shlab-merge.mp4'), 30000);
   writeFileSync(speedMergedPath, readFileSync(join(downloadDir, 'm4shlab-merge.mp4')));
@@ -1116,7 +1137,7 @@ try {
   command('ffmpeg', ['-v', 'error', '-i', speedMergedPath, '-f', 'null', '-'], 'speed merge strict decode');
   console.log(`PASS 2× + 0.5× clips merge to 150/150 frames and ${speedMerge.audio.expectedSamples} exact audio samples at 30 fps`);
 
-  await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?fractional-speed=1'});
+  await client.send('Page.navigate', {url: `${baseUrl}?fractional-speed=1`});
   await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
   await client.setFile('#file-input-a', fixtures.speed);
   await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 30000);
@@ -1153,7 +1174,7 @@ try {
   assert.equal(resetSpeed.disabled, true);
   console.log('PASS per-clip Reset restores 1.0× with 60 input and 60 output frames');
 
-  await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?speed-target=1'});
+  await client.send('Page.navigate', {url: `${baseUrl}?speed-target=1`});
   await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
   await client.setFile('#file-input-a', fixtures.largeA);
   await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 30000);
@@ -1177,7 +1198,7 @@ try {
   assert.equal(targetSpeed.resetDisabled, false);
   console.log('PASS single clip speed=2 and 720px normalization run in one 540×720 WebCodecs pass');
 
-  await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?clip-looks=1'});
+  await client.send('Page.navigate', {url: `${baseUrl}?clip-looks=1`});
   await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
   await client.setFile('#file-input-a', fixtures.speed);
   await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 30000);
@@ -1266,7 +1287,7 @@ try {
   command('ffmpeg', ['-v', 'error', '-i', looksMergedPath, '-f', 'null', '-'], 'looks merge strict decode');
   console.log(`PASS looks re-encode duplicate clips in one WebCodecs pass with distinct cache keys; undo/redo works and the ${looksFrames}-frame export's B&W half has channel delta <=4`);
 
-  await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?single-pair=1'});
+  await client.send('Page.navigate', {url: `${baseUrl}?single-pair=1`});
   await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
   await client.setFile('#file-input-a', fixtures.a);
   await client.waitFor("document.querySelector('#status').textContent.includes('clip A')", 15000);
@@ -1331,8 +1352,6 @@ try {
   assert.equal(playback.height, 240);
   console.log(`PASS WebCodecs pair merged in the browser: ${state.report.merge.mergedSamples} samples, one leading IDR, preview ${playback.width}x${playback.height}`);
 
-  rmSync(downloadDir, {recursive: true, force: true});
-  mkdirSync(downloadDir, {recursive: true});
   rmSync(mergedPath, {force: true});
   await client.evaluate("document.querySelector('#export-button').click()");
   await waitForDownload(mergedPath);
@@ -1377,7 +1396,7 @@ try {
   if (!fallbackAssets) {
     console.log('SKIP ffmpeg.wasm fallback browser check: CDN assets are unavailable offline.');
   } else {
-    await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?hybrid=1'});
+    await client.send('Page.navigate', {url: `${baseUrl}?hybrid=1`});
     await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
     await client.setFile('#file-input-a', join(projectRoot, 'testmedia', 'synthetic-hevc.mov'));
     await client.waitFor("document.querySelector('#status').textContent.includes('clip A') || /failed/i.test(document.querySelector('#conversion-status').textContent)", 180000);
@@ -1441,7 +1460,7 @@ try {
         await nativeClient.send('Runtime.enable');
         await nativeClient.send('DOM.enable');
         await nativeClient.send('Emulation.setDeviceMetricsOverride', {width: 1200, height: 1600, deviceScaleFactor: 1, mobile: false});
-        await nativeClient.send('Page.navigate', {url: 'http://127.0.0.1:4182/?hevc-native=1'});
+        await nativeClient.send('Page.navigate', {url: `${baseUrl}?hevc-native=1`});
         await nativeClient.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 15000);
         await nativeClient.setFile('#file-input-a', join(projectRoot, 'testmedia', 'synthetic-hevc.mov'));
         await nativeClient.waitFor("document.querySelector('#status').textContent.includes('clip A') || !document.querySelector('#error').hidden", 60000);
@@ -1487,7 +1506,7 @@ try {
     await client.send('Page.addScriptToEvaluateOnNewDocument', {
       source: "Object.defineProperty(globalThis, 'VideoDecoder', {value: undefined, configurable: true}); Object.defineProperty(globalThis, 'VideoEncoder', {value: undefined, configurable: true});",
     });
-    await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?hevc-fallback=1'});
+    await client.send('Page.navigate', {url: `${baseUrl}?hevc-fallback=1`});
     await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
     assert.equal(await client.evaluate("typeof VideoDecoder + '/' + typeof VideoEncoder"), 'undefined/undefined');
     await client.setFile('#file-input-a', join(projectRoot, 'testmedia', 'synthetic-hevc.mov'));
@@ -1503,7 +1522,7 @@ try {
     assert.match(forcedHevcFallback.message, /decoded via ffmpeg\.wasm/);
     assert.match(forcedHevcFallback.clipPath, /decoded via ffmpeg\.wasm/);
     console.log('PASS WebCodecs unavailable: HEVC import names the ffmpeg.wasm decode fallback and produces a playable converted clip');
-    await client.send('Page.navigate', {url: 'http://127.0.0.1:4182/?fallback=1'});
+    await client.send('Page.navigate', {url: `${baseUrl}?fallback=1`});
     await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
     assert.equal(await client.evaluate("typeof VideoDecoder + '/' + typeof VideoEncoder"), 'undefined/undefined');
     await client.setFile('#file-input-a', fixtures.a);
@@ -1540,4 +1559,7 @@ try {
       rmSync(chrome.profile, {recursive: true, force: true, maxRetries: 5, retryDelay: 100});
     } catch {}
   }
+  try {
+    rmSync(downloadDir, {recursive: true, force: true, maxRetries: 5, retryDelay: 100});
+  } catch {}
 }
