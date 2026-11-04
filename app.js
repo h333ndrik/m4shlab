@@ -92,6 +92,7 @@ let clips = [];
 let nextClipId = 1;
 let draggedClipId = null;
 let importInFlight = 0;
+let importSkeletons = [];
 let previewedClipId = null;
 let previewAssembled = false;
 let conversionTotal = 0;
@@ -519,7 +520,7 @@ function clipDragAllowed() {
 }
 
 function clearDropTargets() {
-  for (const card of sourceTiers.querySelectorAll('.clip-card.drop-target')) {
+  for (const card of sourceTiers.querySelectorAll('.clip-card.drop-target:not(.clip-skeleton)')) {
     card.classList.remove('drop-target');
   }
 }
@@ -531,7 +532,7 @@ function isClipReorderTransfer(dataTransfer) {
 
 function syncClipDragState() {
   const allowed = clipDragAllowed();
-  for (const card of sourceTiers.querySelectorAll('.clip-card')) {
+  for (const card of sourceTiers.querySelectorAll('.clip-card:not(.clip-skeleton)')) {
     card.draggable = allowed;
     if (!allowed) card.classList.remove('dragging');
   }
@@ -603,11 +604,12 @@ function renderClipCard(index, clip) {
   const thumb = document.createElement('div');
   thumb.className = 'clip-thumb';
   const preview = document.createElement('video');
-  preview.src = `${clip.url}#t=0.001`;
   preview.muted = true;
   preview.playsInline = true;
   preview.preload = 'metadata';
   preview.setAttribute('aria-hidden', 'true');
+  preview.addEventListener('loadeddata', () => preview.classList.add('is-ready'), {once: true});
+  preview.src = `${clip.url}#t=0.001`;
   thumb.append(preview);
 
   const name = document.createElement('span');
@@ -742,8 +744,99 @@ function renderConnector(index) {
   return connector;
 }
 
+function renderSkeletonCard(skeleton) {
+  const card = document.createElement('article');
+  card.className = 'clip-card clip-skeleton';
+  card.dataset.importIndex = String(skeleton.index);
+  card.setAttribute('aria-busy', 'true');
+  card.setAttribute('aria-label', `Preparing ${skeleton.file.name}`);
+
+  const thumb = document.createElement('div');
+  thumb.className = 'clip-thumb skeleton-thumb';
+  const shimmer = document.createElement('span');
+  shimmer.className = 'skeleton-shimmer';
+  shimmer.setAttribute('aria-hidden', 'true');
+  thumb.append(shimmer);
+
+  const name = document.createElement('span');
+  name.className = 'clip-name';
+  name.textContent = skeleton.file.name;
+  name.title = skeleton.file.name;
+
+  const detail = document.createElement('span');
+  detail.className = 'clip-detail skeleton-status';
+  detail.textContent = skeleton.status;
+  detail.setAttribute('aria-live', 'polite');
+
+  const lookControl = document.createElement('label');
+  lookControl.className = 'clip-look';
+  lookControl.setAttribute('aria-hidden', 'true');
+  const lookLabel = document.createElement('span');
+  lookLabel.textContent = 'look';
+  const lookSelect = document.createElement('select');
+  lookSelect.disabled = true;
+  lookSelect.tabIndex = -1;
+  const lookOption = document.createElement('option');
+  lookOption.textContent = 'Original';
+  lookSelect.append(lookOption);
+  lookControl.append(lookLabel, lookSelect);
+
+  const speedControl = document.createElement('div');
+  speedControl.className = 'clip-speed';
+  speedControl.setAttribute('aria-hidden', 'true');
+  const speedHeading = document.createElement('div');
+  speedHeading.className = 'clip-speed-heading';
+  const speedLabel = document.createElement('span');
+  speedLabel.textContent = 'speed';
+  const speedOutput = document.createElement('output');
+  speedOutput.textContent = '1.0×';
+  const speedReset = document.createElement('button');
+  speedReset.type = 'button';
+  speedReset.textContent = 'Reset';
+  speedReset.disabled = true;
+  speedHeading.append(speedLabel, speedOutput, speedReset);
+  const speedRange = document.createElement('input');
+  speedRange.type = 'range';
+  speedRange.min = String(SPEED_MIN);
+  speedRange.max = String(SPEED_MAX);
+  speedRange.step = String(SPEED_STEP);
+  speedRange.value = '1.0';
+  speedRange.disabled = true;
+  speedRange.tabIndex = -1;
+  speedControl.append(speedHeading, speedRange);
+
+  const controls = document.createElement('div');
+  controls.className = 'clip-controls';
+  controls.setAttribute('aria-hidden', 'true');
+  for (const glyph of ['←', '→', '×']) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = glyph;
+    button.disabled = true;
+    button.tabIndex = -1;
+    controls.append(button);
+  }
+
+  card.append(thumb, name, detail, lookControl, speedControl, controls);
+  return card;
+}
+
+function updateImportSkeleton(token, index, status) {
+  const skeleton = importSkeletons.find(item => item.token === token && item.index === index);
+  if (!skeleton) return;
+  skeleton.status = status;
+  const statusNode = sourceTiers.querySelector(`.clip-skeleton[data-import-index="${index}"] .skeleton-status`);
+  if (statusNode) statusNode.textContent = status;
+}
+
 function renderSourceTiers() {
-  if (clips.length === 0) {
+  const nodes = [];
+  clips.forEach((clip, index) => {
+    if (index > 0) nodes.push(renderConnector(index));
+    nodes.push(renderClipCard(index, clip));
+  });
+  for (const skeleton of importSkeletons) nodes.push(renderSkeletonCard(skeleton));
+  if (nodes.length === 0) {
     const empty = document.createElement('p');
     empty.className = 'timeline-empty';
     empty.textContent = 'Import up to 12 clips to build a sequence.';
@@ -752,11 +845,6 @@ function renderSourceTiers() {
     sourceTiers.hidden = false;
     return;
   }
-  const nodes = [];
-  clips.forEach((clip, index) => {
-    if (index > 0) nodes.push(renderConnector(index));
-    nodes.push(renderClipCard(index, clip));
-  });
   sourceTiers.replaceChildren(...nodes);
   sourceTiers.hidden = false;
   syncClipDragState();
@@ -829,7 +917,7 @@ video.addEventListener('loadeddata', () => {
 });
 
 function updatePreviewSelection() {
-  for (const card of sourceTiers.querySelectorAll('.clip-card')) {
+  for (const card of sourceTiers.querySelectorAll('.clip-card:not(.clip-skeleton)')) {
     const selected = !previewAssembled && card.dataset.clipId === previewedClipId;
     card.classList.toggle('is-previewing', selected);
     if (selected) card.setAttribute('aria-current', 'true');
@@ -1271,16 +1359,19 @@ transitionDialog.addEventListener('close', () => {
 
 async function convertClipSource(index, label, sourceBytes, options, parseError = null) {
   const slot = progressSlot(index);
+  const reportStatus = options.onImportStatus ?? (() => {});
   const converted = await convertToH264(sourceBytes, {
     target: options.target ?? null,
     onStatus: message => {
       if (!options.isCurrent()) return;
       showConversion(label, 'working', message, null, slot);
+      reportStatus('converting…');
     },
     onProgress: progress => {
       if (!options.isCurrent()) return;
       const percent = progress.progress === null ? null : Math.round(progress.progress * 100);
       showConversion(label, 'working', percent === null ? 'Preparing H.264 conversion…' : `Converting with ffmpeg.wasm · ${percent}%`, progress.progress, slot);
+      reportStatus(percent === null ? 'converting…' : `converting… ${percent} %`);
     },
   });
   if (!options.isCurrent()) return null;
@@ -1308,7 +1399,7 @@ async function convertClipSource(index, label, sourceBytes, options, parseError 
   };
 }
 
-async function readClipFile(file, index, token) {
+async function readClipFile(file, index, token, onImportStatus = () => {}) {
   const label = clipDisplayLabel(index);
   const slot = progressSlot(index);
   const sourceBytes = new Uint8Array(await file.arrayBuffer());
@@ -1332,12 +1423,15 @@ async function readClipFile(file, index, token) {
         const result = await normalizeWithWebCodecs(sourceBytes, {
           target,
           onStatus: message => {
-            if (token === importToken) showConversion(label, 'working', message, null, slot);
+            if (token !== importToken) return;
+            showConversion(label, 'working', message, null, slot);
+            onImportStatus('converting…');
           },
           onProgress: progress => {
             if (token !== importToken) return;
             const percent = Math.round(progress * 100);
             showConversion(label, 'working', `WebCodecs HEVC · ${percent}%`, progress, slot);
+            onImportStatus(`converting… ${percent} %`);
           },
         });
         if (token !== importToken) return null;
@@ -1373,6 +1467,7 @@ async function readClipFile(file, index, token) {
       const converted = await convertClipSource(index, label, sourceBytes, {
         reason: hevcCodec ? 'hevc-webcodecs-fallback' : (cause.code ?? 'unparseable-input'),
         isCurrent: () => token === importToken,
+        onImportStatus,
       }, cause);
       if (!converted || token !== importToken) return null;
       bytes = converted.bytes;
@@ -1460,8 +1555,22 @@ async function importFilesInternal(fileList) {
   resetMerged();
   setError('');
   status.textContent = `Reading ${selected.length} clip${selected.length === 1 ? '' : 's'}…`;
+  importSkeletons = selected.map((file, index) => ({token, index, file, status: 'waiting'}));
+  renderSourceTiers();
 
-  const settled = await Promise.allSettled(selected.map((file, offset) => readClipFile(file, baseIndex + offset, token)));
+  const settled = await mapWithConcurrency(selected, 2, async (file, offset) => {
+    updateImportSkeleton(token, offset, 'converting… 0 %');
+    try {
+      return {
+        status: 'fulfilled',
+        value: await readClipFile(file, baseIndex + offset, token, status => {
+          updateImportSkeleton(token, offset, status);
+        }),
+      };
+    } catch (reason) {
+      return {status: 'rejected', reason};
+    }
+  });
   if (token !== importToken) {
     for (const result of settled) {
       if (result.status === 'fulfilled' && result.value?.url) URL.revokeObjectURL(result.value.url);
@@ -1469,6 +1578,7 @@ async function importFilesInternal(fileList) {
     return;
   }
 
+  importSkeletons = [];
   const loaded = settled.filter(result => result.status === 'fulfilled' && result.value).map(result => result.value);
   if (loaded.length > 0) {
     undoStack.push(before);

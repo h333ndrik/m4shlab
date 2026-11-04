@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
+import {copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -1805,6 +1805,59 @@ try {
         try { rmSync(nativeChrome.profile, {recursive: true, force: true, maxRetries: 5, retryDelay: 100}); } catch {}
       }
     }
+
+    const skeletonFixtures = ['skeleton-a.mov', 'skeleton-b.mov', 'skeleton-c.mov']
+      .map(name => join(downloadDir, name));
+    for (const path of skeletonFixtures) copyFileSync(join(projectRoot, 'testmedia', 'synthetic-hevc-small.mov'), path);
+    await client.send('Emulation.setEmulatedMedia', {features: [{name: 'prefers-reduced-motion', value: 'reduce'}]});
+    await client.send('Page.navigate', {url: `${baseUrl}?skeleton-import=1`});
+    await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
+    await client.evaluate(`(() => {
+      window.__skeletonStates = [];
+      window.__skeletonObserver = new MutationObserver(() => {
+        const states = [...document.querySelectorAll('.clip-skeleton .skeleton-status')].map(node => node.textContent);
+        if (states.length) window.__skeletonStates.push(states);
+      });
+      window.__skeletonObserver.observe(document.querySelector('#source-tiers'), {childList: true, subtree: true, characterData: true});
+    })()`);
+    await client.setFiles('#file-input-a', skeletonFixtures);
+    await client.waitFor("document.querySelectorAll('.clip-skeleton').length === 3", 10000);
+    const skeletonState = await client.evaluate(`(() => {
+      const cards = [...document.querySelectorAll('.clip-skeleton')];
+      const rect = cards[0].getBoundingClientRect();
+      const shimmer = cards[0].querySelector('.skeleton-shimmer');
+      return {
+        count: cards.length,
+        width: rect.width,
+        height: rect.height,
+        statuses: cards.map(card => card.querySelector('.skeleton-status').textContent),
+        reducedMotionAnimation: getComputedStyle(shimmer, '::after').animationName,
+      };
+    })()`);
+    assert.equal(skeletonState.count, 3);
+    assert.equal(skeletonState.statuses.length, 3);
+    assert.equal(skeletonState.reducedMotionAnimation, 'none');
+    await client.waitFor("document.querySelectorAll('.clip-skeleton').length === 0 && document.querySelectorAll('.clip-card:not(.clip-skeleton)').length === 3", 180000);
+    await client.waitFor("document.querySelector('#status').textContent.includes('samples') || !document.querySelector('#error').hidden", 180000);
+    const resolvedSkeletons = await client.evaluate(`(() => {
+      const cards = [...document.querySelectorAll('.clip-card:not(.clip-skeleton)')];
+      const rect = cards[0].getBoundingClientRect();
+      return {
+        names: cards.map(card => card.querySelector('.clip-name').textContent),
+        width: rect.width,
+        height: rect.height,
+        statuses: window.__skeletonStates,
+        error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
+      };
+    })()`);
+    assert.deepEqual(resolvedSkeletons.names, ['skeleton-a.mov', 'skeleton-b.mov', 'skeleton-c.mov']);
+    assert.equal(resolvedSkeletons.error, null, resolvedSkeletons.error);
+    assert.ok(Math.abs(resolvedSkeletons.width - skeletonState.width) < 0.5);
+    assert.ok(Math.abs(resolvedSkeletons.height - skeletonState.height) < 1);
+    assert.ok(resolvedSkeletons.statuses.some(states => states.length === 3 && states.includes('waiting')));
+    await client.evaluate("window.__skeletonObserver?.disconnect()");
+    await client.send('Emulation.setEmulatedMedia', {features: []});
+    console.log(`PASS three-file import showed 3 skeleton cards (${skeletonState.width}x${skeletonState.height}); reduced-motion shimmer was static and cards resolved in order at identical geometry`);
 
     await client.send('Page.addScriptToEvaluateOnNewDocument', {
       source: "Object.defineProperty(globalThis, 'VideoDecoder', {value: undefined, configurable: true}); Object.defineProperty(globalThis, 'VideoEncoder', {value: undefined, configurable: true});",

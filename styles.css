@@ -320,6 +320,12 @@ button:focus-visible,
 
 .clip-card.is-empty { border-style: dashed; }
 
+.clip-skeleton {
+  border-style: dashed;
+  border-color: #c9c9c4;
+  background: #fafaf8;
+}
+
 .clip-card.is-previewing {
   border-color: #454545;
   box-shadow: 0 0 0 1px #454545 inset;
@@ -339,6 +345,7 @@ button:focus-visible,
 }
 
 .clip-thumb {
+  position: relative;
   display: grid;
   place-items: center;
   width: 100%;
@@ -357,6 +364,37 @@ button:focus-visible,
   height: 100%;
   object-fit: cover;
   pointer-events: none;
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+
+.clip-thumb video.is-ready { opacity: 1; }
+
+.skeleton-thumb { background: #151515; }
+
+.skeleton-shimmer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.skeleton-shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(105deg, transparent 18%, #ffffff55 46%, transparent 74%);
+  transform: translateX(-100%);
+  animation: skeleton-shimmer 1.15s ease-in-out infinite;
+}
+
+.clip-skeleton .clip-look,
+.clip-skeleton .clip-speed,
+.clip-skeleton .clip-controls { pointer-events: none; }
+
+.clip-skeleton .clip-detail { color: #777; }
+
+@keyframes skeleton-shimmer {
+  to { transform: translateX(100%); }
 }
 
 .clip-name {
@@ -812,4 +850,11 @@ button:focus-visible,
 
 @media (prefers-reduced-motion: reduce) {
   * { scroll-behavior: auto !important; }
+  .skeleton-shimmer::after {
+    animation: none;
+    transform: none;
+    background: #2b2b2b;
+    opacity: 0.65;
+  }
+  .clip-thumb video { transition: none; }
 }
