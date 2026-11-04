@@ -4,7 +4,7 @@ Updated: 2026-11-04
 
 ## Release v1.1
 
-**State: release candidate complete — `m4shlab-v1.1`.** The v1.0 tag remains immutable at `2aa8ee5536474581c05f4fe5ca30635597a0c526`. v1.1 adds the post-release parity work: per-clip looks, sound/export control, and live preview metadata. The final automated baseline is **80 Node / 30 WebCodecs / 6 PWA** checks passing.
+**State: release candidate complete — `m4shlab-v1.1`.** The v1.0 tag remains immutable at `2aa8ee5536474581c05f4fe5ca30635597a0c526`. v1.1 adds the post-release parity work: per-clip looks, sound/export control, and live preview metadata. The final automated baseline is **80 Node / 33 WebCodecs / 6 PWA** checks passing.
 
 m4shlab is a fully client-side, installable H.264 bitstream editor with a 12-clip timeline, seven transition methods, frame-quantized duration/ending controls, per-clip speed and looks, merged AAC audio, universal local import, seeded Randomize, and an offline app shell. No feature work remains; physical-device acceptance testing is pending.
 
@@ -60,13 +60,13 @@ Browser and PWA counts are emitted PASS records. The deployment-only `201d418`/`
 - Phase B: compatible H.264 A→B merge, retained later IDRs, first-GOP `frame_num`/POC-LSB alignment, and a byte-safe RBSP/EBSP patcher.
 - Universal import: hardened MP4/MOV parsing, conventional HEVC `hvcC` demuxing, lazy ffmpeg.wasm conversion, and WebCodecs/ffmpeg.wasm path reporting.
 - Phase C: automatic WebCodecs normalization to one shared target capped at 720 px, with ffmpeg.wasm fallback and parallel conversion.
-- Multi-clip timeline: up to 12 clips, seven transition methods, reorder/remove with undo/redo, chained preview and export.
+- Multi-clip timeline: up to 12 clips, seven transition methods, drag-and-drop/arrow reorder and remove with undo/redo, chained preview and export.
 - Effect controls: all six mosh variants have frame-quantized duration and Restore/Continue endings; Melt and Loop Release expose Original/Gentler cadence.
 - Audio: the first audio track of each original source is aligned to the merged video timeline at 48 kHz stereo and exported as AAC-LC. Audio is not moshed; Sound off skips the audio mux entirely.
 - Speed: entry-specific 0.1×–4.0× frame mapping with pitch-preserving `atempo` audio.
 - Looks: Original, Black & white, B&W negative, and Color negative applied in the same WebCodecs encode pass as speed and scaling.
 - Randomize: reproducible 16-hex seeds, validated same-stream resampling, seed clearing on manual edits, and `random_seed` reports.
-- PWA: standalone install, light splash/theme, maskable m4 icons, service worker `v15`, 27 precached shell assets, runtime-cached ffmpeg.wasm, and offline app-shell startup.
+- PWA: standalone install, light splash/theme, maskable m4 icons, service worker `v16`, 27 precached shell assets, runtime-cached ffmpeg.wasm, and offline app-shell startup.
 - Preview: persistent sound state, live current/total time, and filename or assembled-sequence labels. The zero-clip state shows `0.00 / 0.00 s`; the export action has an explicit neutral disabled treatment; the timeline heading is title-case `Sequence` in markup and uppercase through the shared section-label style.
 - Branding and UI: m4 wordmark in the h4moshlab typographic system; h4moshlab-style light layout, dark preview well, horizontal timeline, and no visible compatibility panel.
 
@@ -78,7 +78,7 @@ Browser and PWA counts are emitted PASS records. The deployment-only `201d418`/`
 - The sequence report records clip count, methods, source/merged samples, expected decoded frames, boundary alignment details, normalization paths, per-source audio preparation, merged-audio segments, encode/mux engines, encoder delay, and exact presentation timing.
 - Each clip card has a 0.1×–4.0× slider in 0.1× steps and Reset. Speed is clip metadata, so duplicate imports can differ, and undo/redo restores both speed and prepared media. Source reports contain `speed`, `input_frames`, `output_frames`, and `speedReport`; boundary reports repeat the incoming speed/frame counts.
 - `app.js` imports multiple files or dropped files, caps the timeline at 12, and normalizes every clip to one shared target when any boundary differs or any speed changes. Native H.264 uses WebCodecs first; tier-2 or WebCodecs-failing inputs use ffmpeg.wasm with the hybrid WebCodecs encoder when available. Speed always uses the WebCodecs path because frame selection/repetition must share the decode/encode pass.
-- Clip cards have active reorder/remove controls. Undo/redo snapshots cover import, reorder, removal, and transition changes without revoking media needed by an older snapshot.
+- Clip cards have active reorder/remove controls. Fine-pointer cards use HTML5 drag-and-drop with left/right-half insertion, while touch devices keep non-draggable cards and the arrow controls. Undo/redo snapshots cover import, drag/arrow reorder, removal, and transition changes without revoking media needed by an older snapshot.
 - Each dashed connector opens a dialog with Cut, Classic Mosh, Melt, Loop Release and Reset Pulse. Every non-Cut method exposes duration/ending controls; Melt adds repeat 2–12 plus Original/Gentler movement, Loop Release a 2–48-frame group, and Reset Pulse a 4–48-frame interval plus repeat 2–12. Transition settings follow the incoming clip when cards are reordered.
 - The preview shows clip 1 untouched or the full merged chain. Export downloads the complete sequence as `m4shlab-merge.mp4`; source audio is muxed automatically when any source track exists.
 - Melt schedules non-IDR donors through an explicit output-frame window, then continues from the next unused donor or restores B's original first IDR. Gentler starts from the same hold plan, bounds each pre-release donor advance to two frames, and makes the final quarter consecutive. Loop Release scales its 3×/2× blocks into the window and joins the chronological tail at the next donor. Reset Pulse starts every interval with B's original first IDR sample, then repeats consecutive P donors until the interval is full. All three reject reordered inputs and renumber emitted slice headers through the RBSP/EBSP-safe patcher. API calls without a duration retain the legacy full schedules; the UI always supplies an explicit window.
@@ -96,7 +96,7 @@ Browser and PWA counts are emitted PASS records. The deployment-only `201d418`/`
 - `manifest.json` declares standalone display, light `#f5f5f3` theme/background, `./` start/scope, SVG icon, 192px any icon, and 512px maskable PNG icon.
 - `favicon.svg` and `icon.svg` use Arial/Helvetica Bold 700 `m4` lettering on `#f5f5f3`; the favicon adapts the sibling h4 tile proportions, while the 512px PWA master keeps the wordmark within the maskable safe area. `favicon-32.png`, `icon-180.png`, `icon-192.png`, and `icon-512.png` are committed raster fallbacks.
 - `index.html` links the manifest, SVG and 32px PNG tab icons, sized 180px Apple touch icon, theme color, and Apple standalone metadata.
-- `sw.js` derives both `m4shlab-v15` and `m4shlab-runtime-v15` from one `VERSION` constant. Install precaches 27 app-shell files, including both favicon assets, `parser/hevc.js`, `classic-mosh.js`, `speed.js`, `looks.js`, `randomize.js`, and `audio.js`, skips `converter-worker.js` and ffmpeg.wasm, calls `skipWaiting()`, and activate deletes old versioned caches before `clients.claim()`.
+- `sw.js` derives both `m4shlab-v16` and `m4shlab-runtime-v16` from one `VERSION` constant. Install precaches 27 app-shell files, including both favicon assets, `parser/hevc.js`, `classic-mosh.js`, `speed.js`, `looks.js`, `randomize.js`, and `audio.js`, skips `converter-worker.js` and ffmpeg.wasm, calls `skipWaiting()`, and activate deletes old versioned caches before `clients.claim()`.
 - Static shell requests are cache-first. Navigation requests fall back to the cached `index.html`. Runtime cache-first applies only to `converter-worker.js` and the pinned jsDelivr ffmpeg core JS/WASM URLs.
 - `app.js` changes only by registering `./sw.js` after `load`; registration failures such as `file://` are swallowed so normal browser operation is unchanged.
 - Bump `VERSION` in `sw.js` whenever a shell or conversion-worker asset changes. Runtime cache separation keeps the 31 MB ffmpeg core out of shell precache; a version bump intentionally invalidates stale worker code too.
@@ -106,10 +106,10 @@ Browser and PWA counts are emitted PASS records. The deployment-only `201d418`/`
 Current v1.1 baseline on 2026-11-04 with Node 26.13.0, FFmpeg 9.0.2, and Chrome 156:
 
 - `npm test`: **80/80 PASS**.
-- `npm run test:webcodecs`: **30/30 PASS**.
+- `npm run test:webcodecs`: **33/33 PASS**.
 - `npm run test:pwa`: **6/6 PASS**.
 - `node --check` for all JavaScript and `git diff --check`: PASS.
-- Released v1.0 service worker: `v11`, SHA-256 `a177914d77bc094949cc24fef38d8086306121434b67e6bf7fe674cbe473a50e`. Current v1.1 shell is `v15`.
+- Released v1.0 service worker: `v11`, SHA-256 `a177914d77bc094949cc24fef38d8086306121434b67e6bf7fe674cbe473a50e`. Current v1.1 shell is `v16`.
 - PWA precache: 27 shell assets including `looks.js`; manifest/installability and offline reload pass.
 - Melt repeat=4: 315/315 decoded samples, with all non-header RBSP bits byte-identical. Melt duration=12/repeat=2: exact 12-frame window, Continue tail at donor 7, 105/105 decoded; Restore inserts the byte-identical incoming IDR at merged sample 37 and decodes 106/106. Gentler Melt uses source donors [1,1,2,2,3,3,4,6,8,10,11,12], caps each pre-release step at two, and decodes 99/99; Gentler Restore adds the anchor. Loop Release group=4: 99/99 decoded samples with blocks at donors 1/13 and release tail at 21; duration=12 scales to donors [1,2] 3× plus a chronological window and rejoins at donor 13. Reset Pulse interval=6/repeat=2: 99/99 with reset IDRs at merged samples 25/31, donor tables [1,1,2,2,3], and tail donor 13; Restore decodes 100/100; the default window matches an explicit full window byte-for-byte, and sub-frame durations raise `ValueError`. POC type 0 Melt: 171/171. POC type 0 Reset Pulse: 99/99 with segment frame_num/POC starts at 1. Chained Melt→Loop Release: 195/195; Loop Release→Cut: 124/124; Reset Pulse→Cut: 124/124; Reset Pulse→Classic Mosh: 123/123.
 - Native B-frame Melt/Loop Release/Reset Pulse rejects loudly; browser tests confirm native B-frame sources auto-normalize with WebCodecs before the effect runs.
@@ -132,7 +132,7 @@ Current v1.1 baseline on 2026-11-04 with Node 26.13.0, FFmpeg 9.0.2, and Chrome 
 - Normalization target coverage: 1440×1920 + 768×1024 + 320×240 selects one shared 540×720 target.
 - Classic Mosh restore: Phase A 10-frame window exact NAL sequence, byte-identical IDR reinsertion, 75/75 decoded source frames; Phase B 50/50 decoded frames; continue byte-identical to full-length output.
 - Duration 1 accepted; overlong windows clamp and report; durations below one frame raise `ValueError`; chained boundaries retain independent settings.
-- PWA browser test: manifest valid with resolving icons and exact favicon links; service worker v15 active and controlling; 27 shell assets cached; old cache removed; runtime cache contains three ffmpeg entries; offline reload works; offline HEVC conversion and merge produce a 120,718-byte, 59-frame H.264 export.
+- PWA browser test: manifest valid with resolving icons and exact favicon links; service worker v16 active and controlling; 27 shell assets cached; old cache removed; runtime cache contains three ffmpeg entries; offline reload works; offline HEVC conversion and merge produce a 120,718-byte, 59-frame H.264 export.
 - PWA export SHA-256: `47a7fcc6972956e34b9147fead68159350bf16d5f339098436dc5cd8dd25c7b9`.
 
 `npm run test:webcodecs` produced:
@@ -145,7 +145,7 @@ Current v1.1 baseline on 2026-11-04 with Node 26.13.0, FFmpeg 9.0.2, and Chrome 
 - the Classic Mosh dialog exposed a frame-quantized duration, seconds/frame feedback, Restore/Continue options, and hid those controls for Cut;
 - blocking merge errors stayed short with no compatibility panel;
 - a native large pair and a three-file mixed-resolution sequence normalized to 540×720 and showed the normalizing state;
-- the three-clip browser flow exposed two Cut/Classic Mosh connectors, changed the first boundary to Cut, completed reorder/remove/undo, previewed 540×720, and exported 74 decoded frames;
+- the three-clip browser flow exposed two Cut/Classic Mosh connectors, changed the first boundary to Cut, verified drag/self-drop/arrow reorder plus remove/undo, previewed 540×720, and exported 74 decoded frames;
 - the preserved two-clip path still merged 49 samples, previewed 320×240, and exported a decodable video;
 - the preserved export SHA-256 is `b4bb6c4827b2f7a8fe6d93777ff63f4491dd0b8eb497148dd3b2d07da1666bef`;
 - browser Gentler Loop bridged the tail jump with ≤2 donor advances and produced a 99-sample decodable sequence;
@@ -161,7 +161,7 @@ Current v1.1 baseline on 2026-11-04 with Node 26.13.0, FFmpeg 9.0.2, and Chrome 
 
 - manifest/installability: PASS, including `beforeinstallprompt observed=true`;
 - service worker active and controlling, 27 shell assets precached off a fresh profile;
-- activation removed the previous cache and re-registered the v15 shell;
+- activation removed the previous cache and re-registered the v16 shell;
 - runtime cache: `converter-worker.js`, `ffmpeg-core.js`, `ffmpeg-core.wasm`;
 - fully offline HEVC conversion, merge, preview, and export: 59/59 decoded frames.
 

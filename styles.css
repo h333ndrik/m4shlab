@@ -296,6 +296,19 @@ button:focus-visible,
 
 .clip-card.is-empty { border-style: dashed; }
 
+.clip-card[draggable="true"] { cursor: grab; }
+
+.clip-card.dragging {
+  opacity: 0.4;
+  transform: scale(0.95);
+}
+
+.clip-card.drop-target {
+  border-color: #252525;
+  outline: 2px solid #252525;
+  outline-offset: -2px;
+}
+
 .clip-thumb {
   display: grid;
   place-items: center;

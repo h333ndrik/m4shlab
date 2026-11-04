@@ -269,6 +269,29 @@ try {
   assert.equal(emptyState.cursor, 'not-allowed');
   console.log('PASS empty state shows 00.00 time, title-case Sequence, and a high-contrast disabled export button');
 
+  const fileDropTransfer = await client.evaluate(`(async () => {
+    const bytes = await (await fetch('/testmedia/synthetic-b-a.mp4')).arrayBuffer();
+    const dataTransfer = new DataTransfer();
+    dataTransfer.items.add(new File([bytes], 'drag-import.mp4', {type: 'video/mp4'}));
+    const zone = document.querySelector('#drop-zone');
+    zone.dispatchEvent(new DragEvent('dragenter', {bubbles: true, cancelable: true, dataTransfer}));
+    zone.dispatchEvent(new DragEvent('dragover', {bubbles: true, cancelable: true, dataTransfer}));
+    zone.dispatchEvent(new DragEvent('drop', {bubbles: true, cancelable: true, dataTransfer}));
+    return {types: [...dataTransfer.types], files: dataTransfer.files.length};
+  })()`);
+  assert.deepEqual(fileDropTransfer.types, ['Files']);
+  assert.equal(fileDropTransfer.files, 1);
+  await client.waitFor("document.querySelectorAll('.clip-card').length === 1", 30000);
+  const fileDropState = await client.evaluate(`({
+    names: [...document.querySelectorAll('.clip-card .clip-name')].map(node => node.textContent),
+    error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
+  })`);
+  assert.deepEqual(fileDropState.names, ['drag-import.mp4']);
+  assert.equal(fileDropState.error, null, fileDropState.error);
+  console.log('PASS file drag-and-drop import still loads a video and does not use clip-reorder payloads');
+  await client.send('Page.navigate', {url: `${baseUrl}?post-drop=1`});
+  await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
+
   const normalizedBytes = await client.evaluate(`(async () => {
     const {normalizeWithWebCodecs} = await import('./webcodecs.js');
     const inputA = new Uint8Array(await (await fetch('/testmedia/synthetic-b-a.mp4')).arrayBuffer());
@@ -658,6 +681,111 @@ try {
   console.log(`PASS multi-file import normalized 3 clips to 540x720, exposed two Cut/Classic Mosh boundary dialogs, and merged ${mixedTimeline.mergedSamples} samples`);
 
   const originalOrder = multiInitial.cards;
+  await client.waitFor("[...document.querySelectorAll('.clip-card')].length === 3 && [...document.querySelectorAll('.clip-card')].every(card => card.draggable)", 10000);
+  const firstDragVisual = await client.evaluate(`(() => {
+    const cards = [...document.querySelectorAll('.clip-card')];
+    const source = cards[0];
+    const target = cards[2];
+    const dataTransfer = new DataTransfer();
+    source.dispatchEvent(new DragEvent('dragstart', {bubbles: true, cancelable: true, dataTransfer}));
+    const rect = target.getBoundingClientRect();
+    const clientX = rect.left + rect.width * 0.75;
+    const clientY = rect.top + rect.height / 2;
+    target.dispatchEvent(new DragEvent('dragover', {bubbles: true, cancelable: true, dataTransfer, clientX, clientY}));
+    const visual = {
+      payload: dataTransfer.getData('text/plain'),
+      dragging: source.classList.contains('dragging'),
+      opacity: getComputedStyle(source).opacity,
+      dropTarget: target.classList.contains('drop-target'),
+      outline: getComputedStyle(target).outlineColor,
+    };
+    target.dispatchEvent(new DragEvent('drop', {bubbles: true, cancelable: true, dataTransfer, clientX, clientY}));
+    source.dispatchEvent(new DragEvent('dragend', {bubbles: true, cancelable: true, dataTransfer}));
+    return visual;
+  })()`);
+  assert.match(firstDragVisual.payload, /^clip-/);
+  assert.equal(firstDragVisual.dragging, true);
+  assert.equal(firstDragVisual.opacity, '0.4');
+  assert.equal(firstDragVisual.dropTarget, true);
+  assert.equal(firstDragVisual.outline, 'rgb(37, 37, 37)');
+  const afterFirstDrag = [originalOrder[1], originalOrder[2], originalOrder[0]];
+  await client.waitFor(`JSON.stringify([...document.querySelectorAll('.clip-card .clip-name')].map(node => node.textContent)) === ${JSON.stringify(JSON.stringify(afterFirstDrag))} && (document.querySelector('#status').textContent.includes('samples') || !document.querySelector('#error').hidden)`, 30000);
+  const firstDragState = await client.evaluate(`({
+    cards: [...document.querySelectorAll('.clip-card .clip-name')].map(node => node.textContent),
+    connectors: document.querySelectorAll('.connector').length,
+    error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
+  })`);
+  assert.deepEqual(firstDragState.cards, afterFirstDrag);
+  assert.equal(firstDragState.connectors, 2);
+  assert.equal(firstDragState.error, null, firstDragState.error);
+  await client.evaluate("document.querySelector('#undo-button').click()");
+  await client.waitFor(`JSON.stringify([...document.querySelectorAll('.clip-card .clip-name')].map(node => node.textContent)) === ${JSON.stringify(JSON.stringify(originalOrder))}`, 10000);
+
+  await client.evaluate(`(() => {
+    const cards = [...document.querySelectorAll('.clip-card')];
+    const source = cards[2];
+    const target = cards[0];
+    const dataTransfer = new DataTransfer();
+    source.dispatchEvent(new DragEvent('dragstart', {bubbles: true, cancelable: true, dataTransfer}));
+    const rect = target.getBoundingClientRect();
+    const clientX = rect.left + rect.width * 0.25;
+    const clientY = rect.top + rect.height / 2;
+    target.dispatchEvent(new DragEvent('dragover', {bubbles: true, cancelable: true, dataTransfer, clientX, clientY}));
+    target.dispatchEvent(new DragEvent('drop', {bubbles: true, cancelable: true, dataTransfer, clientX, clientY}));
+    source.dispatchEvent(new DragEvent('dragend', {bubbles: true, cancelable: true, dataTransfer}));
+  })()`);
+  const afterSecondDrag = [originalOrder[2], originalOrder[0], originalOrder[1]];
+  await client.waitFor(`JSON.stringify([...document.querySelectorAll('.clip-card .clip-name')].map(node => node.textContent)) === ${JSON.stringify(JSON.stringify(afterSecondDrag))}`, 10000);
+  await client.evaluate("document.querySelector('#undo-button').click()");
+  await client.waitFor(`JSON.stringify([...document.querySelectorAll('.clip-card .clip-name')].map(node => node.textContent)) === ${JSON.stringify(JSON.stringify(originalOrder))}`, 10000);
+
+  const selfDrop = await client.evaluate(`(() => {
+    const cards = [...document.querySelectorAll('.clip-card')];
+    const source = cards[1];
+    const target = cards[1];
+    const dataTransfer = new DataTransfer();
+    source.dispatchEvent(new DragEvent('dragstart', {bubbles: true, cancelable: true, dataTransfer}));
+    const rect = target.getBoundingClientRect();
+    const clientX = rect.left + rect.width * 0.75;
+    const clientY = rect.top + rect.height / 2;
+    target.dispatchEvent(new DragEvent('dragover', {bubbles: true, cancelable: true, dataTransfer, clientX, clientY}));
+    target.dispatchEvent(new DragEvent('drop', {bubbles: true, cancelable: true, dataTransfer, clientX, clientY}));
+    source.dispatchEvent(new DragEvent('dragend', {bubbles: true, cancelable: true, dataTransfer}));
+    return {
+      dropTarget: target.classList.contains('drop-target'),
+      cards: [...document.querySelectorAll('.clip-card .clip-name')].map(node => node.textContent),
+      error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
+    };
+  })()`);
+  assert.equal(selfDrop.dropTarget, false);
+  assert.deepEqual(selfDrop.cards, originalOrder);
+  assert.equal(selfDrop.error, null, selfDrop.error);
+  console.log('PASS clip drag-and-drop reorders in both directions, shows CSS feedback, self-drop is inert, and undo restores order');
+
+  await client.send('Emulation.setTouchEmulationEnabled', {enabled: true, maxTouchPoints: 5});
+  await client.send('Emulation.setDeviceMetricsOverride', {width: 390, height: 1000, deviceScaleFactor: 1, mobile: true});
+  await new Promise(resolve => setTimeout(resolve, 300));
+  const touchDragState = await client.evaluate(`({
+    coarse: matchMedia('(pointer: coarse)').matches,
+    maxTouchPoints: navigator.maxTouchPoints,
+    cards: [...document.querySelectorAll('.clip-card')].map(card => ({
+      draggable: card.draggable,
+      leftDisabled: card.querySelectorAll('.clip-controls button')[0].disabled,
+    })),
+  })`);
+  assert.ok(touchDragState.coarse || touchDragState.maxTouchPoints > 0, 'touch emulation must advertise a coarse/touch pointer');
+  assert.ok(touchDragState.cards.every(card => !card.draggable), 'touch cards must not be draggable');
+  assert.equal(touchDragState.cards[1].leftDisabled, false);
+  await client.evaluate("document.querySelectorAll('.clip-card')[1].querySelectorAll('.clip-controls button')[0].click()");
+  await client.waitFor(`JSON.stringify([...document.querySelectorAll('.clip-card .clip-name')].map(node => node.textContent)) === ${JSON.stringify(JSON.stringify([originalOrder[1], originalOrder[0], originalOrder[2]]))}`, 10000);
+  await client.evaluate("document.querySelector('#undo-button').click()");
+  await client.waitFor(`JSON.stringify([...document.querySelectorAll('.clip-card .clip-name')].map(node => node.textContent)) === ${JSON.stringify(JSON.stringify(originalOrder))}`, 10000);
+  await client.send('Emulation.setTouchEmulationEnabled', {enabled: false});
+  await client.send('Emulation.setDeviceMetricsOverride', {width: 1200, height: 1600, deviceScaleFactor: 1, mobile: false});
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal(await client.evaluate("[...document.querySelectorAll('.clip-card')].every(card => card.draggable)"), true);
+  console.log('PASS touch cards stay non-draggable while arrow reorder works; desktop drag returns after pointer reset');
+
   await client.evaluate("document.querySelectorAll('.clip-card')[2].querySelectorAll('.clip-controls button')[0].click()");
   await client.waitFor(`JSON.stringify([...document.querySelectorAll('.clip-card .clip-name')].map(node => node.textContent)) === ${JSON.stringify(JSON.stringify([originalOrder[0], originalOrder[2], originalOrder[1]]))}`, 10000);
   await client.evaluate("document.querySelector('#undo-button').click()");

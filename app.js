@@ -63,6 +63,7 @@ const reportPanel = document.querySelector('#report-panel');
 const report = document.querySelector('#report');
 const undoButton = document.querySelector('#undo-button');
 const redoButton = document.querySelector('#redo-button');
+const coarsePointerQuery = window.matchMedia('(pointer: coarse)');
 const transitionDialog = document.querySelector('#transition-dialog');
 const transitionTitle = document.querySelector('#transition-title');
 const transitionApply = document.querySelector('#transition-apply');
@@ -89,6 +90,9 @@ const resetRepeat = document.querySelector('#reset-repeat');
 const resetRepeatValue = document.querySelector('#reset-repeat-value');
 
 let clips = [];
+let nextClipId = 1;
+let draggedClipId = null;
+let importInFlight = 0;
 let merged = null;
 let refreshToken = 0;
 let importToken = 0;
@@ -468,6 +472,87 @@ function progressSlot(index) {
   return index === 0 ? 'a' : index === 1 ? 'b' : null;
 }
 
+function clipDragAllowed() {
+  return refreshInFlight === 0 && importInFlight === 0 && !coarsePointerQuery.matches && navigator.maxTouchPoints === 0;
+}
+
+function clearDropTargets() {
+  for (const card of sourceTiers.querySelectorAll('.clip-card.drop-target')) {
+    card.classList.remove('drop-target');
+  }
+}
+
+function isClipReorderTransfer(dataTransfer) {
+  const types = [...(dataTransfer?.types ?? [])];
+  return types.includes('text/plain') && !types.includes('Files');
+}
+
+function syncClipDragState() {
+  const allowed = clipDragAllowed();
+  for (const card of sourceTiers.querySelectorAll('.clip-card')) {
+    card.draggable = allowed;
+    if (!allowed) card.classList.remove('dragging');
+  }
+  if (!allowed) clearDropTargets();
+}
+
+function wireClipDrag(card, clip, index) {
+  card.dataset.clipId = clip.id;
+  card.draggable = clipDragAllowed();
+
+  card.addEventListener('dragstart', event => {
+    if (!card.draggable || !clipDragAllowed() || (event.target instanceof Element
+      && event.target.closest('button, input, select, label, a'))) {
+      event.preventDefault();
+      return;
+    }
+    draggedClipId = clip.id;
+    card.classList.add('dragging');
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', clip.id);
+  });
+
+  card.addEventListener('dragover', event => {
+    if (!draggedClipId || !card.draggable) return;
+    const sourceIndex = clips.findIndex(item => item.id === draggedClipId);
+    if (sourceIndex < 0 || sourceIndex === index) {
+      card.classList.remove('drop-target');
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = 'move';
+    clearDropTargets();
+    card.classList.add('drop-target');
+  });
+
+  card.addEventListener('dragleave', event => {
+    if (!card.contains(event.relatedTarget)) card.classList.remove('drop-target');
+  });
+
+  card.addEventListener('drop', event => {
+    const sourceId = event.dataTransfer?.getData('text/plain') || draggedClipId;
+    const sourceIndex = clips.findIndex(item => item.id === sourceId);
+    event.preventDefault();
+    event.stopPropagation();
+    card.classList.remove('drop-target');
+    clearDropTargets();
+    draggedClipId = null;
+    if (sourceIndex < 0 || sourceIndex === index) return;
+
+    const rect = card.getBoundingClientRect();
+    const insertionIndex = index + (event.clientX >= rect.left + rect.width / 2 ? 1 : 0);
+    const destination = insertionIndex > sourceIndex ? insertionIndex - 1 : insertionIndex;
+    if (destination !== sourceIndex) moveClip(sourceIndex, destination);
+  });
+
+  card.addEventListener('dragend', () => {
+    draggedClipId = null;
+    card.classList.remove('dragging');
+    clearDropTargets();
+  });
+}
+
 function renderClipCard(index, clip) {
   const card = document.createElement('article');
   card.className = 'clip-card';
@@ -564,6 +649,7 @@ function renderClipCard(index, clip) {
   }
 
   card.append(thumb, name, detail, lookControl, speedControl, controls);
+  wireClipDrag(card, clip, index);
   return card;
 }
 
@@ -616,6 +702,7 @@ function renderSourceTiers() {
   });
   sourceTiers.replaceChildren(...nodes);
   sourceTiers.hidden = false;
+  syncClipDragState();
   const cuts = clips.slice(1).filter(clip => clip.transition === 'cut').length;
   const mosh = clips.length - 1 - cuts;
   sequenceLabel.textContent = `${clips.length} clip${clips.length === 1 ? '' : 's'} · ${cuts} cut · ${mosh} mosh`;
@@ -1250,6 +1337,7 @@ async function readClipFile(file, index, token) {
   }
 
   return {
+    id: `clip-${nextClipId++}`,
     file,
     bytes,
     mp4,
@@ -1284,6 +1372,17 @@ function looksLikeVideo(file) {
 }
 
 async function importFiles(fileList) {
+  importInFlight += 1;
+  syncClipDragState();
+  try {
+    return await importFilesInternal(fileList);
+  } finally {
+    importInFlight -= 1;
+    syncClipDragState();
+  }
+}
+
+async function importFilesInternal(fileList) {
   const candidates = [...fileList].filter(looksLikeVideo);
   if (candidates.length === 0) {
     setError('Choose a video file or drop a supported video onto the timeline.');
@@ -1683,6 +1782,7 @@ function syncRenderControlsBusy() {
   const busy = refreshInFlight > 0;
   for (const select of document.querySelectorAll('.clip-look select')) select.disabled = busy;
   soundToggle.disabled = busy;
+  syncClipDragState();
 }
 
 async function refreshSequence() {
@@ -1944,9 +2044,12 @@ originalButton.addEventListener('click', () => showVersion('original'));
 modifiedButton.addEventListener('click', () => showVersion('merged'));
 undoButton.addEventListener('click', undoTimeline);
 redoButton.addEventListener('click', redoTimeline);
+coarsePointerQuery.addEventListener?.('change', syncClipDragState);
+window.addEventListener('resize', syncClipDragState);
 
 for (const eventName of ['dragenter', 'dragover']) {
   dropZone.addEventListener(eventName, event => {
+    if (isClipReorderTransfer(event.dataTransfer)) return;
     event.preventDefault();
     dropZone.classList.add('is-dragging');
   });
@@ -1955,6 +2058,7 @@ dropZone.addEventListener('dragleave', event => {
   if (!dropZone.contains(event.relatedTarget)) dropZone.classList.remove('is-dragging');
 });
 dropZone.addEventListener('drop', event => {
+  if (isClipReorderTransfer(event.dataTransfer)) return;
   event.preventDefault();
   dropZone.classList.remove('is-dragging');
   if (event.dataTransfer.files.length) importFiles(event.dataTransfer.files);
