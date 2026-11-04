@@ -138,6 +138,7 @@ function readProjectName() {
 }
 
 function saveProjectName() {
+  if (!projectName) return;
   if (projectNameSaveTimer !== null) {
     clearTimeout(projectNameSaveTimer);
     projectNameSaveTimer = null;
@@ -148,16 +149,18 @@ function saveProjectName() {
 }
 
 function scheduleProjectNameSave() {
+  if (!projectName) return;
   if (projectNameSaveTimer !== null) clearTimeout(projectNameSaveTimer);
   projectNameSaveTimer = setTimeout(saveProjectName, 250);
 }
 
 function autoSizeProjectName() {
+  if (!projectName) return;
   projectName.size = Math.min(18, Math.max(7, projectName.value.length || 1));
 }
 
 function projectExportFilename() {
-  const trimmed = projectName.value.trim();
+  const trimmed = (projectName?.value ?? DEFAULT_PROJECT_NAME).trim();
   if (!trimmed || trimmed === DEFAULT_PROJECT_NAME) return DEFAULT_EXPORT_FILENAME;
   const sanitized = trimmed
     .replace(/[\u0000-\u001f\u007f\/\\:*?"<>|]/g, '')
@@ -2084,25 +2087,6 @@ inputB.addEventListener('change', () => {
   inputB.value = '';
   if (file) loadClipLegacy('b', file);
 });
-soundToggle.addEventListener('change', () => {
-  soundEnabled = soundToggle.checked;
-  writeSoundPreference();
-  applySoundPreference();
-  setError('');
-  if (clips.length > 1) refreshSequence();
-});
-projectName.addEventListener('input', () => {
-  autoSizeProjectName();
-  scheduleProjectNameSave();
-});
-projectName.addEventListener('change', saveProjectName);
-projectName.addEventListener('blur', saveProjectName);
-assemblePreviewButton.addEventListener('click', previewAssembledSequence);
-undoButton.addEventListener('click', undoTimeline);
-redoButton.addEventListener('click', redoTimeline);
-coarsePointerQuery.addEventListener?.('change', syncClipDragState);
-window.addEventListener('resize', syncClipDragState);
-
 for (const eventName of ['dragenter', 'dragover']) {
   dropZone.addEventListener(eventName, event => {
     if (isClipReorderTransfer(event.dataTransfer)) return;
@@ -2121,10 +2105,32 @@ dropZone.addEventListener('drop', event => {
 });
 window.addEventListener('dragover', event => event.preventDefault());
 window.addEventListener('drop', event => event.preventDefault());
+soundToggle.addEventListener('change', () => {
+  soundEnabled = soundToggle.checked;
+  writeSoundPreference();
+  applySoundPreference();
+  setError('');
+  if (clips.length > 1) refreshSequence();
+});
+if (projectName) {
+  projectName.addEventListener('input', () => {
+    autoSizeProjectName();
+    scheduleProjectNameSave();
+  });
+  projectName.addEventListener('change', saveProjectName);
+  projectName.addEventListener('blur', saveProjectName);
+}
+assemblePreviewButton.addEventListener('click', previewAssembledSequence);
+undoButton.addEventListener('click', undoTimeline);
+redoButton.addEventListener('click', redoTimeline);
+coarsePointerQuery.addEventListener?.('change', syncClipDragState);
+window.addEventListener('resize', syncClipDragState);
 
 applySoundPreference();
-projectName.value = readProjectName();
-autoSizeProjectName();
+if (projectName) {
+  projectName.value = readProjectName();
+  autoSizeProjectName();
+}
 updateHistoryButtons();
 updateSingleClipState();
 document.documentElement.dataset.appReady = 'true';

@@ -88,6 +88,8 @@ class CdpClient {
     this.nextId = 0;
     this.pending = new Map();
     this.exceptions = [];
+    this.events = [];
+    this.eventWaiters = [];
     this.socket.onmessage = event => {
       const message = JSON.parse(event.data);
       if (message.id) {
@@ -96,8 +98,17 @@ class CdpClient {
         this.pending.delete(message.id);
         if (message.error) pending.reject(new Error(message.error.message));
         else pending.resolve(message.result);
-      } else if (message.method === 'Runtime.exceptionThrown') {
-        this.exceptions.push(message.params.exceptionDetails.exception?.description ?? message.params.exceptionDetails.text);
+      } else {
+        this.events.push(message);
+        if (message.method === 'Runtime.exceptionThrown') {
+          this.exceptions.push(message.params.exceptionDetails.exception?.description ?? message.params.exceptionDetails.text);
+        }
+        for (const waiter of [...this.eventWaiters]) {
+          if (waiter.method !== message.method) continue;
+          this.eventWaiters.splice(this.eventWaiters.indexOf(waiter), 1);
+          clearTimeout(waiter.timer);
+          waiter.resolve(message);
+        }
       }
     };
   }
@@ -117,7 +128,7 @@ class CdpClient {
   }
 
   async evaluate(expression) {
-    const response = await this.send('Runtime.evaluate', {expression, awaitPromise: true, returnByValue: true});
+    const response = await this.send('Runtime.evaluate', {expression, awaitPromise: true, returnByValue: true, includeCommandLineAPI: true});
     if (response.exceptionDetails) throw new Error(response.exceptionDetails.exception?.description ?? response.exceptionDetails.text);
     return response.result.value;
   }
@@ -143,6 +154,18 @@ class CdpClient {
       conversion: document.querySelector('#conversion-message')?.textContent
     })`);
     throw new Error(`Timeout waiting for ${expression}: ${JSON.stringify(state)}`);
+  }
+
+  waitForEvent(method, timeout = 5000) {
+    const prior = this.events.find(event => event.method === method);
+    if (prior) return Promise.resolve(prior);
+    return new Promise((resolveEvent, rejectEvent) => {
+      const timer = setTimeout(() => {
+        this.eventWaiters = this.eventWaiters.filter(waiter => waiter.resolve !== resolveEvent);
+        rejectEvent(new Error(`Timeout waiting for ${method}`));
+      }, timeout);
+      this.eventWaiters.push({method, resolve: resolveEvent, timer});
+    });
   }
 
   close() {
@@ -1834,6 +1857,56 @@ try {
     assert.ok(fallback.sources.b.conversion.elapsedMs > 0);
     console.log('PASS WebCodecs stubbed unavailable: ffmpeg.wasm fallback ran and the report identifies it');
   }
+
+  const missingProjectScript = await client.send('Page.addScriptToEvaluateOnNewDocument', {
+    source: `new MutationObserver(() => {
+      const input = document.querySelector('#project-name');
+      if (input) input.remove();
+    }).observe(document, {childList: true, subtree: true});`,
+  });
+  await client.send('Page.setInterceptFileChooserDialog', {enabled: true});
+  await client.send('Page.navigate', {url: `${baseUrl}?missing-project-picker=1`});
+  await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
+  assert.equal(await client.evaluate("document.querySelector('#project-name') === null"), true);
+  assert.deepEqual(await client.evaluate(`(() => {
+    const listeners = getEventListeners(document.querySelector('#drop-zone'));
+    return Object.fromEntries(Object.entries(listeners).map(([name, entries]) => [name, entries.length]));
+  })()`), {dragenter: 1, dragover: 1, dragleave: 1, drop: 1});
+  const importBox = await client.evaluate(`(() => {
+    const rect = document.querySelector('.file-actions .button').getBoundingClientRect();
+    return {x: rect.left + rect.width / 2, y: rect.top + rect.height / 2};
+  })()`);
+  await client.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x: importBox.x, y: importBox.y});
+  await client.send('Input.dispatchMouseEvent', {type: 'mousePressed', x: importBox.x, y: importBox.y, button: 'left', clickCount: 1});
+  await client.send('Input.dispatchMouseEvent', {type: 'mouseReleased', x: importBox.x, y: importBox.y, button: 'left', clickCount: 1});
+  const chooser = await client.waitForEvent('Page.fileChooserOpened');
+  await client.send('DOM.setFileInputFiles', {files: [fixtures.a], backendNodeId: chooser.params.backendNodeId});
+  await client.waitFor("document.querySelectorAll('.clip-card').length === 1", 30000);
+  const pickerImport = await client.evaluate(`({
+    name: document.querySelector('.clip-card .clip-name').textContent,
+    error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
+  })`);
+  assert.deepEqual(pickerImport, {name: 'synthetic-b-a.mp4', error: null});
+  await client.send('Page.setInterceptFileChooserDialog', {enabled: false});
+  await client.send('Page.navigate', {url: `${baseUrl}?missing-project-drop=1`});
+  await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
+  await client.evaluate(`(async () => {
+    const bytes = await (await fetch('/testmedia/synthetic-b-a.mp4')).arrayBuffer();
+    const dataTransfer = new DataTransfer();
+    dataTransfer.items.add(new File([bytes], 'drop-missing-project.mp4', {type: 'video/mp4'}));
+    const zone = document.querySelector('#drop-zone');
+    for (const type of ['dragenter', 'dragover', 'drop']) {
+      zone.dispatchEvent(new DragEvent(type, {bubbles: true, cancelable: true, dataTransfer}));
+    }
+  })()`);
+  await client.waitFor("document.querySelectorAll('.clip-card').length === 1", 30000);
+  const dropImport = await client.evaluate(`({
+    name: document.querySelector('.clip-card .clip-name').textContent,
+    error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
+  })`);
+  assert.deepEqual(dropImport, {name: 'drop-missing-project.mp4', error: null});
+  await client.send('Page.removeScriptToEvaluateOnNewDocument', {identifier: missingProjectScript.identifier});
+  console.log('PASS missing optional project-name cannot kill picker or drag-and-drop import wiring');
 
   if (client.exceptions.length) throw new Error(`Browser exceptions:\n${client.exceptions.join('\n')}`);
 } finally {
