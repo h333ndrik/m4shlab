@@ -57,18 +57,20 @@ try {
   const state = await page.evaluate(() => {
     const report = JSON.parse(document.querySelector('#report').textContent);
     return {
-      conversionStatus: document.querySelector('#conversion-status').textContent,
+      conversionHidden: document.querySelector('#conversion-progress').hidden,
+      conversionMessage: document.querySelector('#conversion-message'),
       error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
       compatibilityMarkup: document.querySelector('#compatibility-panel, #compatibility-status, .compatibility-table'),
-      modifiedEnabled: !document.querySelector('#show-modified').disabled,
+      assembleEnabled: !document.querySelector('#assemble-preview').disabled,
       sources: report.sources,
       mergedSamples: report.merge.mergedSamples,
     };
   });
   assert.equal(state.error, null, state.error);
   assert.equal(state.compatibilityMarkup, null, 'Compatibility UI must not exist');
-  assert.match(state.conversionStatus, /^normalized via ffmpeg\.wasm(?: \+ WebCodecs)?$/);
-  assert.equal(state.modifiedEnabled, true);
+  assert.equal(state.conversionHidden, true);
+  assert.equal(state.conversionMessage, null);
+  assert.equal(state.assembleEnabled, true);
   assert.equal(state.sources.a.tier, 'tier-2');
   assert.equal(state.sources.b.tier, 'tier-2');
   assert.match(state.sources.a.mode, /^normalized via ffmpeg\.wasm(?: \+ WebCodecs)?$/);
@@ -77,7 +79,7 @@ try {
   assert.equal(state.sources.a.conversion.target.height, 240);
   assert.ok(state.mergedSamples > 0);
 
-  await page.click('#show-modified');
+  await page.click('#assemble-preview');
   await page.waitForFunction(() => document.querySelector('#preview-video').readyState >= 2, null, {timeout: 15000});
   const playback = await page.evaluate(() => {
     const video = document.querySelector('#preview-video');

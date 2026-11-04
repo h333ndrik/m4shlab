@@ -237,7 +237,7 @@ try {
 
   const pwaState = await client.evaluate(`(async () => {
     const registration = await navigator.serviceWorker.ready;
-    const cache = await caches.open('m4shlab-v16');
+    const cache = await caches.open('m4shlab-v17');
     return {
       manifestHref: document.querySelector('link[rel="manifest"]')?.getAttribute('href'),
       themeColor: document.querySelector('meta[name="theme-color"]')?.content,
@@ -327,7 +327,7 @@ try {
   await client.waitFor("document.documentElement.dataset.appReady === 'true'", 15000);
   await client.waitFor("navigator.serviceWorker?.controller?.state === 'activated'", 20000);
   const cacheNames = await client.evaluate('caches.keys()');
-  assert.ok(cacheNames.includes('m4shlab-v16'));
+  assert.ok(cacheNames.includes('m4shlab-v17'));
   assert.ok(!cacheNames.includes('m4shlab-v10'), 'old shell cache must be deleted on activate');
   assert.ok(!cacheNames.includes('m4shlab-runtime-v10'), 'old runtime cache must be deleted on activate');
   console.log('PASS activate cleanup removed the old versioned cache and re-registered the current shell');
@@ -346,7 +346,7 @@ try {
   assert.equal(onlineConversion.error, null, onlineConversion.error);
   assert.ok(onlineConversion.report.merge.mergedSamples > 0);
   const runtimeKeys = await client.evaluate(`(async () => {
-    const cache = await caches.open('m4shlab-runtime-v16');
+    const cache = await caches.open('m4shlab-runtime-v17');
     return (await cache.keys()).map(request => request.url);
   })()`);
   assert.ok(runtimeKeys.some(url => url.endsWith('/converter-worker.js')), 'conversion worker was not runtime-cached');
@@ -393,7 +393,7 @@ try {
   assert.equal(offlineConversion.report.sources.b.conversion.decodeEngine, 'ffmpeg.wasm');
   assert.ok(offlineConversion.report.merge.mergedSamples > 0);
   assert.match(offlineConversion.status, /samples/);
-  await client.evaluate("document.querySelector('#show-modified').click()");
+  await client.evaluate("document.querySelector('#assemble-preview').click()");
   await client.waitFor("document.querySelector('#preview-video').readyState >= 2 || document.querySelector('#preview-video').error", 20000);
   const playback = await client.evaluate(`({
     error: document.querySelector('#preview-video').error?.code ?? null,

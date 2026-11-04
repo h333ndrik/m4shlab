@@ -46,26 +46,21 @@ const sourceTiers = document.querySelector('#source-tiers');
 const sequenceLabel = document.querySelector('#sequence-label');
 const dropZone = document.querySelector('#drop-zone');
 const error = document.querySelector('#error');
-const conversionPanel = document.querySelector('#conversion-panel');
-const conversionStatus = document.querySelector('#conversion-status');
-const conversionMessage = document.querySelector('#conversion-message');
 const conversionProgress = document.querySelector('#conversion-progress');
-const conversionProgressB = document.querySelector('#conversion-progress-b');
-const conversionProgressBRow = document.querySelector('#conversion-progress-b-row');
-const originalButton = document.querySelector('#show-original');
-const modifiedButton = document.querySelector('#show-modified');
+const conversionStatus = document.querySelector('#conversion-status');
+const assemblePreviewButton = document.querySelector('#assemble-preview');
 const exportButton = document.querySelector('#export-button');
 const previewLabel = document.querySelector('#preview-label');
 const previewTime = document.querySelector('#preview-time');
 const soundToggle = document.querySelector('#sound-toggle');
 const AUDIO_PREFERENCE_KEY = 'm4shlab-audio';
-const reportPanel = document.querySelector('#report-panel');
 const report = document.querySelector('#report');
 const undoButton = document.querySelector('#undo-button');
 const redoButton = document.querySelector('#redo-button');
 const coarsePointerQuery = window.matchMedia('(pointer: coarse)');
 const transitionDialog = document.querySelector('#transition-dialog');
-const transitionTitle = document.querySelector('#transition-title');
+const transitionSubtitle = document.querySelector('#transition-subtitle');
+const transitionMethod = document.querySelector('#transition-method');
 const transitionApply = document.querySelector('#transition-apply');
 const transitionRandomize = document.querySelector('#transition-randomize');
 const transitionSeed = document.querySelector('#transition-seed');
@@ -93,6 +88,10 @@ let clips = [];
 let nextClipId = 1;
 let draggedClipId = null;
 let importInFlight = 0;
+let previewedClipId = null;
+let previewAssembled = false;
+let conversionTotal = 0;
+let conversionFinished = 0;
 let merged = null;
 let refreshToken = 0;
 let importToken = 0;
@@ -255,10 +254,6 @@ function conversionEngine(clip) {
   return 'ffmpeg.wasm';
 }
 
-function encodingPath(conversion) {
-  return conversion?.encodeEngine === 'WebCodecs' ? 'encoded via WebCodecs' : 'encoded in wasm';
-}
-
 function decodingPath(conversion) {
   if (!conversion) return null;
   const source = conversion.origin ?? conversion;
@@ -287,11 +282,6 @@ function conversionPath(clip) {
       : `normalized via ${conversionEngine(clip)}${suffix}`;
   }
   return `${conversion.mode} via ${conversionEngine(clip)}${suffix}`;
-}
-
-function formatDuration(milliseconds) {
-  if (!Number.isFinite(milliseconds)) return '';
-  return milliseconds < 1000 ? `${Math.round(milliseconds)} ms` : `${(milliseconds / 1000).toFixed(1)} s`;
 }
 
 function clipReport(clip, index) {
@@ -452,20 +442,28 @@ function setError(message = '') {
   error.hidden = !message;
 }
 
-function setConversionProgress(progress, slot = null) {
-  if (slot !== 'a' && slot !== 'b') return;
-  const bar = slot === 'b' ? conversionProgressB : conversionProgress;
-  const row = slot === 'b' ? conversionProgressBRow : conversionProgress.closest('.conversion-progress-row');
-  row.hidden = false;
-  if (progress === null || !Number.isFinite(progress)) bar.removeAttribute('value');
-  else bar.value = Math.max(0, Math.min(1, progress));
+function beginConversionProgress(total = clips.length) {
+  conversionTotal = Math.max(1, Number(total) || 1);
+  conversionFinished = 0;
 }
 
-function showConversion(label, state, message, progress = null, slot = null) {
-  conversionPanel.hidden = false;
-  conversionStatus.textContent = `${label} · ${state}`;
-  conversionMessage.textContent = message;
-  if (slot) setConversionProgress(progress, slot);
+function updateConversionStatus(label = 'clips') {
+  if (/audio/i.test(label)) {
+    conversionStatus.textContent = 'preparing audio…';
+    return;
+  }
+  conversionStatus.textContent = `normalizing clips… ${Math.min(conversionFinished, conversionTotal)} of ${conversionTotal}`;
+}
+
+function showConversion(label, state) {
+  conversionProgress.hidden = false;
+  if (state === 'failed') conversionStatus.textContent = 'conversion failed';
+  else updateConversionStatus(label);
+}
+
+function advanceConversionProgress() {
+  conversionFinished = Math.min(conversionTotal, conversionFinished + 1);
+  if (!conversionProgress.hidden) updateConversionStatus();
 }
 
 function progressSlot(index) {
@@ -576,8 +574,7 @@ function renderClipCard(index, clip) {
   const detail = document.createElement('span');
   detail.className = 'clip-detail';
   const duration = clipDurationSeconds(clip);
-  detail.textContent = `${duration === null ? 'video' : `${duration.toFixed(2)} s`} · ${clipMode(clip)}`;
-  detail.title = conversionPath(clip);
+  detail.textContent = duration === null ? 'video' : `${duration.toFixed(2)} s`;
 
   const lookControl = document.createElement('label');
   lookControl.className = 'clip-look';
@@ -648,6 +645,22 @@ function renderClipCard(index, clip) {
     controls.append(button);
   }
 
+  card.tabIndex = 0;
+  card.setAttribute('aria-label', `Preview ${clip.file.name}`);
+  card.addEventListener('click', event => {
+    if (event.target instanceof Element && event.target.closest('button, input, select, label, a')) return;
+    previewClip(index);
+  });
+  card.addEventListener('keydown', event => {
+    if (event.target !== card || (event.key !== 'Enter' && event.key !== ' ')) return;
+    event.preventDefault();
+    previewClip(index);
+  });
+  if (!previewAssembled && clip.id === previewedClipId) {
+    card.classList.add('is-previewing');
+    card.setAttribute('aria-current', 'true');
+  }
+
   card.append(thumb, name, detail, lookControl, speedControl, controls);
   wireClipDrag(card, clip, index);
   return card;
@@ -670,10 +683,10 @@ function renderConnector(index) {
       : (seconds === null ? 'incoming clip' : `${seconds.toFixed(2)} s`);
   } else if (incoming.transition === 'melt') {
     const effect = effectSettingsForClip(incoming);
-    duration.textContent = `${effect.durationSeconds.toFixed(2)} s · ${effect.repeat}× · ${effect.smooth ? 'gentler' : 'original'} · ${effect.ending}`;
+    duration.textContent = `${effect.durationSeconds.toFixed(2)} s · ${effect.ending}`;
   } else if (incoming.transition === 'loop') {
     const effect = effectSettingsForClip(incoming);
-    duration.textContent = `${effect.durationSeconds.toFixed(2)} s · ${effect.loopFrames}f · ${effect.smooth ? 'gentler' : 'original'} · ${effect.ending}`;
+    duration.textContent = `${effect.durationSeconds.toFixed(2)} s · ${effect.loopFrames}f`;
   } else if (incoming.transition === 'reset-pulse') {
     const effect = effectSettingsForClip(incoming);
     duration.textContent = `${effect.durationSeconds.toFixed(2)} s · ${effect.resetInterval}f / ${effect.repeat}×`;
@@ -709,23 +722,8 @@ function renderSourceTiers() {
 }
 
 function finishConversionPanel() {
-  const converted = clips.map((clip, index) => ({clip, index})).filter(item => item.clip.conversion);
-  if (converted.length === 0) {
-    conversionPanel.hidden = true;
-    return;
-  }
-  const allNormalized = converted.length === clips.length && clips.length > 1
-    && converted.every(item => item.clip.conversion.mode === 'normalized');
-  const engines = [...new Set(converted.map(item => conversionEngine(item.clip)))];
-  conversionStatus.textContent = `${allNormalized ? 'normalized' : 'converted'} via ${engines.join(' + ')}`;
-  conversionMessage.textContent = converted.map(({clip, index}) => {
-    const conversion = clip.conversion;
-    const decode = decodingPath(conversion);
-    return `${clipDisplayLabel(index)}: ${clip.file.name} → ${clip.mp4.videoTrack.width}×${clip.mp4.videoTrack.height} · ${decode ? `${decode} · ` : ''}${encodingPath(conversion)} · ${formatDuration(conversion.elapsedMs)}`;
-  }).join(' · ');
-  for (const {index} of converted) setConversionProgress(1, progressSlot(index));
-  conversionProgressBRow.hidden = !converted.some(item => item.index === 1);
-  conversionPanel.hidden = false;
+  conversionProgress.hidden = true;
+  conversionStatus.textContent = 'normalizing clips…';
 }
 
 function sequenceNormalizationReport() {
@@ -788,16 +786,27 @@ video.addEventListener('loadeddata', () => {
   emptyPreview.hidden = true;
 });
 
+function updatePreviewSelection() {
+  for (const card of sourceTiers.querySelectorAll('.clip-card')) {
+    const selected = !previewAssembled && card.dataset.clipId === previewedClipId;
+    card.classList.toggle('is-previewing', selected);
+    if (selected) card.setAttribute('aria-current', 'true');
+    else card.removeAttribute('aria-current');
+  }
+  assemblePreviewButton.setAttribute('aria-pressed', String(previewAssembled));
+}
+
 function resetMerged() {
   if (merged?.cutUrl) URL.revokeObjectURL(merged.cutUrl);
   if (merged?.mergedUrl) URL.revokeObjectURL(merged.mergedUrl);
   merged = null;
-  modifiedButton.disabled = true;
+  previewAssembled = false;
+  assemblePreviewButton.disabled = true;
   exportButton.disabled = true;
   exportButton.onclick = null;
 }
 
-function setPreview(url, label, version = null) {
+function setPreview(url, label) {
   previewTime.textContent = '0.00 / 0.00 s';
   video.muted = !soundEnabled;
   if (!url) {
@@ -808,46 +817,52 @@ function setPreview(url, label, version = null) {
   }
   video.src = url;
   previewLabel.textContent = label;
-  if (version) {
-    originalButton.setAttribute('aria-pressed', String(version === 'original'));
-    modifiedButton.setAttribute('aria-pressed', String(version === 'merged'));
-  }
 }
 
-function clipPreviewLabel() {
-  return clips[0] ? `Clip preview · ${clips[0].file.name}` : '—';
+function clipPreviewLabel(index = 0) {
+  const clip = clips[index];
+  return clip ? `Clip preview · ${clip.file.name}` : '—';
 }
 
 function assembledPreviewLabel() {
   return 'Assembled preview · all clips and transitions';
 }
 
-function showVersion(version) {
-  if (!merged) return;
-  const isMerged = version === 'merged';
+function previewClip(index) {
+  const clip = clips[index];
+  if (!clip) return;
   setError('');
-  setPreview(
-    isMerged ? merged.mergedUrl : merged.cutUrl,
-    isMerged ? assembledPreviewLabel() : clipPreviewLabel(),
-    isMerged ? 'merged' : 'original',
-  );
+  previewedClipId = clip.id;
+  previewAssembled = false;
+  setPreview(clip.url, clipPreviewLabel(index));
+  updatePreviewSelection();
+}
+
+function previewAssembledSequence() {
+  if (!merged) return;
+  setError('');
+  previewAssembled = true;
+  setPreview(merged.mergedUrl, assembledPreviewLabel());
+  updatePreviewSelection();
 }
 
 function updateSingleClipState() {
-  reportPanel.hidden = true;
   resetMerged();
   renderSourceTiers();
   finishConversionPanel();
-  originalButton.textContent = 'A cut';
-  originalButton.disabled = clips.length === 0;
-  modifiedButton.disabled = true;
+  assemblePreviewButton.disabled = true;
 
   if (clips.length === 1) {
-    setPreview(clips[0].url, clipPreviewLabel(), 'original');
+    previewClip(0);
     emptyPreview.hidden = true;
-    status.textContent = `${clips[0].file.name} loaded as clip A (${clipMode(clips[0])}) · add another clip to create a transition.`;
+    report.textContent = JSON.stringify({stage: 'source', sources: sourcesReport()}, null, 2);
+    status.textContent = `${clips[0].file.name} loaded as clip A · add another clip to create a transition.`;
   } else {
+    previewedClipId = null;
+    previewAssembled = false;
     setPreview(null);
+    updatePreviewSelection();
+    report.textContent = '';
     emptyPreview.hidden = false;
     emptyPreview.textContent = 'import clips to begin';
     status.textContent = 'No videos loaded.';
@@ -963,7 +978,7 @@ function randomMethodsForClip(clip) {
 }
 
 function updateRandomizeAvailability() {
-  const method = transitionDialog.querySelector('input[name="transition-method"]:checked')?.value;
+  const method = transitionMethod.value;
   const clip = clips[activeBoundary];
   const methods = randomMethodsForClip(clip);
   const enabled = method !== 'cut' && canRandomize({
@@ -980,7 +995,7 @@ function updateRandomizeAvailability() {
 }
 
 function updateTransitionOptionsVisibility() {
-  const method = transitionDialog.querySelector('input[name="transition-method"]:checked')?.value;
+  const method = transitionMethod.value;
   classicMoshOptions.hidden = method === 'cut';
   nalEffectOptions.hidden = method !== 'melt' && method !== 'loop';
   meltCadenceControl.hidden = method !== 'melt' && method !== 'loop';
@@ -997,7 +1012,7 @@ function updateTransitionDurationDisplay(custom = false) {
 }
 
 function updateEffectParameterDisplay() {
-  const method = transitionDialog.querySelector('input[name="transition-method"]:checked')?.value;
+  const method = transitionMethod.value;
   const value = Math.round(Number(effectParameter.value));
   effectParameterLabel.textContent = method === 'loop' ? 'loop frames' : 'repeat';
   effectParameterValue.textContent = method === 'loop' ? `${value} frames` : `${value}×`;
@@ -1056,8 +1071,7 @@ function openTransition(boundaryIndex) {
   activeBoundary = boundaryIndex;
   const clip = clips[boundaryIndex];
   const method = clip.transition;
-  const radio = transitionDialog.querySelector(`input[name="transition-method"][value="${method}"]`);
-  if (radio) radio.checked = true;
+  transitionMethod.value = method;
   const settings = moshSettingsForClip(clip);
   activeMoshFps = settings.fps;
   activeMoshMaximum = Math.max(1, settings.maximumFrames);
@@ -1075,22 +1089,21 @@ function openTransition(boundaryIndex) {
   updateTransitionDurationDisplay(false);
   setEffectParameterControl(method, clip);
   setResetPulseControls(method, clip);
-  transitionTitle.textContent = `${clipDisplayLabel(boundaryIndex - 1)} → ${clipDisplayLabel(boundaryIndex)}`;
+  transitionSubtitle.textContent = `${clips[boundaryIndex - 1].file.name} → ${clips[boundaryIndex].file.name}`;
   updateTransitionOptionsVisibility();
   transitionDialog.showModal();
 }
 
-for (const radio of transitionDialog.querySelectorAll('input[name="transition-method"]')) {
-  radio.addEventListener('change', () => {
-    clearRandomSeed();
-    if (clips[activeBoundary]?.transition !== radio.value) {
-      transitionEnding.value = radio.value === 'melt' || radio.value === 'loop' ? 'continue' : 'restore';
-    }
-    updateTransitionOptionsVisibility();
-    setEffectParameterControl(radio.value, clips[activeBoundary]);
-    setResetPulseControls(radio.value, clips[activeBoundary]);
-  });
-}
+transitionMethod.addEventListener('change', () => {
+  clearRandomSeed();
+  const method = transitionMethod.value;
+  if (clips[activeBoundary]?.transition !== method) {
+    transitionEnding.value = method === 'melt' || method === 'loop' ? 'continue' : 'restore';
+  }
+  updateTransitionOptionsVisibility();
+  setEffectParameterControl(method, clips[activeBoundary]);
+  setResetPulseControls(method, clips[activeBoundary]);
+});
 effectParameter.addEventListener('input', () => {
   clearRandomSeed();
   updateEffectParameterDisplay();
@@ -1131,9 +1144,10 @@ transitionRandomize.addEventListener('click', () => {
       fps: activeMoshFps,
       methods: randomMethodsForClip(clip),
     });
-    const radio = transitionDialog.querySelector(`input[name="transition-method"][value="${settings.method}"]`);
-    if (!radio) throw new Error(`Randomized method ${settings.method} is unavailable.`);
-    radio.checked = true;
+    if (![...transitionMethod.options].some(option => option.value === settings.method)) {
+      throw new Error(`Randomized method ${settings.method} is unavailable.`);
+    }
+    transitionMethod.value = settings.method;
     const randomizedClip = {
       ...clip,
       transition: settings.method,
@@ -1165,7 +1179,7 @@ transitionRandomize.addEventListener('click', () => {
 transitionApply.addEventListener('click', event => {
   event.preventDefault();
   if (activeBoundary === null) return;
-  const selected = transitionDialog.querySelector('input[name="transition-method"]:checked')?.value;
+  const selected = transitionMethod.value;
   if (!['cut', 'classic-mosh', 'melt', 'loop', 'reset-pulse'].includes(selected)) return;
   const current = clips[activeBoundary];
   const next = {
@@ -1305,6 +1319,7 @@ async function readClipFile(file, index, token) {
           fps: result.fps,
           outputSamples: result.outputSamples,
         };
+        advanceConversionProgress();
       } catch (hevcCause) {
         if (token !== importToken) return null;
         hevcFallbackReason = hevcCause instanceof Error ? hevcCause.message : String(hevcCause);
@@ -1325,6 +1340,7 @@ async function readClipFile(file, index, token) {
         sourceCodec: hevcCodec ? 'HEVC' : null,
         hevcWebCodecsFallbackReason: hevcFallbackReason,
       };
+      advanceConversionProgress();
     }
   }
 
@@ -1396,11 +1412,11 @@ async function importFilesInternal(fileList) {
   const selected = candidates.slice(0, available);
   const overflow = candidates.length - selected.length;
   const token = ++importToken;
+  beginConversionProgress(selected.length);
   const before = snapshotState();
   const baseIndex = clips.length;
   resetMerged();
   setError('');
-  reportPanel.hidden = true;
   status.textContent = `Reading ${selected.length} clip${selected.length === 1 ? '' : 's'}…`;
 
   const settled = await Promise.allSettled(selected.map((file, offset) => readClipFile(file, baseIndex + offset, token)));
@@ -1498,6 +1514,7 @@ async function mapWithConcurrency(items, limit, mapper) {
 
 async function normalizeAllClips(token, target) {
   const originals = clips.map(clip => ({...clip}));
+  beginConversionProgress(originals.length);
   let webcodecsFallbackReason = null;
   const speedPreparation = originals.some(clip => normalizeSpeed(clip.speed ?? 1) !== normalizeSpeed(clip.preparedSpeed ?? 1));
   const lookPreparation = originals.some(clip => normalizeLook(clip.look ?? 'original') !== normalizeLook(clip.preparedLook ?? 'original'));
@@ -1509,8 +1526,7 @@ async function normalizeAllClips(token, target) {
 
   if (isWebCodecsAvailable() && (renderPreparation || originals.every(clip => !clip.conversion))) {
     try {
-      for (const [index] of originals.entries()) setConversionProgress(null, progressSlot(index));
-      showConversion(`${clips.length} clips`, 'normalizing', `Normalizing clips in parallel with WebCodecs to one ${target.width}×${target.height}, 30 fps H.264 layout…`, null);
+      showConversion(`${clips.length} clips`, 'normalizing');
       const normalized = await mapWithConcurrency(originals, 2, async (clip, index) => {
         if (token !== refreshToken) return null;
         if (clip.file.size > MAX_CONVERSION_BYTES) {
@@ -1538,6 +1554,7 @@ async function normalizeAllClips(token, target) {
           },
         });
         const audio = await applySpeedToClipAudio(clip.baseAudio ?? clip.audio, result.outputFrames, speed, label);
+        advanceConversionProgress();
         return {result, sourceBytes: sourceBytes.byteLength, audio, cacheKey, sourceKey};
       });
       if (token !== refreshToken || normalized.some(item => !item)) return false;
@@ -1822,7 +1839,6 @@ async function refreshSequenceInternal() {
       sources: sourcesReport(),
       target,
     }, null, 2);
-    reportPanel.hidden = false;
     try {
       const normalized = await normalizeAllClips(token, target);
       if (!normalized || token !== refreshToken) return;
@@ -1842,12 +1858,10 @@ async function refreshSequenceInternal() {
     return;
   }
 
-  reportPanel.hidden = true;
-  originalButton.textContent = 'A cut';
-  originalButton.disabled = false;
-  modifiedButton.disabled = true;
+  assemblePreviewButton.disabled = true;
   exportButton.disabled = true;
-  setPreview(clips[0].url, clipPreviewLabel(), 'original');
+  const preferredPreview = clips.findIndex(clip => clip.id === previewedClipId);
+  previewClip(preferredPreview >= 0 ? preferredPreview : 0);
   emptyPreview.hidden = true;
   status.textContent = 'Preparing the sequence…';
 
@@ -1877,7 +1891,6 @@ async function refreshSequenceInternal() {
         .filter(item => !item.compatible),
       effectNormalizationBoundaries: effectFailures,
     }, null, 2);
-    reportPanel.hidden = false;
     status.textContent = `Normalizing clips to ${target.width}×${target.height}…`;
     try {
       const normalized = await normalizeAllClips(token, target);
@@ -1965,7 +1978,7 @@ async function refreshSequenceInternal() {
     const cutUrl = URL.createObjectURL(new Blob([result.cut], {type: 'video/mp4'}));
     const mergedUrl = URL.createObjectURL(new Blob([result.output], {type: 'video/mp4'}));
     merged = {result, cutUrl, mergedUrl};
-    modifiedButton.disabled = false;
+    assemblePreviewButton.disabled = false;
     exportButton.disabled = false;
     exportButton.onclick = () => {
       const link = document.createElement('a');
@@ -1973,7 +1986,7 @@ async function refreshSequenceInternal() {
       link.download = 'm4shlab-merge.mp4';
       link.click();
     };
-    showVersion('original');
+    previewClip(clips.findIndex(clip => clip.id === previewedClipId) >= 0 ? clips.findIndex(clip => clip.id === previewedClipId) : 0);
     const audioLabel = result.report.audio?.included ? 'video + AAC audio' : 'video only';
     status.textContent = `${clips.length} clips · ${result.report.mergedSamples} samples · ${result.report.mergedDurationSeconds.toFixed(2)} s · ${audioLabel}`;
     report.textContent = JSON.stringify({
@@ -2010,7 +2023,6 @@ async function refreshSequenceInternal() {
       cutByteIdentical: result.cut.byteLength === clips[0].bytes.byteLength
         && result.cut.every((value, index) => value === clips[0].bytes[index]),
     }, null, 2);
-    reportPanel.hidden = false;
   } catch (cause) {
     if (token !== refreshToken) return;
     status.textContent = 'No merged MP4 was produced.';
@@ -2040,8 +2052,7 @@ soundToggle.addEventListener('change', () => {
   setError('');
   if (clips.length > 1) refreshSequence();
 });
-originalButton.addEventListener('click', () => showVersion('original'));
-modifiedButton.addEventListener('click', () => showVersion('merged'));
+assemblePreviewButton.addEventListener('click', previewAssembledSequence);
 undoButton.addEventListener('click', undoTimeline);
 redoButton.addEventListener('click', redoTimeline);
 coarsePointerQuery.addEventListener?.('change', syncClipDragState);

@@ -6,7 +6,7 @@
 
 ## Release feature overview
 
-- **Timeline editor:** import and arrange up to 12 clips, reorder by dragging cards on fine-pointer devices or with the arrow buttons, remove clips, undo/redo timeline edits, and preview either the first cut or the complete chained result.
+- **Timeline editor:** import and arrange up to 12 clips, reorder by dragging cards on fine-pointer devices or with the arrow buttons, remove clips, and undo/redo timeline edits. Click any card to preview that clip, or use **Assemble preview** for the complete chained result.
 - **Seven transition methods:** Cut plus six mosh variants: Classic Mosh; Melt Original; Melt Gentler; Loop Release Original; Loop Release Gentler; Reset Pulse. Every mosh variant exposes frame-quantized duration and Restore/Continue ending controls.
 - **Gentler cadence:** Melt bounds donor advances to two frames before its release point and uses consecutive donors for the final quarter. Loop Release bridges the 3×→2× and release-tail jumps with donor advances of at most two frames while preserving the repeated block wraps. Both keep the selected window, video frame count, and audio timeline exact.
 - **Per-clip speed:** every timeline entry has an independent 0.1×–4.0× control in 0.1× steps and Reset. Speed uses one WebCodecs frame-mapping/normalization pass at 30 fps; audio follows through a chained ffmpeg.wasm `atempo` path with pitch preserved and an exact sample count.
@@ -25,7 +25,7 @@ Automatic sequence normalization starts when native compatibility fails. All cli
 npm start
 ```
 
-Open `http://127.0.0.1:4173`, choose up to 12 clips with **Import clips**, or drop them onto the timeline. Use the card arrows or drag a card onto the left/right half of another card (fine pointer only) to reorder, the remove buttons to edit the sequence, the per-card look selector, the speed slider for 0.1×–4.0×, and undo/redo for timeline and look changes. The transition dialog can generate a reproducible seeded random mosh variant. Click each dashed connector to choose **Cut**, **Classic Mosh**, **Melt**, **Loop Release** or **Reset Pulse**. Every non-Cut method exposes duration and ending controls; Melt adds a repeat factor and Original/Gentler movement selector, Loop Release a group length, and Reset Pulse its interval and P-repeat. Switch between the first-clip cut and the full merged sequence; the preview row shows its live time and the **Sound on** toggle controls preview audio and merged-export audio. Validation and normalization happen in the background, and only a blocking error is surfaced. Play from the start for the clearest result. Export downloads `m4shlab-merge.mp4` with the full sequence and source audio when available.
+Open `http://127.0.0.1:4173`, choose up to 12 clips with **+ Import videos**, or drop them onto the timeline. Use the card arrows or drag a card onto the left/right half of another card (fine pointer only) to reorder, the remove buttons to edit the sequence, the per-card look selector, the speed slider for 0.1×–4.0×, and undo/redo for timeline and look changes. The transition dialog can generate a reproducible seeded random mosh variant. Click each dashed connector to open the **Transition** dialog and choose a method from the **Method** select. Every non-Cut method exposes duration and ending controls; Melt adds a repeat factor and Original/Gentler movement selector, Loop Release a group length, and Reset Pulse its interval and P-repeat. Click any clip card to restore its single-clip preview, or use **Assemble preview** for the full sequence. The preview row shows its live time and the **Sound on** toggle controls preview audio and merged-export audio. Validation and normalization happen in the background, and only a blocking error is surfaced. Play from the start for the clearest result. Export downloads `m4shlab-merge.mp4` with the full sequence and source audio when available.
 
 The Phase A single-clip transfer remains available through `mosh.js` and its unchanged test chain.
 
@@ -41,7 +41,7 @@ Service workers require HTTPS or `localhost`; GitHub Pages provides HTTPS automa
 
 The first load must reach the network so the manifest and versioned app shell can be cached. After that the UI starts offline. Import, Classic Mosh, preview, and export are local operations and continue to work without a network. New-format conversion needs the ffmpeg.wasm core; the first conversion downloads it, then `converter-worker.js`, `ffmpeg-core.js`, and `ffmpeg-core.wasm` stay in the runtime cache. The OS may evict that cache under storage pressure, in which case conversion needs network again.
 
-The current cache version is `v16` (`m4shlab-v16` plus `m4shlab-runtime-v16`). Bump `VERSION` in `sw.js` whenever app-shell or conversion-worker files change. Activation deletes older versioned caches, including the old runtime cache, so the worker cannot run stale code.
+The current cache version is `v17` (`m4shlab-v17` plus `m4shlab-runtime-v17`). Bump `VERSION` in `sw.js` whenever app-shell or conversion-worker files change. Activation deletes older versioned caches, including the old runtime cache, so the worker cannot run stale code.
 
 ## Supported formats
 
@@ -80,7 +80,7 @@ The `m4` wordmark follows the sibling h4moshlab typographic system: Arial/Helvet
 
 The timeline heading uses title-case `Sequence` in markup; shared section-label CSS presents it in uppercase. The empty state keeps the explicit `0.00 / 0.00 s` readout and renders the disabled primary export button as a high-contrast neutral control rather than a faint action.
 
-The page follows the h4moshlab visual language: a light radial-gradient background, centered 1000px layout, compact bordered controls, a large dark preview well, and a horizontal clip timeline. Clip cards show a thumbnail, filename, duration, format status, a per-entry look selector, a 0.1×–4.0× speed slider with Reset, active reorder arrows, HTML5 drag-and-drop reordering on fine-pointer devices, and a remove button; undo/redo restores timeline, look, and speed edits. Each dashed connector names its boundary method and opens a dialog with **Cut**, **Classic Mosh**, **Melt**, **Loop Release** and **Reset Pulse**. All non-Cut methods share duration and ending controls; Melt adds a 2–12 repeat slider, Loop Release a 2–48-frame group slider, and both expose an Original/Gentler movement selector; Reset Pulse has 4–48-frame interval plus 2–12 P-repeat sliders. The first card is the preview cut; the export is the full chained result. Compatibility criteria, badges, and SPS/PPS hashes are not rendered. Under 600px the header and preview actions stack and touch controls meet the 44px target.
+The page follows the h4moshlab visual language: a light radial-gradient background, centered 1000px layout, compact bordered controls, a large dark preview well, and a horizontal clip timeline. Clip cards show a thumbnail, filename, duration, a per-entry look selector, a 0.1×–4.0× speed slider with Reset, active reorder arrows, HTML5 drag-and-drop reordering on fine-pointer devices, and a remove button; undo/redo restores timeline, look, and speed edits. Each dashed connector shows the method, duration in seconds, and the supported ending or interval/group shorthand, and opens the **Transition** dialog with a **Method** select. All non-Cut methods share duration and ending controls; Melt adds a 2–12 repeat slider, Loop Release a 2–48-frame group slider, and both expose an Original/Gentler movement selector; Reset Pulse has 4–48-frame interval plus 2–12 P-repeat sliders. Clicking a card previews that clip; **Assemble preview** shows the full chained result. Compatibility criteria, badges, and SPS/PPS hashes are not rendered. Under 600px the header and preview actions stack and touch controls meet the 44px target.
 
 ## What it does
 
@@ -90,7 +90,7 @@ The page follows the h4moshlab visual language: a light radial-gradient backgrou
 2. A native sequence with any incompatible or differing boundary enters a visible **normalizing clips…** state instead of showing a final incompatibility verdict. All clips are normalized to the shared capped target and checked again.
 3. Native H.264 normalization reuses parsed samples and `avcC`, decodes with `VideoDecoder`, scales/letterboxes through a canvas, converts to limited-range I420, and encodes every sequence member with `VideoEncoder` using identical settings.
 4. HEVC first tries a native `VideoDecoder` path using parsed `hvcC`; other codecs and unsupported HEVC configurations use ffmpeg.wasm for decode. If WebCodecs H.264 encoding is available, ffmpeg.wasm emits a capped Y4M stream and WebCodecs performs the encode; otherwise the complete encode stays in the WASM worker. Reports distinguish `decoded via WebCodecs (HEVC)` from `decoded via ffmpeg.wasm`.
-5. The UI and JSON report name decode path, encode path, target, parallel execution, fallback reason, and duration for every clip. Compatibility is checked again on the converted bytes before preview and chained merge, without rendering a criteria table.
+5. The JSON report names decode path, encode path, target, parallel execution, fallback reason, and duration for every clip. The main UI shows only a compact `normalizing clips… n of m` line with one indeterminate bar while work is active; it disappears when conversion finishes. Clip cards show duration only, never codec-path text. Compatibility is checked again on the converted bytes before preview and chained merge, without rendering a criteria table.
 
 ### HEVC decode path
 
@@ -127,7 +127,7 @@ A non-Original look forces WebCodecs preparation from the clip's base imported b
 
 The preview-meta row has a **Sound on** checkbox, checked by default. Its state is stored under the localStorage key `m4shlab-audio`; unchecking mutes the preview video and skips audio preparation and the AAC mux step entirely. The merged export is then video-only, and `merge.audio` / the top-level report carry `included: false`, `enabled: false`, and the reason. Re-enabling sound rebuilds the merged file with the existing timeline-aligned AAC path.
 
-A `0.00 / 0.00 s` readout follows `timeupdate`, `durationchange`, and metadata events for whichever preview is active. A selected source is labelled `Clip preview · <filename>`; the chained result is labelled `Assembled preview · all clips and transitions`.
+A `0.00 / 0.00 s` readout follows `timeupdate`, `durationchange`, and metadata events for whichever preview is active. Clicking a clip card selects it and labels the preview `Clip preview · <filename>`. **Assemble preview** switches to the chained result and labels it `Assembled preview · all clips and transitions`; clicking a card returns to that clip.
 
 ### Phase C: WebCodecs normalization
 
@@ -140,7 +140,7 @@ A `0.00 / 0.00 s` readout follows `timeupdate`, `durationchange`, and metadata e
 
 ### Hybrid and parallel conversion
 
-1. Sequence conversion starts up to two ffmpeg.wasm workers when incompatible clips are converted through WASM. The pair UI exposes separate A and B progress bars; the report lists every converted clip and path.
+1. Sequence conversion starts up to two ffmpeg.wasm workers when incompatible clips are converted through WASM. The UI shows one compact normalizing count and one indeterminate bar; the JSON report lists every converted clip and path.
 2. ffmpeg.wasm decode writes capped `yuv420p` Y4M frames locally. WebCodecs encodes those frames as H.264 and the existing MP4 muxer assembles the result, avoiding full-resolution software x264 work.
 3. If WebCodecs encoding is unavailable or fails, the same file is retried entirely in the ffmpeg.wasm encoder. The report records `encodeEngine: "WebCodecs"` or `"ffmpeg.wasm"` and any hybrid fallback reason.
 
@@ -176,7 +176,7 @@ A `0.00 / 0.00 s` readout follows `timeupdate`, `durationchange`, and metadata e
 5. Melt/Loop Release/Reset Pulse reschedule complete samples, then renumber non-IDR slice headers sequentially with RBSP/EBSP-safe writes. `frame_num` resets after retained IDRs; type-0 POC-LSB values advance per emitted sample and avoid a POC collision at restart.
 6. Later IDRs in every appended clip remain as reference anchors and reset local GOP numbering naturally. Melt, Loop Release and Reset Pulse require both adjacent clips to be free of B-frame reordering; the app normalizes native B-frame sources first.
 7. The sample table is rebuilt once per boundary from the running sequence. `stsz`, `stco`, `stsc`, `stts`, `ctts`, and track/movie durations describe the final chain.
-8. The report records clip count, per-boundary methods, effect schedules, duration frames, ending, clamped values, reinserted IDR positions, source and merged sample counts, expected decoded frames, retained NAL identity, and normalization paths. The preview cut shows clip 1 only; the merged preview and export contain the full sequence.
+8. The report records clip count, per-boundary methods, effect schedules, duration frames, ending, clamped values, reinserted IDR positions, source and merged sample counts, expected decoded frames, retained NAL identity, and normalization paths. Clicking a card previews that source; **Assemble preview** and the export contain the full sequence.
 
 ### Audio in merged exports
 
@@ -295,11 +295,12 @@ PASS WebCodecs emitted keyframes at samples 1, 31, and 61; the multi-GOP merge r
 PASS Safari-style POC type 0 multi-GOP pair merges in the browser and clears stale errors
 PASS mobile layout stacks under 600px and keeps 44px touch targets on the scrolling timeline
 PASS blocking merge errors stay short and do not render a compatibility panel
-PASS large native mismatch auto-normalized to 540x720; UI showed the normalizing state and merge produced 49 samples
+PASS large native mismatch auto-normalized to 540x720; the compact normalizing line disappeared and merge produced 49 samples
 PASS transition dialog exposes Classic/Reset duration, Melt/Loop, and Reset Pulse interval/repeat controls
 PASS multi-file import normalized 3 clips to 540x720, exposed two Cut/Classic Mosh boundary dialogs, and merged 74 samples
 PASS clip drag-and-drop reorders in both directions, shows CSS feedback, self-drop is inert, and undo restores order
 PASS touch cards stay non-draggable while arrow reorder works; desktop drag returns after pointer reset
+PASS clip-card and Assemble preview selection replace the removed A cut/merged toggle; time readout and sound defaults remain
 PASS timeline reorder, remove, and full undo restores the three-clip order and merged preview
 PASS full three-clip export decodes 74 frames at 540x720; Cut + Classic Mosh NAL sequence and preview are intact
 PASS browser Gentler Loop bridges to the release tail with <=2 donor advances and decodes 99 samples
@@ -308,7 +309,7 @@ PASS selecting Melt on native B-frame clips auto-normalizes both sources before 
 PASS audio merge exports AAC 48000 Hz/2ch, 94080 expected samples, runtime-matched duration, encode=WebCodecs, mux=ffmpeg.wasm
 PASS AudioEncoder unavailable: PCM encoded in ffmpeg.wasm and merged audio reports delay=1024 samples
 PASS Randomize creates a 16-hex seed, manual edits clear it, and random_seed persists in the boundary report
-PASS HEVC import ran ffmpeg.wasm decode plus WebCodecs H.264 encode at 320x240; both progress bars completed and export decoded
+PASS HEVC import ran ffmpeg.wasm decode plus WebCodecs H.264 encode at 320x240; the compact conversion status completed and export decoded
 PASS native HEVC decoded via WebCodecs and merged 49 samples through the unchanged H.264 path
 PASS WebCodecs unavailable: HEVC import names the ffmpeg.wasm decode fallback and produces a playable converted clip
 PASS 2× + 0.5× clips merge to 150/150 frames and 240000 exact audio samples at 30 fps
@@ -341,6 +342,16 @@ Verification includes synthetic fixtures, two real iPhone MOVs, and headless Chr
 PWA installation and offline reload are verified in headless Chrome against `localhost`. iOS Home Screen launch, standalone safe-area behavior, and OS cache eviction still need a physical-device check.
 
 The reported `IMG_4767.mov` and `final_0.mov` were not available in this workspace, so the Safari encoder shape is covered by a generated POC type 0 fixture. The actual pair still needs a final iPhone retest.
+
+## Technical limits
+
+Normalization keeps the long side at or below 720 pixels. This is intentionally lossy for larger sources, but it substantially reduces memory and encode time without removing the bitstream reference-loss effect. Same-aspect inputs are scaled proportionally; different aspects are letterboxed into one shared target.
+
+WebCodecs is the preferred decode/encode path for supported H.264 and HEVC inputs. The browser selects the implementation, so hardware acceleration and codec/profile support are not guaranteed. ffmpeg.wasm is loaded lazily as the fallback for unsupported codecs or browser configurations. Parallel sequence conversion starts up to two workers; the 100 MB input limit is a soft product limit, not a guarantee that a file fits device memory.
+
+iOS Safari has stricter memory behavior than desktop browsers. Large ffmpeg.wasm conversions can still be terminated under memory pressure, and the OS may evict the runtime cache or PWA storage. The merged audio path uses the first track only, at 48 kHz stereo; it is not audio moshing.
+
+Multi-GOP type 0/1 alignment is accepted only when there are no B-slices and no non-zero composition reordering. Genuinely reordered streams fail explicitly. Video normalization intentionally removes B-frames; it is not a general-purpose transcoder.
 
 ## Honest limits
 

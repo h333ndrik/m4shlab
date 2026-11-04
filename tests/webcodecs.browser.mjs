@@ -253,6 +253,11 @@ try {
     return {
       time: document.querySelector('#preview-time').textContent,
       heading: document.querySelector('#source-heading').textContent,
+      header: document.querySelector('header h1').textContent,
+      tagline: document.querySelector('header p'),
+      importLabel: document.querySelector('.file-actions .button').textContent.trim(),
+      footer: document.querySelector('.limits p').textContent,
+      legacyReport: document.querySelector('#report-panel, .report-panel'),
       disabled: button.disabled,
       background: style.backgroundColor,
       color: style.color,
@@ -262,6 +267,11 @@ try {
   })()`);
   assert.equal(emptyState.time, '0.00 / 0.00 s');
   assert.equal(emptyState.heading, 'Sequence');
+  assert.equal(emptyState.header, 'm4shlab');
+  assert.equal(emptyState.tagline, null);
+  assert.equal(emptyState.importLabel, '+ Import videos');
+  assert.equal(emptyState.footer, 'Real H.264 bitstream editing · max 720px · 30 fps · originals untouched');
+  assert.equal(emptyState.legacyReport, null);
   assert.equal(emptyState.disabled, true);
   assert.equal(emptyState.background, 'rgb(226, 225, 221)');
   assert.equal(emptyState.color, 'rgb(119, 118, 112)');
@@ -441,15 +451,20 @@ try {
       error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
       states: window.__uiStates,
       compatibilityMarkup: document.querySelector('#compatibility-panel, #compatibility-status, .compatibility-table'),
-      conversionStatus: document.querySelector('#conversion-status').textContent,
-      progressA: document.querySelector('#conversion-progress').value,
-      progressB: document.querySelector('#conversion-progress-b').value,
+      conversionHidden: document.querySelector('#conversion-progress').hidden,
+      conversionMessage: document.querySelector('#conversion-message'),
+      progressBars: document.querySelectorAll('.conversion-progress progress').length,
+      clipDetails: [...document.querySelectorAll('.clip-card .clip-detail')].map(node => node.textContent),
       report: reportNode.textContent ? JSON.parse(reportNode.textContent) : null,
     };
   })()`);
   assert.equal(largePair.error, null, largePair.error || 'large native pair did not normalize');
   assert.equal(largePair.compatibilityMarkup, null, 'Compatibility UI must not exist');
-  assert.ok(largePair.states.some(state => /normaliz/i.test(state)), 'UI never exposed the normalizing state');
+  assert.ok(largePair.states.some(state => /normalizing clips… \d of 2/.test(state)), 'UI never exposed the clip-count normalizing state');
+  assert.equal(largePair.conversionHidden, true, 'conversion status must disappear when normalization finishes');
+  assert.equal(largePair.conversionMessage, null, 'technical conversion copy must not be rendered');
+  assert.equal(largePair.progressBars, 1, 'one indeterminate conversion bar is allowed');
+  assert.ok(largePair.clipDetails.every(text => /^\d+\.\d{2} s$/.test(text)), `clip cards must not show conversion paths: ${largePair.clipDetails}`);
   assert.equal(largePair.report.normalization.autoNormalized, true);
   assert.equal(largePair.report.normalization.parallel, true);
   assert.deepEqual(largePair.report.normalization.target, {width: 540, height: 720});
@@ -458,9 +473,7 @@ try {
   assert.equal(largePair.report.sources.a.conversion.encodeEngine, 'WebCodecs', largePair.report.sources.a.conversion.webcodecsFallbackReason || 'Clip A did not use WebCodecs');
   assert.equal(largePair.report.sources.b.conversion.encodeEngine, 'WebCodecs', largePair.report.sources.b.conversion.webcodecsFallbackReason || 'Clip B did not use WebCodecs');
   assert.ok(largePair.report.merge.mergedSamples > 0);
-  assert.equal(largePair.progressA, 1);
-  assert.equal(largePair.progressB, 1);
-  console.log(`PASS large native mismatch auto-normalized to ${largePair.report.normalization.target.width}x${largePair.report.normalization.target.height}; UI showed the normalizing state and merge produced ${largePair.report.merge.mergedSamples} samples`);
+  console.log(`PASS large native mismatch auto-normalized to ${largePair.report.normalization.target.width}x${largePair.report.normalization.target.height}; the compact normalizing line disappeared and merge produced ${largePair.report.merge.mergedSamples} samples`);
 
   await client.send('Page.navigate', {url: `${baseUrl}?multi-timeline=1`});
   await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
@@ -496,7 +509,12 @@ try {
     const duration = document.querySelector('#transition-duration');
     return {
       open: document.querySelector('#transition-dialog').open,
-      methods: [...document.querySelectorAll('#transition-dialog input[name="transition-method"]')].map(input => input.value),
+      title: document.querySelector('#transition-title').textContent,
+      subtitle: document.querySelector('#transition-subtitle').textContent,
+      methodLabel: document.querySelector('label[for="transition-method"]').textContent,
+      method: document.querySelector('#transition-method').value,
+      methods: [...document.querySelectorAll('#transition-method option')].map(option => option.value),
+      technicalNotes: document.querySelectorAll('#transition-dialog .mosh-control-note').length,
       classicHidden: document.querySelector('#classic-mosh-options').hidden,
       effectHidden: document.querySelector('#nal-effect-options').hidden,
       endingOptions: [...document.querySelectorAll('#transition-ending option')].map(option => option.textContent),
@@ -509,7 +527,12 @@ try {
     };
   })()`);
   assert.equal(dialogMethods.open, true);
+  assert.equal(dialogMethods.title, 'Transition');
+  assert.match(dialogMethods.subtitle, /^.+ → .+$/);
+  assert.equal(dialogMethods.methodLabel, 'Method');
+  assert.equal(dialogMethods.method, 'classic-mosh');
   assert.deepEqual(dialogMethods.methods, ['cut', 'classic-mosh', 'melt', 'loop', 'reset-pulse']);
+  assert.equal(dialogMethods.technicalNotes, 0);
   assert.equal(dialogMethods.classicHidden, false);
   assert.equal(dialogMethods.effectHidden, true);
   assert.deepEqual(dialogMethods.endingOptions, ['Restore clear image', 'Continue motion']);
@@ -524,7 +547,7 @@ try {
     button.click();
     const seeded = {
       seedText: document.querySelector('#transition-seed').textContent,
-      method: document.querySelector('#transition-dialog input[name="transition-method"]:checked').value,
+      method: document.querySelector('#transition-method').value,
       duration: Number(document.querySelector('#transition-duration').value),
       ending: document.querySelector('#transition-ending').value,
       mode: document.querySelector('#transition-duration-mode').textContent,
@@ -575,9 +598,9 @@ try {
     const ending = document.querySelector('#transition-ending');
     ending.value = 'continue';
     ending.dispatchEvent(new Event('change', {bubbles: true}));
-    const melt = document.querySelector('#transition-dialog input[value="melt"]');
-    melt.checked = true;
-    melt.dispatchEvent(new Event('change', {bubbles: true}));
+    const method = document.querySelector('#transition-method');
+    method.value = 'melt';
+    method.dispatchEvent(new Event('change', {bubbles: true}));
     const effect = document.querySelector('#effect-parameter');
     const meltState = {
       classicHidden: document.querySelector('#classic-mosh-options').hidden,
@@ -591,9 +614,8 @@ try {
       value: Number(effect.value),
       valueText: document.querySelector('#effect-parameter-value').textContent,
     };
-    const loop = document.querySelector('#transition-dialog input[value="loop"]');
-    loop.checked = true;
-    loop.dispatchEvent(new Event('change', {bubbles: true}));
+    method.value = 'loop';
+    method.dispatchEvent(new Event('change', {bubbles: true}));
     const loopState = {
       classicHidden: document.querySelector('#classic-mosh-options').hidden,
       ending: document.querySelector('#transition-ending').value,
@@ -604,9 +626,8 @@ try {
       value: Number(effect.value),
       valueText: document.querySelector('#effect-parameter-value').textContent,
     };
-    const reset = document.querySelector('#transition-dialog input[value="reset-pulse"]');
-    reset.checked = true;
-    reset.dispatchEvent(new Event('change', {bubbles: true}));
+    method.value = 'reset-pulse';
+    method.dispatchEvent(new Event('change', {bubbles: true}));
     const resetState = {
       classicHidden: document.querySelector('#classic-mosh-options').hidden,
       effectHidden: document.querySelector('#nal-effect-options').hidden,
@@ -618,9 +639,8 @@ try {
       repeatMax: Number(document.querySelector('#reset-repeat').max),
       repeatValue: Number(document.querySelector('#reset-repeat').value),
     };
-    const cut = document.querySelector('#transition-dialog input[value="cut"]');
-    cut.checked = true;
-    cut.dispatchEvent(new Event('change', {bubbles: true}));
+    method.value = 'cut';
+    method.dispatchEvent(new Event('change', {bubbles: true}));
     return {
       valueText: document.querySelector('#transition-duration-value').textContent,
       mode: document.querySelector('#transition-duration-mode').textContent,
@@ -671,13 +691,14 @@ try {
     connectors: [...document.querySelectorAll('.connector')].map(node => node.textContent),
     methods: JSON.parse(document.querySelector('#report').textContent).merge.methods,
     mergedSamples: JSON.parse(document.querySelector('#report').textContent).merge.mergedSamples,
-    modifiedEnabled: !document.querySelector('#show-modified').disabled,
+    assembleEnabled: !document.querySelector('#assemble-preview').disabled,
   }))()`);
-  assert.match(mixedTimeline.connectors[0], /Cut/);
-  assert.match(mixedTimeline.connectors[1], /Classic Mosh/);
+  assert.match(mixedTimeline.connectors[0], /^Cut\d+\.\d{2} s$/);
+  assert.match(mixedTimeline.connectors[1], /^Classic Mosh\d+\.\d{2} s · (restore|continue)$/);
+  assert.doesNotMatch(mixedTimeline.connectors[1], /original|gentler/);
   assert.deepEqual(mixedTimeline.methods, ['cut', 'classic-mosh']);
   assert.ok(mixedTimeline.mergedSamples > 0);
-  assert.equal(mixedTimeline.modifiedEnabled, true);
+  assert.equal(mixedTimeline.assembleEnabled, true);
   console.log(`PASS multi-file import normalized 3 clips to 540x720, exposed two Cut/Classic Mosh boundary dialogs, and merged ${mixedTimeline.mergedSamples} samples`);
 
   const originalOrder = multiInitial.cards;
@@ -805,7 +826,7 @@ try {
   assert.equal(historyState.error, null, historyState.error);
   console.log('PASS timeline reorder, remove, and full undo restores the three-clip order and merged preview');
 
-  await client.evaluate("document.querySelector('#show-modified').click()");
+  await client.evaluate("document.querySelector('#assemble-preview').click()");
   await client.waitFor("document.querySelector('#preview-video').readyState >= 2 || document.querySelector('#preview-video').error", 15000);
   const multiPlayback = await client.evaluate(`({
     error: document.querySelector('#preview-video').error?.code ?? null,
@@ -850,9 +871,9 @@ try {
   const applyEffect = async (method, value, options = {}) => {
     await client.evaluate(`(() => {
       document.querySelector('.connector').click();
-      const radio = document.querySelector('#transition-dialog input[value="${method}"]');
-      radio.checked = true;
-      radio.dispatchEvent(new Event('change', {bubbles: true}));
+      const methodSelect = document.querySelector('#transition-method');
+      methodSelect.value = '${method}';
+      methodSelect.dispatchEvent(new Event('change', {bubbles: true}));
       if (${JSON.stringify(method)} === 'melt' || ${JSON.stringify(method)} === 'loop') {
         const parameter = document.querySelector('#effect-parameter');
         parameter.value = '${value}';
@@ -898,7 +919,8 @@ try {
         effect: report.merge.effect,
         resetPulse: report.merge.resetPulse,
         patchedSamples: report.merge.frameAlignment.patchedSamples,
-        previewEnabled: !document.querySelector('#show-modified').disabled,
+        assembleEnabled: !document.querySelector('#assemble-preview').disabled,
+        connector: document.querySelector('.connector').textContent,
       };
     })()`);
   };
@@ -911,7 +933,8 @@ try {
   assert.equal(meltUi.effect.window.tail.donorStartSample, 7);
   assert.equal(meltUi.effect.scheduledSourceSamples.length, 80);
   assert.equal(meltUi.patchedSamples, 78);
-  assert.equal(meltUi.previewEnabled, true);
+  assert.equal(meltUi.assembleEnabled, true);
+  assert.match(meltUi.connector, /^Melt\d+\.\d{2} s · continue$/);
   const gentleUi = await applyEffect('melt', 2, {durationFrames: 12, ending: 'continue', smooth: true});
   assert.equal(gentleUi.error, null, gentleUi.error);
   assert.equal(gentleUi.method, 'melt');
@@ -923,7 +946,7 @@ try {
   assert.equal(gentleUi.effect.window.tail.donorStartSample, 13);
   assert.equal(gentleUi.effect.scheduledSourceSamples.length, 74);
   assert.equal(gentleUi.patchedSamples, 72);
-  assert.equal(gentleUi.previewEnabled, true);
+  assert.equal(gentleUi.assembleEnabled, true);
   const loopUi = await applyEffect('loop', 4, {durationFrames: 12, ending: 'continue'});
   assert.equal(loopUi.error, null, loopUi.error);
   assert.equal(loopUi.method, 'loop');
@@ -944,7 +967,8 @@ try {
   assert.deepEqual(gentleLoopUi.effect.loopSchedule.bridges, [{outputStart: 6, label: 'tail', frames: 3, fromDonor: 1, toDonor: 7}]);
   assert.equal(gentleLoopUi.effect.window.tail.donorStartSample, 13);
   assert.equal(gentleLoopUi.patchedSamples, 72);
-  assert.equal(gentleLoopUi.previewEnabled, true);
+  assert.equal(gentleLoopUi.assembleEnabled, true);
+  assert.match(gentleLoopUi.connector, /^Loop Release\d+\.\d{2} s · 4f$/);
   console.log('PASS browser Gentler Loop bridges to the release tail with <=2 donor advances and decodes 99 samples');
   const resetUi = await applyEffect('reset-pulse', null, {durationFrames: 12, interval: 6, repeat: 2});
   assert.equal(resetUi.error, null, resetUi.error);
@@ -954,8 +978,9 @@ try {
   assert.deepEqual(resetUi.resetPulse.patchCounts, [5, 5]);
   assert.equal(resetUi.resetPulse.tail.donorStartSample, 13);
   assert.equal(resetUi.patchedSamples, 70);
-  assert.equal(resetUi.previewEnabled, true);
-  await client.evaluate("document.querySelector('#show-modified').click()");
+  assert.equal(resetUi.assembleEnabled, true);
+  assert.match(resetUi.connector, /^Reset Pulse\d+\.\d{2} s · 6f \/ 2×$/);
+  await client.evaluate("document.querySelector('#assemble-preview').click()");
   await client.waitFor("document.querySelector('#preview-video').readyState >= 2 || document.querySelector('#preview-video').error", 15000);
   const effectPlayback = await client.evaluate(`({
     error: document.querySelector('#preview-video').error?.code ?? null,
@@ -1202,9 +1227,9 @@ try {
 
   await client.evaluate(`(() => {
     document.querySelector('.connector').click();
-    const cut = document.querySelector('#transition-dialog input[value="cut"]');
-    cut.checked = true;
-    cut.dispatchEvent(new Event('change', {bubbles: true}));
+    const method = document.querySelector('#transition-method');
+    method.value = 'cut';
+    method.dispatchEvent(new Event('change', {bubbles: true}));
     document.querySelector('#transition-apply').click();
   })()`);
   await client.waitFor(`(() => {
@@ -1427,16 +1452,18 @@ try {
       status: document.querySelector('#status').textContent,
       error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
       compatibilityMarkup: document.querySelector('#compatibility-panel, #compatibility-status, .compatibility-table'),
-      conversionStatus: document.querySelector('#conversion-status').textContent,
-      modifiedEnabled: !document.querySelector('#show-modified').disabled,
+      conversionHidden: document.querySelector('#conversion-progress').hidden,
+      conversionMessage: document.querySelector('#conversion-message'),
+      assembleEnabled: !document.querySelector('#assemble-preview').disabled,
       exportEnabled: !document.querySelector('#export-button').disabled,
       report: reportNode.textContent ? JSON.parse(reportNode.textContent) : null,
     };
   })()`);
   assert.equal(state.error, null, state.error);
   assert.equal(state.compatibilityMarkup, null, 'Compatibility UI must not exist');
-  assert.equal(state.conversionStatus, 'normalized via WebCodecs');
-  assert.equal(state.modifiedEnabled, true);
+  assert.equal(state.conversionHidden, true);
+  assert.equal(state.conversionMessage, null);
+  assert.equal(state.assembleEnabled, true);
   assert.equal(state.exportEnabled, true);
   assert.equal(state.report.sources.a.mode, 'normalized via WebCodecs');
   assert.equal(state.report.sources.b.mode, 'normalized via WebCodecs');
@@ -1464,11 +1491,29 @@ try {
   assert.match(clipPreview.time, /^0\.50 \/ 0\.[0-9]{2} s$/);
   assert.equal(clipPreview.soundChecked, true);
   assert.equal(clipPreview.muted, false);
-  await client.evaluate("document.querySelector('#show-modified').click()");
+  await client.evaluate("document.querySelector('#assemble-preview').click()");
   await client.waitFor("document.querySelector('#preview-video').readyState >= 2 || document.querySelector('#preview-video').error", 15000);
-  const assembledLabel = await client.evaluate("document.querySelector('#preview-label').textContent");
-  assert.equal(assembledLabel, 'Assembled preview · all clips and transitions');
-  console.log('PASS preview labels switch between filename clip view and assembled sequence; time readout tracks current/duration and sound defaults on');
+  const assembledLabel = await client.evaluate(`({
+    label: document.querySelector('#preview-label').textContent,
+    pressed: document.querySelector('#assemble-preview').getAttribute('aria-pressed'),
+    selectedCards: document.querySelectorAll('.clip-card.is-previewing').length,
+    oldToggle: document.querySelector('#show-original, #show-modified, .toggle'),
+  })`);
+  assert.equal(assembledLabel.label, 'Assembled preview · all clips and transitions');
+  assert.equal(assembledLabel.pressed, 'true');
+  assert.equal(assembledLabel.selectedCards, 0);
+  assert.equal(assembledLabel.oldToggle, null);
+  await client.evaluate("document.querySelectorAll('.clip-card')[1].click()");
+  await client.waitFor("document.querySelector('#preview-label').textContent === 'Clip preview · synthetic-b-mismatch.mp4'", 10000);
+  const selectedClipPreview = await client.evaluate(`({
+    label: document.querySelector('#preview-label').textContent,
+    pressed: document.querySelector('#assemble-preview').getAttribute('aria-pressed'),
+    selectedCard: document.querySelector('.clip-card.is-previewing .clip-name')?.textContent ?? null,
+  })`);
+  assert.equal(selectedClipPreview.label, 'Clip preview · synthetic-b-mismatch.mp4');
+  assert.equal(selectedClipPreview.pressed, 'false');
+  assert.equal(selectedClipPreview.selectedCard, 'synthetic-b-mismatch.mp4');
+  console.log('PASS clip-card and Assemble preview selection replace the removed A cut/merged toggle; time readout and sound defaults remain');
   const playback = await client.evaluate(`({
     readyState: document.querySelector('#preview-video').readyState,
     error: document.querySelector('#preview-video').error?.code ?? null,
@@ -1533,12 +1578,10 @@ try {
     const hybrid = await client.evaluate(`(() => {
       const reportNode = document.querySelector('#report');
       return {
-        conversionStatus: document.querySelector('#conversion-status').textContent,
-        conversionMessage: document.querySelector('#conversion-message').textContent,
+        conversionHidden: document.querySelector('#conversion-progress').hidden,
+        conversionMessage: document.querySelector('#conversion-message'),
         error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
-        progressA: document.querySelector('#conversion-progress').value,
-        progressB: document.querySelector('#conversion-progress-b').value,
-        progressBHidden: document.querySelector('#conversion-progress-b-row').hidden,
+        progressBars: document.querySelectorAll('.conversion-progress progress').length,
         report: reportNode.textContent ? JSON.parse(reportNode.textContent) : null,
       };
     })()`);
@@ -1551,10 +1594,10 @@ try {
     assert.ok(['WebCodecs (HEVC)', 'ffmpeg.wasm'].includes(sourceConversionB.decodeEngine));
     if (sourceConversionA.decodeEngine === 'ffmpeg.wasm') {
       assert.match(sourceConversionA.hevcWebCodecsFallbackReason, /HEVC configuration/i);
-      assert.match(hybrid.conversionMessage, /decoded via ffmpeg\.wasm/);
-    } else {
-      assert.match(hybrid.conversionMessage, /decoded via WebCodecs \(HEVC\)/);
     }
+    assert.equal(hybrid.conversionHidden, true);
+    assert.equal(hybrid.conversionMessage, null);
+    assert.equal(hybrid.progressBars, 1);
     assert.equal(hybrid.report.normalization.engines[0].sourceCodec, 'HEVC');
     assert.equal(hybrid.report.normalization.engines[1].sourceCodec, 'HEVC');
     assert.equal(hybrid.report.normalization.engines[0].decode, sourceConversionA.decodeEngine);
@@ -1562,9 +1605,6 @@ try {
     assert.equal(hybrid.report.normalization.autoNormalized, true);
     assert.equal(hybrid.report.normalization.parallel, true);
     assert.ok(Math.max(hybrid.report.normalization.target.width, hybrid.report.normalization.target.height) <= 720);
-    assert.equal(hybrid.progressA, 1);
-    assert.equal(hybrid.progressB, 1);
-    assert.equal(hybrid.progressBHidden, false);
     rmSync(hybridExportPath, {force: true});
     const downloadedHybrid = join(downloadDir, 'm4shlab-merge.mp4');
     rmSync(downloadedHybrid, {force: true});
@@ -1577,7 +1617,7 @@ try {
     ], 'hybrid conversion export probe');
     assert.match(hybridProbe.stdout, /codec_name=h264/);
     assert.ok(Number(/nb_read_frames=(\d+)/.exec(hybridProbe.stdout)?.[1] ?? 0) > 0);
-    console.log(`PASS HEVC import ran ${sourceConversionA.decodeEngine} decode plus WebCodecs H.264 encode at ${hybrid.report.normalization.target.width}x${hybrid.report.normalization.target.height}; both progress bars completed and export decoded`);
+    console.log(`PASS HEVC import ran ${sourceConversionA.decodeEngine} decode plus WebCodecs H.264 encode at ${hybrid.report.normalization.target.width}x${hybrid.report.normalization.target.height}; the compact conversion status completed and export decoded`);
 
     const nativeChrome = await launchChrome({disableGpu: false});
     if (nativeChrome) {
@@ -1604,8 +1644,7 @@ try {
             encodeEngine: source.encodeEngine,
             decoderCodec: source.decoderCodec,
             fallbackReason: source.hevcWebCodecsFallbackReason ?? null,
-            status: document.querySelector('#conversion-status').textContent,
-            message: document.querySelector('#conversion-message').textContent,
+            conversionHidden: document.querySelector('#conversion-progress').hidden,
             mergedSamples: report.merge.mergedSamples,
           };
         })()`);
@@ -1615,7 +1654,7 @@ try {
           assert.equal(nativeHevc.encodeEngine, 'WebCodecs');
           assert.match(nativeHevc.decoderCodec, /^hvc1\.|^hev1\./);
           assert.equal(nativeHevc.fallbackReason, null);
-          assert.match(nativeHevc.message, /decoded via WebCodecs \(HEVC\)/);
+          assert.equal(nativeHevc.conversionHidden, true);
           assert.ok(nativeHevc.mergedSamples > 0);
           console.log(`PASS native HEVC decoded via WebCodecs and merged ${nativeHevc.mergedSamples} samples through the unchanged H.264 path`);
         } else {
@@ -1639,17 +1678,22 @@ try {
     assert.equal(await client.evaluate("typeof VideoDecoder + '/' + typeof VideoEncoder"), 'undefined/undefined');
     await client.setFile('#file-input-a', join(projectRoot, 'testmedia', 'synthetic-hevc.mov'));
     await client.waitFor("document.querySelector('#status').textContent.includes('clip A') || !document.querySelector('#error').hidden", 300000);
-    const forcedHevcFallback = await client.evaluate(`({
-      error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
-      status: document.querySelector('#conversion-status').textContent,
-      message: document.querySelector('#conversion-message').textContent,
-      clipPath: document.querySelector('.clip-card .clip-detail')?.title ?? null,
-    })`);
+    const forcedHevcFallback = await client.evaluate(`(() => {
+      const report = JSON.parse(document.querySelector('#report').textContent);
+      return {
+        error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
+        conversionHidden: document.querySelector('#conversion-progress').hidden,
+        conversionMessage: document.querySelector('#conversion-message'),
+        clipDetail: document.querySelector('.clip-card .clip-detail')?.textContent ?? null,
+        source: report.sources?.a?.conversion ?? null,
+      };
+    })()`);
     assert.equal(forcedHevcFallback.error, null, forcedHevcFallback.error);
-    assert.match(forcedHevcFallback.status, /ffmpeg\.wasm/);
-    assert.match(forcedHevcFallback.message, /decoded via ffmpeg\.wasm/);
-    assert.match(forcedHevcFallback.clipPath, /decoded via ffmpeg\.wasm/);
-    console.log('PASS WebCodecs unavailable: HEVC import names the ffmpeg.wasm decode fallback and produces a playable converted clip');
+    assert.equal(forcedHevcFallback.conversionHidden, true);
+    assert.equal(forcedHevcFallback.conversionMessage, null);
+    assert.match(forcedHevcFallback.clipDetail, /^\d+\.\d{2} s$/);
+    assert.equal(forcedHevcFallback.source.decodeEngine, 'ffmpeg.wasm');
+    console.log('PASS WebCodecs unavailable: HEVC import uses ffmpeg.wasm and reports it only in JSON');
     await client.send('Page.navigate', {url: `${baseUrl}?fallback=1`});
     await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
     assert.equal(await client.evaluate("typeof VideoDecoder + '/' + typeof VideoEncoder"), 'undefined/undefined');
@@ -1660,13 +1704,15 @@ try {
     const fallback = await client.evaluate(`(() => {
       const report = JSON.parse(document.querySelector('#report').textContent);
       return {
-        conversionStatus: document.querySelector('#conversion-status').textContent,
+        conversionHidden: document.querySelector('#conversion-progress').hidden,
+        conversionMessage: document.querySelector('#conversion-message'),
         error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
         sources: report.sources,
       };
     })()`);
     assert.equal(fallback.error, null, fallback.error);
-    assert.equal(fallback.conversionStatus, 'normalized via ffmpeg.wasm');
+    assert.equal(fallback.conversionHidden, true);
+    assert.equal(fallback.conversionMessage, null);
     assert.equal(fallback.sources.a.mode, 'normalized via ffmpeg.wasm');
     assert.equal(fallback.sources.b.mode, 'normalized via ffmpeg.wasm');
     assert.equal(fallback.sources.a.conversion.encodeEngine, 'ffmpeg.wasm');

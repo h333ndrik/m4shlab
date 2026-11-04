@@ -14,7 +14,7 @@ Do not move or delete either release tag. Record device findings first, reproduc
 4. Import a real clip and test Classic Mosh with a shortened duration and both Restore and Continue.
 5. Apply Melt Gentler and inspect the release boundary; then test Loop Release Gentler and Reset Pulse on suitable B-frame-free clips.
 6. Switch a duplicate clip between Original, Black & white, B&W negative, and Color negative; confirm the look survives reorder and undo/redo.
-7. Change clip speed and verify the preview duration, live current/total readout, filename/assembled labels, and sound on/off behavior.
+7. Change clip speed and verify the preview duration, live current/total readout, card-click filename preview, Assemble preview label, and sound on/off behavior.
 8. Export with Sound on: confirm AAC-LC 48 kHz stereo, preserved pitch, and audio duration equal to video duration. Export with Sound off: confirm the file has no audio stream.
 
 ## Release limits to verify honestly

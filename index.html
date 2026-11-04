@@ -19,8 +19,8 @@
   <main>
     <header>
       <h1>m4shlab</h1>
-      <div class="file-actions" aria-label="Import clips">
-        <label class="button">Import clips<input id="file-input-a" type="file" multiple accept="video/*,.mp4,.mov,.m4v,.mkv,.webm,.avi"></label>
+      <div class="file-actions" aria-label="Import videos">
+        <label class="button">+ Import videos<input id="file-input-a" type="file" multiple accept="video/*,.mp4,.mov,.m4v,.mkv,.webm,.avi"></label>
         <input id="file-input-b" class="legacy-input" type="file" accept="video/*,.mp4,.mov,.m4v,.mkv,.webm,.avi" tabindex="-1" aria-hidden="true">
       </div>
     </header>
@@ -34,10 +34,7 @@
     <div class="preview-meta">
       <div class="preview-options">
         <span id="preview-label">No video selected</span>
-        <div class="toggle" role="group" aria-label="Preview version">
-          <button id="show-original" type="button" aria-pressed="true" disabled>A cut</button>
-          <button id="show-modified" type="button" aria-pressed="false" disabled>merged A→B</button>
-        </div>
+        <button id="assemble-preview" type="button" aria-pressed="false" disabled>Assemble preview</button>
         <div class="preview-readout">
           <span id="preview-time" aria-label="Preview time">0.00 / 0.00 s</span>
           <label class="sound-toggle"><input id="sound-toggle" type="checkbox" checked> <span>Sound on</span></label>
@@ -61,42 +58,38 @@
       <p class="drop-hint">Drop video files here · up to 12 clips · each connector chooses Cut, Classic Mosh, Melt or Loop</p>
     </section>
 
-    <section id="conversion-panel" class="conversion-panel" aria-labelledby="conversion-heading" aria-live="polite" hidden>
-      <div class="conversion-heading">
-        <h2 id="conversion-heading">conversion</h2>
-        <span id="conversion-status" class="conversion-status">preparing</span>
-      </div>
-      <p id="conversion-message" class="conversion-message">WebCodecs is preferred when the browser can decode and encode H.264; ffmpeg.wasm loads only as fallback.</p>
-      <div class="conversion-progress-row"><span>A</span><progress id="conversion-progress" aria-label="Clip A conversion progress"></progress></div>
-      <div id="conversion-progress-b-row" class="conversion-progress-row" hidden><span>B</span><progress id="conversion-progress-b" aria-label="Clip B conversion progress"></progress></div>
-    </section>
+    <div id="conversion-progress" class="conversion-progress" role="status" aria-live="polite" hidden>
+      <span id="conversion-status">normalizing clips…</span>
+      <progress id="conversion-progress-bar" aria-label="Conversion in progress"></progress>
+    </div>
 
     <p id="status" class="status" role="status">No videos loaded.</p>
     <p id="error" class="error" role="alert" hidden></p>
-
-    <details id="report-panel" class="report-panel" hidden>
-      <summary>bitstream report</summary>
-      <pre id="report"></pre>
-    </details>
+    <pre id="report" hidden></pre>
 
     <dialog id="transition-dialog" class="transition-dialog" aria-labelledby="transition-title">
       <form method="dialog">
         <div class="dialog-heading">
-          <h2 id="transition-title">transition</h2>
+          <div>
+            <h2 id="transition-title">Transition</h2>
+            <p id="transition-subtitle" class="dialog-subtitle"></p>
+          </div>
           <button type="submit" value="cancel" aria-label="Close transition dialog">×</button>
         </div>
         <div class="randomize-row">
           <button id="transition-randomize" type="button">randomize</button>
           <output id="transition-seed" for="transition-randomize">seed —</output>
         </div>
-        <fieldset>
-          <legend>Boundary method</legend>
-          <label><input type="radio" name="transition-method" value="cut"> <span><strong>Cut</strong><small>Append the incoming clip byte-for-byte.</small></span></label>
-          <label><input type="radio" name="transition-method" value="classic-mosh" checked> <span><strong>Classic Mosh</strong><small>Remove the incoming first IDR and continue its references.</small></span></label>
-          <label><input type="radio" name="transition-method" value="melt"> <span><strong>Melt</strong><small>Repeat every non-IDR sample after the first GOP boundary.</small></span></label>
-          <label><input type="radio" name="transition-method" value="loop"> <span><strong>Loop Release</strong><small>Repeat motion 3×, then 2×, and rejoin the donor timeline.</small></span></label>
-          <label><input type="radio" name="transition-method" value="reset-pulse"> <span><strong>Reset Pulse</strong><small>Reset the reference on an interval while repeating the following motion.</small></span></label>
-        </fieldset>
+        <div class="transition-method-field">
+          <label for="transition-method">Method</label>
+          <select id="transition-method">
+            <option value="cut">Cut</option>
+            <option value="classic-mosh">Classic Mosh</option>
+            <option value="melt">Melt</option>
+            <option value="loop">Loop Release</option>
+            <option value="reset-pulse">Reset Pulse</option>
+          </select>
+        </div>
         <div id="classic-mosh-options" class="classic-mosh-options">
           <div class="mosh-control-heading">
             <label for="transition-duration">duration</label>
@@ -112,7 +105,6 @@
             <option value="restore">Restore clear image</option>
             <option value="continue">Continue motion</option>
           </select>
-          <p class="mosh-control-note">Restore re-inserts the original IDR after the effect window. Continue keeps the full prediction chain.</p>
         </div>
         <div id="nal-effect-options" class="classic-mosh-options" hidden>
           <div class="mosh-control-heading">
@@ -130,9 +122,7 @@
               <option value="original">Original cadence</option>
               <option value="gentler">Gentler · smaller motion jumps</option>
             </select>
-            <p class="mosh-control-note">Gentler Melt bounds donor advances before its release point. Gentler Loop bridges forward jumps at block changes with advances of at most two frames while keeping the repeated-block wraps.</p>
           </div>
-          <p class="mosh-control-note">Melt, Loop Release and Reset Pulse renumber slice headers so each emitted prediction has fresh frame and POC counters. B-frame sources are normalized first.</p>
         </div>
         <div id="reset-pulse-options" class="classic-mosh-options" hidden>
           <div class="mosh-control-heading">
@@ -150,7 +140,6 @@
             <output id="reset-repeat-value" for="reset-repeat">4×</output>
             <span>12 max</span>
           </div>
-          <p class="mosh-control-note">Each interval starts with B's original first IDR, then repeats consecutive P samples until the interval is full. B-frame sources are normalized first.</p>
         </div>
         <div class="dialog-actions">
           <button type="submit" value="cancel">cancel</button>
@@ -160,7 +149,7 @@
     </dialog>
 
     <footer class="limits" aria-labelledby="limits-heading">
-      <p id="limits-heading">Real H.264 bitstream editing · normalized to max 720px long side · 30 fps · merged exports keep source audio when present. Up to 12 clips, 128 MiB per clip. Originals stay untouched.</p>
+      <p id="limits-heading">Real H.264 bitstream editing · max 720px · 30 fps · originals untouched</p>
     </footer>
   </main>
   <script type="module" src="./app.js"></script>
