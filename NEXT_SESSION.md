@@ -1,30 +1,33 @@
-# m4shlab-v1.0 release complete — user review and device testing
+# m4shlab v1.1 — user review and device testing pending
 
 ## Status
 
-The v1.0 release is complete at tag `m4shlab-v1.0`. Its automated release baseline is **77 Node / 27 WebCodecs / 6 PWA** checks passing. User review and physical-device testing remain; later main-branch parity work is outside the immutable release tag.
+m4shlab v1.1 is the current complete browser release candidate. The v1.0 tag remains immutable at `2aa8ee5`; v1.1 adds per-clip looks, the persistent sound/export toggle, and live preview time and labels. Automated verification is **79 Node / 29 WebCodecs / 6 PWA** checks passing. Physical-device acceptance remains pending.
 
-Do not move or delete the release tag. Record any device finding first, diagnose it against a reproducible fixture, and only then propose a follow-up fix.
+Do not move or delete either release tag. Record device findings first, reproduce them against a fixture where possible, and propose a scoped fix before changing the release state.
 
 ## Manual device checklist
 
 1. Open <https://h333ndrik.github.io/m4shlab/> in Safari on iPhone or iPad and install via **Share → Add to Home Screen**.
-2. Launch from the Home Screen and confirm the app uses standalone mode without Safari browser chrome.
-3. Enable Airplane mode, relaunch, and confirm the cached app shell starts offline.
-4. Import a real clip, apply Classic Mosh with a shortened duration and both Restore and Continue, then verify preview and export.
-5. Import a compatible or auto-normalized pair, select Melt with Gentler cadence, and inspect the boundary corruption and recovery.
-6. Export the merged result and confirm that AAC audio is present at 48 kHz stereo, pitch is unchanged, and its duration matches the merged video.
+2. Launch from the Home Screen and confirm standalone mode without Safari browser chrome.
+3. Enable Airplane mode, relaunch, and confirm the complete app shell starts offline.
+4. Import a real clip and test Classic Mosh with a shortened duration and both Restore and Continue.
+5. Apply Melt Gentler and inspect the release boundary; then test Loop Release Gentler and Reset Pulse on suitable B-frame-free clips.
+6. Switch a duplicate clip between Original, Black & white, B&W negative, and Color negative; confirm the look survives reorder and undo/redo.
+7. Change clip speed and verify the preview duration, live current/total readout, filename/assembled labels, and sound on/off behavior.
+8. Export with Sound on: confirm AAC-LC 48 kHz stereo, preserved pitch, and audio duration equal to video duration. Export with Sound off: confirm the file has no audio stream.
 
 ## Release limits to verify honestly
 
 - Normalization caps the long side at 720 px; larger sources are intentionally downscaled.
-- Video normalization and transition effects are video-only. Exported audio follows the linear clip timeline and is not moshed.
+- Transition and normalization effects alter video only. Export audio follows the linear clip timeline and is not moshed.
 - Bitstream decode behavior and visual mosh strength depend on source GOP structure and the device decoder.
 - Melt, Loop Release, and Reset Pulse require B-frame-free, non-reordered input and trigger normalization for native B-frame sources.
 - Type 0/1 multi-GOP alignment requires no B-slices and no non-zero composition offsets; genuinely reordered streams fail loudly.
 - The 100 MB input limit is soft, and WebCodecs does not guarantee hardware acceleration. Large iOS conversions can exhaust memory.
 - PWA storage and the runtime-cached ffmpeg.wasm assets may be evicted under device storage pressure.
+- Looks require WebCodecs and are applied after normalization downscaling; they are pixel effects rather than bitstream filters.
 
 ## Result to report back
 
-Record the device and OS/browser version, the source parameters, selected method/cadence/duration/ending, decoded frame count, export duration, audio presence and pitch, and any error text. Keep private source media in the gitignored `testmedia/` directory.
+Record the device and OS/browser version, source parameters, selected method/cadence/duration/ending, look and speed, decoded frame count, export duration, audio presence/pitch, cache version, and any error text. Keep private source media in the gitignored `testmedia/` directory.
