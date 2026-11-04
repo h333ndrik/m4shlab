@@ -1148,6 +1148,32 @@ assert.equal(clampedReset.report.resetPulse.durationFrames, 74);
 assert.equal(clampedReset.report.resetPulse.clamped, true);
 pass('Reset Pulse rejects interval >= duration, accepts interval 4 and repeat endpoints 2/12, and reports duration clamping');
 
+const defaultResetPulse = await mergeEffectH264(multiGopAInput, multiGopBInput, multiGopAParsed, multiGopBParsed, {
+  method: 'reset-pulse',
+  resetInterval: 6,
+  repeat: 2,
+});
+assert.equal(defaultResetPulse.report.resetPulse.durationFrames, 74);
+assert.equal(defaultResetPulse.report.resetPulse.requestedDurationFrames, 74);
+assert.equal(defaultResetPulse.report.resetPulse.ending, 'restore');
+assert.equal(defaultResetPulse.report.resetPulse.clamped, false);
+const explicitFullResetPulse = await mergeEffectH264(multiGopAInput, multiGopBInput, multiGopAParsed, multiGopBParsed, {
+  method: 'reset-pulse',
+  durationFrames: 74,
+  resetInterval: 6,
+  repeat: 2,
+  ending: 'restore',
+});
+assert.deepEqual(defaultResetPulse.report.effect.scheduledSourceSamples, explicitFullResetPulse.report.effect.scheduledSourceSamples);
+assert.deepEqual(defaultResetPulse.output, explicitFullResetPulse.output);
+await assert.rejects(
+  () => mergeEffectH264(multiGopAInput, multiGopBInput, multiGopAParsed, multiGopBParsed, {
+    method: 'reset-pulse', durationFrames: 0, resetInterval: 4, repeat: 2, ending: 'continue',
+  }),
+  error => error instanceof ValueError && /greater than zero/.test(error.message),
+);
+pass('Reset Pulse defaults to the full remaining clip byte-identically and rejects durations below one frame');
+
 const poc0Reset = await mergeEffectH264(poc0AInput, poc0BInput, poc0AParsed, poc0BParsed, {
   method: 'reset-pulse',
   durationFrames: 12,

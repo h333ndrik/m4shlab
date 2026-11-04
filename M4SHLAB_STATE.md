@@ -4,7 +4,7 @@ Updated: 2026-11-04
 
 ## Release v1.1
 
-**State: release candidate complete — `m4shlab-v1.1`.** The v1.0 tag remains immutable at `2aa8ee5536474581c05f4fe5ca30635597a0c526`. v1.1 adds the post-release parity work: per-clip looks, sound/export control, and live preview metadata. The final automated baseline is **79 Node / 30 WebCodecs / 6 PWA** checks passing.
+**State: release candidate complete — `m4shlab-v1.1`.** The v1.0 tag remains immutable at `2aa8ee5536474581c05f4fe5ca30635597a0c526`. v1.1 adds the post-release parity work: per-clip looks, sound/export control, and live preview metadata. The final automated baseline is **80 Node / 30 WebCodecs / 6 PWA** checks passing.
 
 m4shlab is a fully client-side, installable H.264 bitstream editor with a 12-clip timeline, seven transition methods, frame-quantized duration/ending controls, per-clip speed and looks, merged AAC audio, universal local import, seeded Randomize, and an offline app shell. No feature work remains; physical-device acceptance testing is pending.
 
@@ -105,13 +105,13 @@ Browser and PWA counts are emitted PASS records. The deployment-only `201d418`/`
 
 Current v1.1 baseline on 2026-11-04 with Node 26.13.0, FFmpeg 9.0.2, and Chrome 156:
 
-- `npm test`: **79/79 PASS**.
+- `npm test`: **80/80 PASS**.
 - `npm run test:webcodecs`: **30/30 PASS**.
 - `npm run test:pwa`: **6/6 PASS**.
 - `node --check` for all JavaScript and `git diff --check`: PASS.
 - Released v1.0 service worker: `v11`, SHA-256 `a177914d77bc094949cc24fef38d8086306121434b67e6bf7fe674cbe473a50e`. Current v1.1 shell is `v15`.
 - PWA precache: 27 shell assets including `looks.js`; manifest/installability and offline reload pass.
-- Melt repeat=4: 315/315 decoded samples, with all non-header RBSP bits byte-identical. Melt duration=12/repeat=2: exact 12-frame window, Continue tail at donor 7, 105/105 decoded; Restore inserts the byte-identical incoming IDR at merged sample 37 and decodes 106/106. Gentler Melt uses source donors [1,1,2,2,3,3,4,6,8,10,11,12], caps each pre-release step at two, and decodes 99/99; Gentler Restore adds the anchor. Loop Release group=4: 99/99 decoded samples with blocks at donors 1/13 and release tail at 21; duration=12 scales to donors [1,2] 3× plus a chronological window and rejoins at donor 13. Reset Pulse interval=6/repeat=2: 99/99 with reset IDRs at merged samples 25/31, donor tables [1,1,2,2,3], and tail donor 13; Restore decodes 100/100. POC type 0 Melt: 171/171. POC type 0 Reset Pulse: 99/99 with segment frame_num/POC starts at 1. Chained Melt→Loop Release: 195/195; Loop Release→Cut: 124/124; Reset Pulse→Cut: 124/124; Reset Pulse→Classic Mosh: 123/123.
+- Melt repeat=4: 315/315 decoded samples, with all non-header RBSP bits byte-identical. Melt duration=12/repeat=2: exact 12-frame window, Continue tail at donor 7, 105/105 decoded; Restore inserts the byte-identical incoming IDR at merged sample 37 and decodes 106/106. Gentler Melt uses source donors [1,1,2,2,3,3,4,6,8,10,11,12], caps each pre-release step at two, and decodes 99/99; Gentler Restore adds the anchor. Loop Release group=4: 99/99 decoded samples with blocks at donors 1/13 and release tail at 21; duration=12 scales to donors [1,2] 3× plus a chronological window and rejoins at donor 13. Reset Pulse interval=6/repeat=2: 99/99 with reset IDRs at merged samples 25/31, donor tables [1,1,2,2,3], and tail donor 13; Restore decodes 100/100; the default window matches an explicit full window byte-for-byte, and sub-frame durations raise `ValueError`. POC type 0 Melt: 171/171. POC type 0 Reset Pulse: 99/99 with segment frame_num/POC starts at 1. Chained Melt→Loop Release: 195/195; Loop Release→Cut: 124/124; Reset Pulse→Cut: 124/124; Reset Pulse→Classic Mosh: 123/123.
 - Native B-frame Melt/Loop Release/Reset Pulse rejects loudly; browser tests confirm native B-frame sources auto-normalize with WebCodecs before the effect runs.
 - Gentler Loop duration=12/group=4 uses donor positions [0,1,0,1,0,1,3,5,7,9,10,11], keeps block wraps at outputs 2/4, reports a three-frame tail bridge from donor 1 to 7, decodes 99/99, and preserves a 99×1920-sample audio timeline. Original Loop cadence remained byte-identical at SHA-256 `a2654bb53026dcf11cb040c05aecdffd2299a387fb4f0693c3a8da9635541fe3`.
 - HEVC demux: 25 samples, 320×240, `hvc1.1.6.L60.90`, four-byte NAL lengths, 25 HEVC units, and an IRAP first sample; the default parser still returns the exact H.264 conversion guidance.
