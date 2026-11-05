@@ -1,4 +1,4 @@
-const VERSION = 'v26';
+const VERSION = 'v27';
 const CACHE_NAME = `m4shlab-${VERSION}`;
 const RUNTIME_CACHE = `m4shlab-runtime-${VERSION}`;
 const APP_SHELL = [
@@ -29,6 +29,12 @@ const APP_SHELL = [
   './icon-192.png',
   './icon-512.png',
   './icon-180.png',
+  './assets/cursor/m4-cursor.svg',
+  './assets/cursor/m4-cursor.png',
+  './assets/cursor/m4-cursor-interactive.svg',
+  './assets/cursor/m4-cursor-interactive.png',
+  './assets/cursor/m4-cursor-pressed.svg',
+  './assets/cursor/m4-cursor-pressed.png',
 ];
 const FFMPEG_CORE_PREFIX = '/npm/@ffmpeg/core@0.12.10/dist/esm/';
 const SHELL_URLS = new Set(APP_SHELL.map(path => new URL(path, self.registration.scope).href));
