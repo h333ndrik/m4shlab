@@ -2232,7 +2232,7 @@ try {
     await client.send('Emulation.setEmulatedMedia', {features: []});
     console.log(`PASS three-file import showed 3 skeleton cards (${skeletonState.width}x${skeletonState.height}); reduced-motion shimmer was static and cards resolved in order at identical geometry`);
 
-    await client.send('Page.addScriptToEvaluateOnNewDocument', {
+    const webCodecsStub = await client.send('Page.addScriptToEvaluateOnNewDocument', {
       source: "Object.defineProperty(globalThis, 'VideoDecoder', {value: undefined, configurable: true}); Object.defineProperty(globalThis, 'VideoEncoder', {value: undefined, configurable: true});",
     });
     await client.send('Page.navigate', {url: `${baseUrl}?hevc-fallback=1`});
@@ -2282,6 +2282,11 @@ try {
     assert.ok(fallback.sources.a.conversion.elapsedMs > 0);
     assert.ok(fallback.sources.b.conversion.elapsedMs > 0);
     console.log('PASS WebCodecs stubbed unavailable: ffmpeg.wasm fallback ran and the report identifies it');
+    // The stub replaced the global constructors, so drop the pre-script and reload before any later test.
+    await client.send('Page.removeScriptToEvaluateOnNewDocument', {identifier: webCodecsStub.identifier});
+    await client.send('Page.navigate', {url: `${baseUrl}?webcodecs-restored=1`});
+    await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
+    assert.equal(await client.evaluate("typeof VideoDecoder + '/' + typeof VideoEncoder"), 'function/function');
   }
 
   const missingProjectScript = await client.send('Page.addScriptToEvaluateOnNewDocument', {
@@ -2696,6 +2701,173 @@ try {
     await client.send('Page.removeScriptToEvaluateOnNewDocument', {identifier: integrationHook.identifier});
     await client.send('Page.removeScriptToEvaluateOnNewDocument', {identifier: integrationStamp.identifier});
   }
+
+  // Connector and clip-card durations must follow the normalized fps.
+  await client.send('Emulation.setDeviceMetricsOverride', {width: 520, height: 900, deviceScaleFactor: 1, mobile: false});
+  const parityExceptionsStart = client.exceptions.length;
+  await client.send('Page.navigate', {url: `${baseUrl}?connector-parity=1`});
+  await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
+  assert.equal(await client.evaluate("typeof VideoDecoder + '/' + typeof VideoEncoder"), 'function/function');
+  await client.setFiles('#file-input-a', [fixtures.a, fixtures.b, fixtures.a]);
+  await client.waitFor("document.querySelectorAll('.clip-card').length === 3", 30000);
+  await client.waitFor(`(() => {
+    const node = document.querySelector('#report');
+    if (!node.textContent) return false;
+    try {
+      return JSON.parse(node.textContent).stage === 'merged';
+    } catch { return false; }
+  })()`, 120000);
+
+  const readDurations = `(() => {
+    const report = JSON.parse(document.querySelector('#report').textContent);
+    return {
+      stage: report.stage,
+      normalized: report.normalization !== null,
+      boundaries: report.transitions.map(item => ({
+        method: item.method,
+        frames: item.durationFrames,
+        seconds: item.durationSeconds,
+        ending: item.ending,
+      })),
+      connectors: [...document.querySelectorAll('.connector')].map(node => node.lastElementChild?.textContent ?? ''),
+      cards: [...document.querySelectorAll('.clip-card')].map(card => card.querySelector('.clip-detail')?.textContent ?? ''),
+      sources: report.sources.clips.map(clip => ({frames: clip.output_frames, speed: clip.speed})),
+    };
+  })()`;
+
+  const parity = await client.evaluate(readDurations);
+  assert.equal(parity.stage, 'merged');
+  assert.equal(parity.normalized, true, 'the mismatched pair must normalize automatically');
+  assert.equal(parity.boundaries.length, 2);
+  assert.equal(parity.connectors.length, 2);
+  parity.boundaries.forEach((boundary, index) => {
+    const rendered = parity.connectors[index];
+    const expected = boundary.seconds.toFixed(2);
+    assert.ok(
+      rendered.startsWith(`${expected} s`),
+      `connector ${index}: rendered "${rendered}" does not show the report value ${expected} s`,
+    );
+    assert.equal(
+      Number(expected),
+      Number((boundary.frames / 30).toFixed(2)),
+      `connector ${index}: ${boundary.frames} frames at the normalized 30 fps is not ${expected} s`,
+    );
+    assert.notEqual(
+      Number(expected),
+      Number((boundary.frames / 25).toFixed(2)),
+      `connector ${index}: "${rendered}" still divides by the 25 fps source rate`,
+    );
+  });
+  parity.cards.forEach((detail, index) => {
+    const expected = `${(parity.sources[index].frames / 30).toFixed(2)} s`;
+    assert.equal(detail, expected, `clip card ${index}: rendered "${detail}" does not match ${parity.sources[index].frames} frames at 30 fps`);
+  });
+  console.log(`PASS all ${parity.connectors.length} connectors and ${parity.cards.length} clip cards already match the normalized 30 fps report right after auto-normalization`);
+
+  const safetyBefore = await client.evaluate(`(() => {
+    const tiers = document.querySelector('#source-tiers');
+    tiers.scrollLeft = Math.min(40, Math.max(0, tiers.scrollWidth - tiers.clientWidth));
+    const cards = [...document.querySelectorAll('.clip-card')];
+    cards[1].click();
+    document.querySelectorAll('.connector')[1].click();
+    return {
+      scrollLeft: tiers.scrollLeft,
+      scrollable: tiers.scrollWidth > tiers.clientWidth,
+      selected: document.querySelector('.clip-card[aria-current="true"]')?.dataset.clipName ?? document.querySelector('.clip-card[aria-current="true"] .clip-name')?.textContent ?? null,
+      undoDisabled: document.querySelector('#undo-button').disabled,
+      redoDisabled: document.querySelector('#redo-button').disabled,
+      dialogOpen: document.querySelector('#transition-dialog').open,
+      dialogFrames: Number(document.querySelector('#transition-duration').value),
+    };
+  })()`);
+  assert.equal(safetyBefore.dialogOpen, true);
+  assert.equal(safetyBefore.scrollable, true, 'the timeline must be scrollable for the scrollLeft check to mean anything');
+  assert.ok(safetyBefore.scrollLeft > 0, `timeline scrollLeft must be non-zero, saw ${safetyBefore.scrollLeft}`);
+
+  await client.evaluate(`(() => {
+    const speed = document.querySelectorAll('.clip-card')[2].querySelector('.clip-speed input');
+    speed.value = '2';
+    speed.dispatchEvent(new Event('change', {bubbles: true}));
+  })()`);
+  await client.waitFor(`(() => {
+    const node = document.querySelector('#report');
+    if (!node.textContent) return false;
+    try {
+      const report = JSON.parse(node.textContent);
+      return report.stage === 'merged' && report.sources.clips[2]?.speed === 2;
+    } catch { return false; }
+  })()`, 120000);
+
+  const safetyAfter = await client.evaluate(`(() => {
+    const report = JSON.parse(document.querySelector('#report').textContent);
+    const boundary = report.transitions[1];
+    const tiers = document.querySelector('#source-tiers');
+    const cards = [...document.querySelectorAll('.clip-card')];
+    return {
+      scrollLeft: tiers.scrollLeft,
+      selected: cards.find(card => card.getAttribute('aria-current') === 'true')?.querySelector('.clip-name')?.textContent ?? null,
+      undoDisabled: document.querySelector('#undo-button').disabled,
+      redoDisabled: document.querySelector('#redo-button').disabled,
+      dialogOpen: document.querySelector('#transition-dialog').open,
+      dialogFrames: Number(document.querySelector('#transition-duration').value),
+      reportFrames: boundary.durationFrames,
+      reportSeconds: boundary.durationSeconds,
+      dialogText: document.querySelector('#transition-duration-value').textContent,
+      hashes: [...document.querySelectorAll('.connector')].map(node => node.lastElementChild?.textContent ?? ''),
+      cards: cards.map(card => card.querySelector('.clip-detail')?.textContent ?? ''),
+      sources: report.sources.clips.map(clip => ({frames: clip.output_frames, speed: clip.speed})),
+    };
+  })()`);
+  assert.equal(safetyAfter.scrollLeft, safetyBefore.scrollLeft, 'the automatic re-render must preserve the timeline scroll position');
+  assert.equal(safetyAfter.selected, safetyBefore.selected, 'the automatic re-render must preserve the previewed clip');
+  assert.equal(safetyAfter.undoDisabled, safetyBefore.undoDisabled, 're-render must not change undo availability');
+  assert.equal(safetyAfter.redoDisabled, safetyBefore.redoDisabled, 're-render must not change redo availability');
+  assert.equal(safetyAfter.dialogOpen, true);
+  assert.equal(safetyAfter.dialogFrames, safetyAfter.reportFrames, 'the open transition dialog must follow the new frame budget');
+  assert.ok(
+    safetyAfter.dialogText.startsWith(`${safetyAfter.reportSeconds.toFixed(2)} s`),
+    `open dialog shows "${safetyAfter.dialogText}" but the report says ${safetyAfter.reportSeconds.toFixed(2)} s`,
+  );
+  safetyAfter.cards.forEach((detail, index) => {
+    const expected = `${(safetyAfter.sources[index].frames / 30).toFixed(2)} s`;
+    assert.equal(detail, expected, `clip card ${index} after the 2.0x speed change: "${detail}" vs ${expected}`);
+  });
+  console.log(`PASS re-render after a 2.0x speed change keeps scrollLeft ${safetyAfter.scrollLeft}, the previewed clip, undo/redo availability, and the open dialog in sync (${safetyAfter.dialogFrames} frames)`);
+
+  const beforeIdle = await client.evaluate(readDurations);
+  await client.evaluate("document.querySelector('#transition-dialog').close()");
+  await client.evaluate("document.querySelectorAll('.clip-card')[0].click()");
+  await client.waitFor("document.querySelectorAll('.clip-card')[0].getAttribute('aria-current') === 'true'", 5000);
+  const afterPreview = await client.evaluate(readDurations);
+  assert.deepEqual(afterPreview.connectors, beforeIdle.connectors, 'a preview click must not change connector durations');
+
+  await client.evaluate(`(() => {
+    const move = document.querySelectorAll('.clip-card')[0].querySelector('[aria-label$="right"]');
+    move.click();
+  })()`);
+  await client.waitFor(`(() => {
+    const node = document.querySelector('#report');
+    if (!node.textContent) return false;
+    try {
+      return JSON.parse(node.textContent).stage === 'merged';
+    } catch { return false; }
+  })()`, 120000);
+  const afterReorder = await client.evaluate(readDurations);
+  assert.deepEqual(
+    [...afterReorder.connectors].sort(),
+    [...beforeIdle.connectors].sort(),
+    'a clip reorder must keep the same connector durations',
+  );
+  afterReorder.boundaries.forEach((boundary, index) => {
+    assert.equal(
+      Number(boundary.seconds.toFixed(2)),
+      Number((boundary.frames / 30).toFixed(2)),
+      `connector ${index} drifted after the reorder`,
+    );
+  });
+  assert.equal(client.exceptions.length, parityExceptionsStart);
+  console.log('PASS a preview click and a clip reorder leave every connector duration unchanged');
+  await client.send('Emulation.setDeviceMetricsOverride', {width: 1200, height: 1600, deviceScaleFactor: 1, mobile: false});
 
   if (client.exceptions.length) throw new Error(`Browser exceptions:\n${client.exceptions.join('\n')}`);
 } finally {

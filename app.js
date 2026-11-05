@@ -37,7 +37,7 @@ import {
 } from './audio.js';
 
 const MAX_CLIPS = 12;
-const BUILD = 'v22';
+const BUILD = 'v23';
 const SHELL_NOTICE_MIXED = 'This page mixes two m4shlab versions. Reload to get a consistent editor.';
 const SHELL_NOTICE_INCOMPLETE = 'This editor is incomplete. Reload the page.';
 const REQUIRED_UI = [
@@ -816,11 +816,46 @@ function sourcesReport() {
   };
 }
 
-function clipDurationSeconds(clip) {
+function syncOpenTransitionDialog() {
+  if (!transitionDialog?.open || activeBoundary === null) return;
+  const clip = clips[activeBoundary];
+  if (!clip) return;
+  const settings = moshSettingsForClip(clip);
+  activeMoshFps = settings.fps;
+  activeMoshMaximum = Math.max(1, settings.maximumFrames);
+  transitionDuration.min = '1';
+  transitionDuration.max = String(activeMoshMaximum);
+  transitionDuration.disabled = settings.maximumFrames < 1;
+  const previous = Math.round(Number(transitionDuration.value));
+  const clamped = Math.min(Math.max(Number.isFinite(previous) ? previous : activeMoshMaximum, 1), activeMoshMaximum);
+  let mode = transitionDurationMode.textContent;
+  if (String(clamped) !== transitionDuration.value) {
+    transitionDuration.value = String(clamped);
+    mode = 'clamped';
+  }
+  updateTransitionDurationDisplay(mode === 'custom');
+  if (mode === 'clamped') transitionDurationMode.textContent = 'clamped';
+  updateEffectParameterDisplay();
+  updateResetIntervalLimit();
+  updateTransitionOptionsVisibility();
+}
+
+function transitionSeconds(durationFrames, fps) {
+  const frames = Number(durationFrames);
+  const rate = Number(fps);
+  if (!Number.isFinite(frames) || frames < 0 || !Number.isFinite(rate) || rate <= 0) return null;
+  return frames / rate;
+}
+
+function clipSeconds(clip) {
   const track = clip?.mp4?.videoTrack;
   if (!track?.stts || !track.mdhd?.timescale) return null;
   const units = track.stts.durations.reduce((total, value) => total + value, 0);
   return units / track.mdhd.timescale;
+}
+
+function formatSeconds(seconds) {
+  return seconds === null || !Number.isFinite(seconds) ? null : `${seconds.toFixed(2)} s`;
 }
 
 function moshBoundaryLimits(clip) {
@@ -839,16 +874,15 @@ function moshSettingsForClip(clip) {
   const limits = moshBoundaryLimits(clip);
   const requested = clip?.moshDurationFrames;
   const defaultEnding = clip?.transition === 'melt' || clip?.transition === 'loop' ? 'continue' : 'restore';
-  const durationFrames = Math.max(0, Math.min(
-    limits.maximumFrames,
-    Number.isFinite(requested) ? Math.round(requested) : limits.maximumFrames,
-  ));
+  const requestedFrames = Number.isFinite(requested) ? Math.round(requested) : limits.maximumFrames;
+  const durationFrames = Math.max(0, Math.min(limits.maximumFrames, requestedFrames));
   return {
     ...limits,
     durationFrames,
-    durationSeconds: limits.fps > 0 ? durationFrames / limits.fps : 0,
+    durationSeconds: transitionSeconds(durationFrames, limits.fps) ?? 0,
     ending: clip?.moshEnding === 'continue' || clip?.moshEnding === 'restore' ? clip.moshEnding : defaultEnding,
     explicitDuration: requested !== undefined && requested !== null,
+    clamped: requestedFrames > limits.maximumFrames,
   };
 }
 
@@ -1071,8 +1105,7 @@ function renderClipCard(index, clip) {
 
   const detail = document.createElement('span');
   detail.className = 'clip-detail';
-  const duration = clipDurationSeconds(clip);
-  detail.textContent = duration === null ? 'video' : `${duration.toFixed(2)} s`;
+  detail.textContent = formatSeconds(clipSeconds(clip)) ?? 'video';
 
   const lookControl = document.createElement('label');
   lookControl.className = 'clip-look';
@@ -1170,27 +1203,31 @@ function renderConnector(index) {
   connector.type = 'button';
   connector.className = 'connector';
   connector.setAttribute('aria-label', `${transitionLabel(incoming.transition)} into ${clipDisplayLabel(index)}`);
-  if (incoming.randomSeed) connector.title = `Random seed ${incoming.randomSeed}`;
+  const notes = [];
+  if (incoming.randomSeed) notes.push(`Random seed ${incoming.randomSeed}`);
   const effect = document.createElement('span');
   effect.textContent = transitionLabel(incoming.transition);
   const duration = document.createElement('span');
-  const seconds = clipDurationSeconds(incoming);
+  const clipText = formatSeconds(clipSeconds(incoming));
+  const settings = incoming.transition === 'cut' ? null : moshSettingsForClip(incoming);
+  if (settings?.clamped) notes.push(`Duration clamped to ${settings.durationFrames} frames after normalization.`);
+  if (notes.length > 0) connector.title = notes.join(' · ');
   if (incoming.transition === 'classic-mosh') {
-    const settings = moshSettingsForClip(incoming);
-    duration.textContent = settings.maximumFrames > 0
-      ? `${settings.durationSeconds.toFixed(2)} s · ${settings.ending}`
-      : (seconds === null ? 'incoming clip' : `${seconds.toFixed(2)} s`);
+    const text = formatSeconds(settings.durationSeconds);
+    duration.textContent = settings.maximumFrames > 0 && text !== null
+      ? `${text} · ${settings.ending}`
+      : (clipText ?? 'incoming clip');
   } else if (incoming.transition === 'melt') {
-    const effect = effectSettingsForClip(incoming);
-    duration.textContent = `${effect.durationSeconds.toFixed(2)} s · ${effect.ending}`;
+    const melt = effectSettingsForClip(incoming);
+    duration.textContent = `${formatSeconds(melt.durationSeconds) ?? '0.00 s'} · ${melt.ending}`;
   } else if (incoming.transition === 'loop') {
-    const effect = effectSettingsForClip(incoming);
-    duration.textContent = `${effect.durationSeconds.toFixed(2)} s · ${effect.loopFrames}f`;
+    const loop = effectSettingsForClip(incoming);
+    duration.textContent = `${formatSeconds(loop.durationSeconds) ?? '0.00 s'} · ${loop.loopFrames}f`;
   } else if (incoming.transition === 'reset-pulse') {
-    const effect = effectSettingsForClip(incoming);
-    duration.textContent = `${effect.durationSeconds.toFixed(2)} s · ${effect.resetInterval}f / ${effect.repeat}×`;
+    const pulse = effectSettingsForClip(incoming);
+    duration.textContent = `${formatSeconds(pulse.durationSeconds) ?? '0.00 s'} · ${pulse.resetInterval}f / ${pulse.repeat}×`;
   } else {
-    duration.textContent = seconds === null ? 'incoming clip' : `${seconds.toFixed(2)} s`;
+    duration.textContent = clipText ?? 'incoming clip';
   }
   connector.append(effect, duration);
   connector.addEventListener('click', () => openTransition(index));
@@ -1288,6 +1325,7 @@ function updateSequenceLabel() {
 }
 
 function renderSourceTiers() {
+  const scrollLeft = sourceTiers?.scrollLeft ?? 0;
   const nodes = [];
   clips.forEach((clip, index) => {
     if (index > 0) nodes.push(renderConnector(index));
@@ -1301,12 +1339,23 @@ function renderSourceTiers() {
     sourceTiers.replaceChildren(empty);
     updateSequenceLabel();
     sourceTiers.hidden = false;
+    sourceTiers.scrollLeft = scrollLeft;
     return;
   }
   sourceTiers.replaceChildren(...nodes);
   sourceTiers.hidden = false;
+  sourceTiers.scrollLeft = scrollLeft;
   syncClipDragState();
   updateSequenceLabel();
+}
+
+function rerenderTimeline() {
+  if (!sourceTiers) return;
+  const scrollLeft = sourceTiers.scrollLeft;
+  renderSourceTiers();
+  sourceTiers.scrollLeft = scrollLeft;
+  updatePreviewSelection();
+  syncOpenTransitionDialog();
 }
 
 function finishConversionPanel() {
@@ -2523,7 +2572,7 @@ async function refreshSequenceInternal() {
       const normalized = await normalizeAllClips(token, target);
       if (!normalized || token !== refreshToken) return;
       normalizationAttempted = true;
-      renderSourceTiers();
+      rerenderTimeline();
     } catch (cause) {
       if (token !== refreshToken) return;
       const detail = cause instanceof Error ? cause.message : String(cause);
@@ -2575,6 +2624,7 @@ async function refreshSequenceInternal() {
     try {
       const normalized = await normalizeAllClips(token, target);
       if (!normalized || token !== refreshToken) return;
+      rerenderTimeline();
       checks = await checkSequenceCompatibility();
       effectFailures = effectNormalizationBoundaries();
     } catch (cause) {
