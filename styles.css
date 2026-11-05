@@ -1108,3 +1108,15 @@ button:focus-visible,
   }
   .clip-thumb video { transition: none; }
 }
+
+/* ── Native cursor tokens (M-C1) ────────────────────────────────────────────
+   The h4 cursor is a CSS cursor image, not a JS overlay: the browser tracks the
+   pointer, hides it when the window loses focus and keeps the hotspot in every
+   state. Assets are the h4ngelic artwork (same viewBox, #000 fill with a #fff
+   stroke) scaled to the 32px cap; hotspot 8 2 matches the 19.7px base width.
+   These values are the single source; the coverage cascade follows. */
+:root {
+  --m4-cursor: url('./assets/cursor/m4-cursor.svg') 8 2, url('./assets/cursor/m4-cursor.png') 8 2, auto;
+  --m4-cursor-interactive: url('./assets/cursor/m4-cursor-interactive.svg') 8 2, url('./assets/cursor/m4-cursor-interactive.png') 8 2, pointer;
+  --m4-cursor-pressed: url('./assets/cursor/m4-cursor-pressed.svg') 8 2, url('./assets/cursor/m4-cursor-pressed.png') 8 2, auto;
+}
