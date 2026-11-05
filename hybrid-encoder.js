@@ -1,10 +1,10 @@
 import { buildNormalizedMp4 } from './webcodecs-muxer.js';
 import { parseMp4 } from './parser/mp4.js';
 import { extractNals } from './parser/nal.js';
+import { isNormalizationKeyframe } from './looks.js';
 
 const FPS = 30;
 const FRAME_DURATION_US = Math.round(1_000_000 / FPS);
-const KEYFRAME_INTERVAL = 30;
 const MAX_QUEUE = 8;
 
 export class HybridEncodeError extends Error {
@@ -116,7 +116,7 @@ export async function encodeY4mWithWebCodecs(y4mBytes, options = {}) {
         colorSpace: {primaries: 'bt709', transfer: 'bt709', matrix: 'bt709', fullRange: false},
       });
       try {
-        encoder.encode(frame, {keyFrame: index % KEYFRAME_INTERVAL === 0});
+        encoder.encode(frame, {keyFrame: isNormalizationKeyframe(index)});
         encodedFrames += 1;
       } finally {
         frame.close();

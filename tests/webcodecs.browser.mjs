@@ -35,6 +35,7 @@ const mergedPath = join(downloadDir, 'm4shlab-merge.mp4');
 const audioMergedPath = join(projectRoot, 'testmedia', 'webcodecs-audio-merged.mp4');
 const speedMergedPath = join(projectRoot, 'testmedia', 'webcodecs-speed-merged.mp4');
 const multiGopMergedPath = join(projectRoot, 'testmedia', 'webcodecs-browser-multigop-merged.mp4');
+const multiGopMergeWindowPath = join(projectRoot, 'testmedia', 'webcodecs-browser-mosh-window.mp4');
 const hybridExportPath = join(projectRoot, 'testmedia', 'webcodecs-hybrid-export.mp4');
 const multiTimelineExportPath = join(projectRoot, 'testmedia', 'webcodecs-multitimeline-export.mp4');
 const looksMergedPath = join(projectRoot, 'testmedia', 'webcodecs-looks-merged.mp4');
@@ -514,27 +515,40 @@ try {
 
   const longGop = await client.evaluate(`(async () => {
     const {normalizeWithWebCodecs} = await import('./webcodecs.js');
-    const {mergeMoshH264} = await import('./merge.js');
+    const {mergeMoshH264, mergeEffectH264} = await import('./merge.js');
     const input = new Uint8Array(await (await fetch('/testmedia/synthetic-h264.mp4')).arrayBuffer());
     const target = {width: 320, height: 240};
     const a = await normalizeWithWebCodecs(input, {target});
     const b = await normalizeWithWebCodecs(input, {target, frameNumberBase: a.outputSamples - 1});
     const merged = await mergeMoshH264(a.bytes, b.bytes);
+    const effect = await mergeEffectH264(a.bytes, b.bytes, undefined, undefined, {
+      method: 'melt',
+      repeat: 4,
+      durationFrames: 60,
+      ending: 'continue',
+    });
     return {
       samples: a.outputSamples,
       keyframes: a.keyframes,
       idrCount: a.idrCount,
       mergeReport: merged.report,
       mergedBytes: Array.from(merged.output),
+      effect: {
+        samples: effect.report.mergedSamples,
+        windowSamples: effect.report.effect.window.windowOutputSamples,
+        aSamples: a.outputSamples,
+        bytes: Array.from(effect.output),
+      },
     };
   })()`);
+  const cadenceEvidence = `keyframes=${JSON.stringify(longGop.keyframes)} idrCount=${longGop.idrCount}`;
   assert.equal(longGop.samples, 75);
-  assert.deepEqual(longGop.keyframes, [1, 31, 61]);
-  assert.equal(longGop.idrCount, 3);
+  assert.ok(longGop.idrCount < 3, `a 75-frame normalized clip still emits ${longGop.idrCount} IDRs (${cadenceEvidence}); the encoder ignored or overrode the single-keyframe request`);
+  assert.equal(longGop.keyframes[0], 1, `the normalized clip must still start with an IDR (${cadenceEvidence})`);
   assert.equal(longGop.mergeReport.mergedSamples, 149);
-  assert.equal(longGop.mergeReport.bIdrCountRemaining, 2);
+  assert.equal(longGop.mergeReport.bIdrCountRemaining, longGop.idrCount - 1, `only B's leading IDR may disappear (${cadenceEvidence})`);
   assert.equal(longGop.mergeReport.frameAlignment.applied, true);
-  assert.equal(longGop.mergeReport.frameAlignment.nextIdrSample, 30);
+  assert.ok(longGop.mergeReport.frameAlignment.nextIdrSample >= 60, `the merged prediction chain still resets after ${longGop.mergeReport.frameAlignment.nextIdrSample} samples (${cadenceEvidence}); a mosh window longer than 30 frames would be cut off`);
   writeFileSync(multiGopMergedPath, Uint8Array.from(longGop.mergedBytes));
   const longGopProbe = command('ffprobe', [
     '-v', 'error', '-select_streams', 'v:0', '-count_frames',
@@ -542,7 +556,24 @@ try {
   ], 'WebCodecs multi-GOP merge probe');
   assert.match(longGopProbe.stdout, /nb_read_frames=149/);
   command('ffmpeg', ['-v', 'error', '-i', multiGopMergedPath, '-f', 'null', '-'], 'WebCodecs multi-GOP strict decode');
-  console.log('PASS WebCodecs emitted keyframes at samples 1, 31, and 61; the multi-GOP merge retained two later IDRs and decoded all 149 frames');
+  console.log(`PASS a 75-frame normalized clip emits ${longGop.idrCount} IDR (samples ${longGop.keyframes.join(', ')}; the old cadence emitted 3 at samples 1, 31, 61) and the merged chain decodes 149/149 frames`);
+
+  const effectOutput = Uint8Array.from(longGop.effect.bytes);
+  writeFileSync(multiGopMergeWindowPath, effectOutput);
+  const effectParsed = parseMp4(effectOutput);
+  const effectNals = extractNals(effectOutput, effectParsed.videoTrack);
+  assert.equal(longGop.effect.windowSamples, 60);
+  const windowIdrSamples = [...new Set(effectNals
+    .filter(nal => nal.type === 5 && nal.sampleIndex >= longGop.effect.aSamples && nal.sampleIndex < longGop.effect.aSamples + 60)
+    .map(nal => nal.sampleIndex))];
+  assert.deepEqual(windowIdrSamples, [], `the 60-frame mosh window at merged samples ${longGop.effect.aSamples}-${longGop.effect.aSamples + 59} still contains IDRs at ${JSON.stringify(windowIdrSamples)}`);
+  const effectProbe = command('ffprobe', [
+    '-v', 'error', '-select_streams', 'v:0', '-count_frames',
+    '-show_entries', 'stream=nb_read_frames', '-of', 'default=noprint_wrappers=1', multiGopMergeWindowPath,
+  ], 'WebCodecs mosh window probe');
+  assert.match(effectProbe.stdout, new RegExp(`nb_read_frames=${longGop.effect.samples}`));
+  command('ffmpeg', ['-v', 'error', '-i', multiGopMergeWindowPath, '-f', 'null', '-'], 'WebCodecs mosh window strict decode');
+  console.log(`PASS a 60-frame Melt window (merged samples ${longGop.effect.aSamples}-${longGop.effect.aSamples + 59}) carries ${windowIdrSamples.length} IDRs and decodes ${longGop.effect.samples}/${longGop.effect.samples} frames`);
 
   await client.send('Page.navigate', {url: `${baseUrl}?safari-poc0=1`});
   await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);

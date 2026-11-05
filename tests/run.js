@@ -15,7 +15,7 @@ import { parseSps } from '../parser/sps.js';
 import { ValueError, frameRateForTrack } from '../classic-mosh.js';
 import { assembleAudioTimeline, buildAdts, retimeMuxedAudio, RuntimeError, samplesPerFrame, wavBytes } from '../audio.js';
 import { SpeedValueError, atempoChain, atempoFilter, normalizeSpeed, speedFramePlan, speedOutputFrameCount, trimSpeedPlan } from '../speed.js';
-import { LOOKS, LookValueError, applyLookToRgba, normalizationCacheKey, normalizeLook } from '../looks.js';
+import { LOOKS, LookValueError, applyLookToRgba, isNormalizationKeyframe, normalizationCacheKey, normalizeLook } from '../looks.js';
 import { RANDOM_METHODS, RandomizeError, canRandomize, randomizeTransition, validateRandomTransition } from '../randomize.js';
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -1415,8 +1415,8 @@ const fullKey = normalizationCacheKey({sourceKey: 'clip.mp4:1234:9', target, spe
 assert.notEqual(trimKeyA, trimKeyB, 'different trims of one source must not share a cache key');
 assert.equal(trimKeyA, trimKeyARepeat);
 assert.notEqual(trimKeyA, fullKey);
-assert.match(trimKeyA, /trim:0-30\|original$/);
-assert.match(fullKey, /trim:full\|original$/);
+assert.match(trimKeyA, /trim:0-30\|kf:0\|original$/);
+assert.match(fullKey, /trim:full\|kf:0\|original$/);
 pass('normalization cache keys carry the trim range: two trims differ, one trim repeats, and full-clip keys stay stable');
 
 const lookPixels = () => Uint8ClampedArray.from([10, 100, 200, 255, 255, 0, 128, 77]);
@@ -1443,6 +1443,21 @@ assert.equal(originalKey, normalizationCacheKey({...cacheBase, look: 'original'}
 assert.match(negativeKey, /color-negative$/);
 assert.throws(() => normalizationCacheKey({target: {}, look: 'original'}), LookValueError);
 pass('normalization cache keys include source, target, speed, and look; duplicate settings reproduce the same key');
+
+const periodicKey = normalizationCacheKey({...cacheBase, look: 'original', keyframeInterval: 30});
+const singleKey = normalizationCacheKey({...cacheBase, look: 'original', keyframeInterval: 0});
+assert.notEqual(periodicKey, singleKey, 'a cadence change must not reuse prepared bytes');
+assert.match(periodicKey, /\|kf:30\|original$/);
+assert.match(singleKey, /\|kf:0\|original$/);
+assert.deepEqual(
+  Array.from({length: 91}, (_, index) => index).filter(index => isNormalizationKeyframe(index)),
+  [0],
+);
+assert.deepEqual(
+  Array.from({length: 91}, (_, index) => index).filter(index => isNormalizationKeyframe(index, 30)),
+  [0, 30, 60, 90],
+);
+pass('the normalization cadence is part of the cache key and requests exactly one keyframe at frame 0 by default');
 
 function readInterleavedFloat32(path) {
   const bytes = readFileSync(path);

@@ -1,5 +1,14 @@
 import { normalizeSpeed } from './speed.js';
 
+// Normalization requests a single keyframe at frame 0 so the mosh prediction
+// chain survives the whole clip. 0 disables the periodic refresh; encoders may
+// still insert their own recovery IDRs.
+export const NORMALIZATION_KEYFRAME_INTERVAL = 0;
+
+export function isNormalizationKeyframe(index, interval = NORMALIZATION_KEYFRAME_INTERVAL) {
+  return index === 0 || (interval > 0 && index % interval === 0);
+}
+
 export const LOOKS = Object.freeze([
   {value: 'original', label: 'Original'},
   {value: 'black-white', label: 'Black & white'},
@@ -51,7 +60,15 @@ export function applyLookToRgba(rgba, look = 'original', width = null, height = 
   return rgba;
 }
 
-export function normalizationCacheKey({sourceKey = '', target, speed = 1, look = 'original', startFrame = 0, endFrame = null} = {}) {
+export function normalizationCacheKey({
+  sourceKey = '',
+  target,
+  speed = 1,
+  look = 'original',
+  startFrame = 0,
+  endFrame = null,
+  keyframeInterval = NORMALIZATION_KEYFRAME_INTERVAL,
+} = {}) {
   if (!target || !Number.isFinite(target.width) || !Number.isFinite(target.height)) {
     throw new LookValueError('A normalization cache key needs finite target dimensions.');
   }
@@ -60,5 +77,6 @@ export function normalizationCacheKey({sourceKey = '', target, speed = 1, look =
   const start = Number.isInteger(startFrame) ? Math.max(0, startFrame) : 0;
   const end = Number.isInteger(endFrame) ? endFrame : null;
   const trim = start === 0 && end === null ? 'full' : `${start}-${end ?? 'end'}`;
-  return `${String(sourceKey)}|${width}x${height}|${normalizeSpeed(speed).toFixed(1)}|trim:${trim}|${normalizeLook(look)}`;
+  const cadence = Number.isInteger(keyframeInterval) && keyframeInterval >= 0 ? keyframeInterval : NORMALIZATION_KEYFRAME_INTERVAL;
+  return `${String(sourceKey)}|${width}x${height}|${normalizeSpeed(speed).toFixed(1)}|trim:${trim}|kf:${cadence}|${normalizeLook(look)}`;
 }

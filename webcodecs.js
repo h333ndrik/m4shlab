@@ -6,11 +6,10 @@ import { parseAvcConfig } from './merge.js';
 import { buildNormalizedMp4, chooseNormalizationTarget } from './webcodecs-muxer.js';
 import { frameRateForTrack } from './classic-mosh.js';
 import { normalizeSpeed, trimSpeedPlan } from './speed.js';
-import { applyLookToRgba, normalizeLook } from './looks.js';
+import { applyLookToRgba, isNormalizationKeyframe, normalizeLook } from './looks.js';
 
 const OUTPUT_FPS = 30;
 const OUTPUT_DURATION_US = 1_000_000 / OUTPUT_FPS;
-const KEYFRAME_INTERVAL = 30;
 const MAX_QUEUE = 8;
 const MAX_NORMALIZATION_BYTES = 100 * 1024 * 1024;
 
@@ -421,7 +420,7 @@ export async function normalizeWithWebCodecs(inputBytes, options = {}) {
             applyLookToRgba(image.data, look, target.width, target.height);
             const outputFrame = limitedI420Frame(image.data, target.width, target.height, timestamp);
             try {
-              encoder.encode(outputFrame, {keyFrame: outputIndex % KEYFRAME_INTERVAL === 0});
+              encoder.encode(outputFrame, {keyFrame: isNormalizationKeyframe(outputIndex)});
               encodedFrames += 1;
             } finally {
               outputFrame.close();
