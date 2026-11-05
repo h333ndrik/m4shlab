@@ -254,6 +254,50 @@ function consoleMessages(client, fromIndex) {
     }));
 }
 
+function framePixels(path, index) {
+  const result = spawnSync('ffmpeg', [
+    '-v', 'error', '-i', path,
+    '-vf', `select=eq(n\\,${index})`, '-vframes', '1',
+    '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-',
+  ], {cwd: projectRoot, maxBuffer: 64 * 1024 * 1024});
+  if (result.status !== 0) throw new Error(`ffmpeg could not extract frame ${index} of ${path}: ${result.stderr}`);
+  return result.stdout;
+}
+
+function toLumaRgb(buffer) {
+  const output = Buffer.from(buffer);
+  for (let index = 0; index + 2 < output.length; index += 3) {
+    const luma = Math.round(0.299 * output[index] + 0.587 * output[index + 1] + 0.114 * output[index + 2]);
+    output[index] = luma;
+    output[index + 1] = luma;
+    output[index + 2] = luma;
+  }
+  return output;
+}
+
+function meanAbsRgbDiff(left, right) {
+  const length = Math.min(left.length, right.length);
+  let total = 0;
+  let channels = 0;
+  for (let index = 0; index + 2 < length; index += 3) {
+    total += Math.abs(left[index] - right[index])
+      + Math.abs(left[index + 1] - right[index + 1])
+      + Math.abs(left[index + 2] - right[index + 2]);
+    channels += 3;
+  }
+  return channels ? total / channels : Number.NaN;
+}
+
+function meanChromaSpread(buffer) {
+  let total = 0;
+  let pixels = 0;
+  for (let index = 0; index + 2 < buffer.length; index += 3) {
+    total += Math.abs(buffer[index] - buffer[index + 1]) + Math.abs(buffer[index + 1] - buffer[index + 2]);
+    pixels += 2;
+  }
+  return pixels ? total / pixels : Number.NaN;
+}
+
 function requiredFixturesExist() {
   return Object.values(fixtures).every(path => existsSync(path));
 }
@@ -2225,12 +2269,67 @@ try {
     })()`);
     assert.deepEqual(resolvedSkeletons.names, ['skeleton-a.mov', 'skeleton-b.mov', 'skeleton-c.mov']);
     assert.equal(resolvedSkeletons.error, null, resolvedSkeletons.error);
-    assert.ok(Math.abs(resolvedSkeletons.width - skeletonState.width) < 0.5);
-    assert.ok(Math.abs(resolvedSkeletons.height - skeletonState.height) < 1);
+    assert.equal(resolvedSkeletons.width, skeletonState.width, 'fine pointer: skeleton and card width must match exactly');
+    assert.equal(resolvedSkeletons.height, skeletonState.height, 'fine pointer: skeleton and card height must match exactly');
     assert.ok(resolvedSkeletons.statuses.some(states => states.length === 3 && states.includes('waiting')));
+    const fineVars = await client.evaluate(`(() => {
+      const style = getComputedStyle(document.documentElement);
+      return {
+        width: style.getPropertyValue('--clip-card-w').trim(),
+        height: style.getPropertyValue('--clip-card-h').trim(),
+        control: style.getPropertyValue('--clip-control-min').trim(),
+      };
+    })()`);
+    assert.equal(fineVars.width, '148px');
+    assert.equal(fineVars.height, '211.5px');
+    assert.equal(fineVars.control, '28px');
+    assert.equal(`${parseFloat(fineVars.width)}`, `${skeletonState.width}`);
+    assert.equal(`${parseFloat(fineVars.height)}`, `${skeletonState.height}`);
     await client.evaluate("window.__skeletonObserver?.disconnect()");
+    console.log(`PASS fine pointer: skeleton and card both measure exactly ${skeletonState.width}x${skeletonState.height} from --clip-card-w/--clip-card-h`);
+
+    await client.send('Emulation.setDeviceMetricsOverride', {width: 390, height: 900, deviceScaleFactor: 1, mobile: true});
+    await client.send('Emulation.setTouchEmulationEnabled', {enabled: true, maxTouchPoints: 5});
+    await client.send('Page.navigate', {url: `${baseUrl}?skeleton-coarse=1`});
+    await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
+    await client.setFiles('#file-input-a', skeletonFixtures);
+    await client.waitFor("document.querySelectorAll('.clip-skeleton').length === 3", 15000);
+    const coarseSkeleton = await client.evaluate(`(() => {
+      const card = document.querySelector('.clip-skeleton');
+      const rect = card.getBoundingClientRect();
+      const button = card.querySelector('.clip-controls button').getBoundingClientRect();
+      const style = getComputedStyle(document.documentElement);
+      return {
+        width: rect.width,
+        height: rect.height,
+        coarse: matchMedia('(pointer: coarse)').matches,
+        controlWidth: Math.round(button.width),
+        controlHeight: Math.round(button.height),
+        cssWidth: style.getPropertyValue('--clip-card-w').trim(),
+        cssHeight: style.getPropertyValue('--clip-card-h').trim(),
+        cssControl: style.getPropertyValue('--clip-control-min').trim(),
+      };
+    })()`);
+    assert.equal(coarseSkeleton.coarse, true);
+    assert.equal(coarseSkeleton.controlWidth, 44);
+    assert.equal(coarseSkeleton.controlHeight, 44);
+    assert.equal(coarseSkeleton.cssControl, '44px');
+    await client.waitFor("document.querySelectorAll('.clip-skeleton').length === 0 && document.querySelectorAll('.clip-card:not(.clip-skeleton)').length === 3", 180000);
+    await client.waitFor("document.querySelector('#status').textContent.includes('samples') || !document.querySelector('#error').hidden", 180000);
+    const coarseResolved = await client.evaluate(`(() => {
+      const card = document.querySelectorAll('.clip-card:not(.clip-skeleton)')[0];
+      const rect = card.getBoundingClientRect();
+      return {width: rect.width, height: rect.height, error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent};
+    })()`);
+    assert.equal(coarseResolved.error, null, coarseResolved.error);
+    assert.equal(coarseResolved.width, coarseSkeleton.width, 'coarse pointer: skeleton and card width must match exactly');
+    assert.equal(coarseResolved.height, coarseSkeleton.height, 'coarse pointer: skeleton and card height must match exactly');
+    assert.equal(`${parseFloat(coarseSkeleton.cssWidth)}`, `${coarseSkeleton.width}`);
+    assert.equal(`${parseFloat(coarseSkeleton.cssHeight)}`, `${coarseSkeleton.height}`);
+    await client.send('Emulation.setTouchEmulationEnabled', {enabled: false, maxTouchPoints: 1});
+    await client.send('Emulation.setDeviceMetricsOverride', {width: 1200, height: 1600, deviceScaleFactor: 1, mobile: false});
     await client.send('Emulation.setEmulatedMedia', {features: []});
-    console.log(`PASS three-file import showed 3 skeleton cards (${skeletonState.width}x${skeletonState.height}); reduced-motion shimmer was static and cards resolved in order at identical geometry`);
+    console.log(`PASS coarse pointer: skeleton and card both measure exactly ${coarseSkeleton.width}x${coarseSkeleton.height} (${coarseSkeleton.cssHeight}) with 44px controls`);
 
     const webCodecsStub = await client.send('Page.addScriptToEvaluateOnNewDocument', {
       source: "Object.defineProperty(globalThis, 'VideoDecoder', {value: undefined, configurable: true}); Object.defineProperty(globalThis, 'VideoEncoder', {value: undefined, configurable: true});",
@@ -2614,6 +2713,74 @@ try {
     assert.equal(noControllerCase.immediate, 1, 'without a controller the reload must be immediate');
     assert.equal(noControllerCase.final, 1, 'no timeout may be left behind');
     console.log('PASS no service worker controller reloads immediately and leaves no timer behind');
+
+    const unregisterCase = await reloadScenario(`
+      setController({});
+      let reloads = 0;
+      let unregistered = 0;
+      const registration = new EventTarget();
+      registration.update = async () => {};
+      registration.installing = null;
+      registration.waiting = null;
+      registration.unregister = async () => { unregistered += 1; return true; };
+      window.m4shlabTest.reloadAfterControllerChange({
+        registration,
+        onReload: () => { reloads += 1; },
+        timeoutMs: 50,
+      });
+      await new Promise(resolve => setTimeout(resolve, 200));
+      return {reloads, unregistered};
+    `);
+    assert.equal(unregisterCase.reloads, 1);
+    assert.equal(unregisterCase.unregistered, 1, 'the timeout path must unregister before reloading');
+    console.log('PASS the reload timeout unregisters the stale registration before reloading exactly once');
+
+    const installingCase = await reloadScenario(`
+      setController({});
+      let reloads = 0;
+      let unregistered = 0;
+      const registration = new EventTarget();
+      registration.update = async () => {};
+      const installing = new EventTarget();
+      installing.state = 'installing';
+      registration.installing = installing;
+      registration.waiting = null;
+      registration.unregister = async () => { unregistered += 1; return true; };
+      window.m4shlabTest.reloadAfterControllerChange({
+        registration,
+        onReload: () => { reloads += 1; },
+        timeoutMs: 50,
+      });
+      await new Promise(resolve => setTimeout(resolve, 200));
+      const afterTimeout = reloads;
+      installing.state = 'activated';
+      installing.dispatchEvent(new Event('statechange'));
+      await new Promise(resolve => setTimeout(resolve, 50));
+      return {afterTimeout, reloads, unregistered};
+    `);
+    assert.equal(installingCase.afterTimeout, 0, 'an in-flight install must defer the reload');
+    assert.equal(installingCase.reloads, 1);
+    assert.equal(installingCase.unregistered, 0, 'an in-flight install must not be unregistered');
+    console.log('PASS a timeout during an in-flight install waits for the activated state without unregistering');
+
+    const rejectingUnregisterCase = await reloadScenario(`
+      setController({});
+      let reloads = 0;
+      const registration = new EventTarget();
+      registration.update = async () => {};
+      registration.installing = null;
+      registration.waiting = null;
+      registration.unregister = async () => { throw new Error('unregister refused'); };
+      window.m4shlabTest.reloadAfterControllerChange({
+        registration,
+        onReload: () => { reloads += 1; },
+        timeoutMs: 50,
+      });
+      await new Promise(resolve => setTimeout(resolve, 200));
+      return {reloads};
+    `);
+    assert.equal(rejectingUnregisterCase.reloads, 1);
+    console.log('PASS a rejecting unregister still reloads exactly once');
 
     const rejectedUpdateCase = await reloadScenario(`
       setController({});
@@ -3130,6 +3297,250 @@ try {
   assert.deepEqual(afterBadTrim, beforeBadTrim, 'a trim beyond the clip must leave the timeline byte-identical');
   assert.equal(client.exceptions.length, trimExceptionsStart);
   console.log('PASS a settings trim beyond the clip length errors out and leaves names, trims, transitions and report untouched');
+
+  // Trim hardening: seconds inputs, clamp preview, thumbnail in-point.
+  const hardeningExceptionsStart = client.exceptions.length;
+  await client.send('Emulation.setDeviceMetricsOverride', {width: 1200, height: 1600, deviceScaleFactor: 1, mobile: false});
+  await client.send('Page.navigate', {url: `${baseUrl}?trim-hardening=1`});
+  await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
+  await client.setFiles('#file-input-a', [fixtures.speed, fixtures.silentB]);
+  await client.waitFor("document.querySelectorAll('.clip-card').length === 2", 30000);
+  await client.waitFor(`(() => {
+    try { return JSON.parse(document.querySelector('#report').textContent).stage === 'merged'; } catch { return false; }
+  })()`, 180000);
+
+  await client.evaluate("document.querySelectorAll('.clip-card')[0].querySelector('.clip-trim-button').click()");
+  await client.waitFor("document.querySelector('#trim-dialog')?.open === true", 5000);
+  const secondsSync = await client.evaluate(`(() => {
+    const startSeconds = document.querySelector('#trim-start-seconds');
+    const endSeconds = document.querySelector('#trim-end-seconds');
+    startSeconds.value = '1.0';
+    startSeconds.dispatchEvent(new Event('input', {bubbles: true}));
+    endSeconds.value = '1.5';
+    endSeconds.dispatchEvent(new Event('input', {bubbles: true}));
+    const typed = {start: document.querySelector('#trim-start').value, end: document.querySelector('#trim-end').value};
+    const startFrames = document.querySelector('#trim-start');
+    const endFrames = document.querySelector('#trim-end');
+    startFrames.value = '12';
+    startFrames.dispatchEvent(new Event('input', {bubbles: true}));
+    endFrames.value = '42';
+    endFrames.dispatchEvent(new Event('input', {bubbles: true}));
+    const frameSeconds = {start: document.querySelector('#trim-start-seconds').value, end: document.querySelector('#trim-end-seconds').value};
+    document.querySelector('#trim-start-seconds').dispatchEvent(new Event('input', {bubbles: true}));
+    document.querySelector('#trim-end-seconds').dispatchEvent(new Event('input', {bubbles: true}));
+    return {
+      typed,
+      frameSeconds,
+      roundTrip: {start: document.querySelector('#trim-start').value, end: document.querySelector('#trim-end').value},
+      inputModes: [startSeconds.getAttribute('inputmode'), endSeconds.getAttribute('inputmode')],
+      step: startSeconds.getAttribute('step'),
+      readout: document.querySelector('#trim-readout').textContent,
+    };
+  })()`);
+  assert.deepEqual(secondsSync.typed, {start: '30', end: '45'}, '1.0 s and 1.5 s at 30 fps must map to frames 30 and 45');
+  assert.deepEqual(secondsSync.frameSeconds, {start: '0.40', end: '1.40'});
+  assert.deepEqual(secondsSync.roundTrip, {start: '12', end: '42'}, 'frames -> seconds -> frames must not drift');
+  assert.deepEqual(secondsSync.inputModes, ['decimal', 'decimal']);
+  assert.equal(secondsSync.step, '0.1');
+  assert.match(secondsSync.readout, /30 frames · 1\.00 s at 30 fps · 1\.00 s at 30 fps/);
+  console.log('PASS seconds inputs (inputmode decimal, step 0.1) map 1.0/1.5 s to frames 30/45 and round-trip 12/42 without drift');
+
+  await client.evaluate("document.querySelector('#trim-dialog').close()");
+  await client.evaluate("document.querySelector('.connector').click()");
+  await client.waitFor("document.querySelector('#transition-dialog')?.open === true", 5000);
+  await client.evaluate(`(() => {
+    const slider = document.querySelector('#transition-duration');
+    slider.value = slider.max;
+    slider.dispatchEvent(new Event('input', {bubbles: true}));
+    document.querySelector('#transition-apply').click();
+  })()`);
+  await client.waitFor(`(() => {
+    try {
+      const report = JSON.parse(document.querySelector('#report').textContent);
+      return report.stage === 'merged' && report.transitions[0]?.effective_frames > 9;
+    } catch { return false; }
+  })()`, 180000);
+  const beforeClampPreview = await client.evaluate(`(() => {
+    const report = JSON.parse(document.querySelector('#report').textContent);
+    return {frames: report.transitions[0].effective_frames, seconds: report.transitions[0].durationSeconds};
+  })()`);
+
+  await client.evaluate("document.querySelectorAll('.clip-card')[1].querySelector('.clip-trim-button').click()");
+  await client.waitFor("document.querySelector('#trim-dialog')?.open === true", 5000);
+  const clampPreview = await client.evaluate(`(() => {
+    const start = document.querySelector('#trim-start');
+    const end = document.querySelector('#trim-end');
+    start.value = '0';
+    start.dispatchEvent(new Event('input', {bubbles: true}));
+    end.value = '10';
+    end.dispatchEvent(new Event('input', {bubbles: true}));
+    const hint = document.querySelector('#trim-clamp');
+    return {hidden: hint.hidden, text: hint.textContent};
+  })()`);
+  assert.equal(clampPreview.hidden, false, 'a shrinking trim must preview the clamp before Apply');
+  assert.match(
+    clampPreview.text,
+    new RegExp(`^1 transition will clamp: ${beforeClampPreview.seconds.toFixed(2)} s → 0\\.30 s$`),
+    `unexpected clamp preview: ${clampPreview.text}`,
+  );
+  await client.evaluate("document.querySelector('#trim-apply').click()");
+  await client.waitFor(`(() => {
+    try { return JSON.parse(document.querySelector('#report').textContent).stage === 'merged'; } catch { return false; }
+  })()`, 180000);
+  const afterClampPreview = await client.evaluate(`(() => {
+    const report = JSON.parse(document.querySelector('#report').textContent);
+    return {
+      connector: document.querySelector('.connector').lastElementChild.textContent,
+      frames: report.transitions[0].effective_frames,
+      seconds: report.transitions[0].durationSeconds,
+      clamped: report.transitions[0].clamped,
+    };
+  })()`);
+  assert.equal(afterClampPreview.clamped, true);
+  assert.equal(afterClampPreview.frames, 9);
+  assert.equal(afterClampPreview.connector, `0.30 s · restore`);
+  assert.ok(clampPreview.text.endsWith(`0.30 s`), 'the previewed value must equal the applied value');
+  console.log(`PASS the trim dialog previews "${clampPreview.text}" before Apply and the connector lands on exactly ${afterClampPreview.connector}`);
+
+  const thumbBefore = await client.evaluate(`(async () => {
+    document.querySelector('#trim-dialog').close();
+    const card = document.querySelectorAll('.clip-card')[0];
+    const video = card.querySelector('.clip-thumb video');
+    for (let i = 0; i < 60 && video.readyState < 2; i += 1) await new Promise(r => setTimeout(r, 100));
+    const canvas = document.createElement('canvas');
+    canvas.width = 32;
+    canvas.height = 32;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0, 32, 32);
+    const data = ctx.getImageData(0, 0, 32, 32).data;
+    let hash = 0;
+    for (let i = 0; i < data.length; i += 4) hash = (Math.imul(hash, 31) + data[i] + data[i + 1] * 7 + data[i + 2] * 13) >>> 0;
+    return {hash, time: video.currentTime, src: video.currentSrc || video.src};
+  })()`);
+  await client.evaluate("document.querySelectorAll('.clip-card')[0].querySelector('.clip-trim-button').click()");
+  await client.waitFor("document.querySelector('#trim-dialog')?.open === true", 5000);
+  await client.evaluate(`(() => {
+    const start = document.querySelector('#trim-start');
+    const end = document.querySelector('#trim-end');
+    start.value = '10';
+    start.dispatchEvent(new Event('input', {bubbles: true}));
+    end.value = '40';
+    end.dispatchEvent(new Event('input', {bubbles: true}));
+    document.querySelector('#trim-apply').click();
+  })()`);
+  await client.waitFor(`(() => {
+    try { return JSON.parse(document.querySelector('#report').textContent).stage === 'merged'; } catch { return false; }
+  })()`, 180000);
+  const thumbTrimmed = await client.evaluate(`(async () => {
+    const card = document.querySelectorAll('.clip-card')[0];
+    const video = card.querySelector('.clip-thumb video');
+    for (let i = 0; i < 60 && video.readyState < 2; i += 1) await new Promise(r => setTimeout(r, 100));
+    const canvas = document.createElement('canvas');
+    canvas.width = 32;
+    canvas.height = 32;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0, 32, 32);
+    const data = ctx.getImageData(0, 0, 32, 32).data;
+    let hash = 0;
+    for (let i = 0; i < data.length; i += 4) hash = (Math.imul(hash, 31) + data[i] + data[i + 1] * 7 + data[i + 2] * 13) >>> 0;
+    return {hash, time: video.currentTime, src: video.currentSrc || video.src};
+  })()`);
+  assert.notEqual(thumbTrimmed.hash, thumbBefore.hash, 'the trimmed thumbnail must show the in-point frame');
+  assert.ok(thumbTrimmed.src.includes('#t=0.33'), `thumbnail must seek to the in-point, saw ${thumbTrimmed.src}`);
+
+  await client.evaluate("document.querySelectorAll('.clip-card')[0].querySelector('.clip-trim-button').click()");
+  await client.waitFor("document.querySelector('#trim-dialog')?.open === true", 5000);
+  await client.evaluate("document.querySelector('#trim-reset').click(); document.querySelector('#trim-apply').click();");
+  await client.waitFor(`(() => {
+    try { return JSON.parse(document.querySelector('#report').textContent).stage === 'merged'; } catch { return false; }
+  })()`, 180000);
+  const thumbReset = await client.evaluate(`(async () => {
+    const card = document.querySelectorAll('.clip-card')[0];
+    const video = card.querySelector('.clip-thumb video');
+    for (let i = 0; i < 60 && video.readyState < 2; i += 1) await new Promise(r => setTimeout(r, 100));
+    const canvas = document.createElement('canvas');
+    canvas.width = 32;
+    canvas.height = 32;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0, 32, 32);
+    const data = ctx.getImageData(0, 0, 32, 32).data;
+    let hash = 0;
+    for (let i = 0; i < data.length; i += 4) hash = (Math.imul(hash, 31) + data[i] + data[i + 1] * 7 + data[i + 2] * 13) >>> 0;
+    return {hash, src: video.currentSrc || video.src};
+  })()`);
+  assert.equal(thumbReset.hash, thumbBefore.hash, 'Reset must bring the thumbnail back to frame 0');
+  assert.ok(thumbReset.src.includes('#t=0.001'));
+  assert.equal(client.exceptions.length, hardeningExceptionsStart);
+  console.log('PASS the card thumbnail jumps to the trim in-point, differs from the untrimmed card and returns to frame 0 after Reset');
+
+  // Task C: the look must land on the trimmed pixels, not on frame 0.
+  const pixelsExportPath = join(downloadDir, 'Trim-Pixels.mp4');
+  rmSync(pixelsExportPath, {force: true});
+  await client.send('Page.navigate', {url: `${baseUrl}?trim-look-pixels=1`});
+  await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
+  await client.setFiles('#file-input-a', [fixtures.speed, fixtures.silentB]);
+  await client.waitFor("document.querySelectorAll('.clip-card').length === 2", 30000);
+  await client.waitFor(`(() => {
+    try { return JSON.parse(document.querySelector('#report').textContent).stage === 'merged'; } catch { return false; }
+  })()`, 180000);
+  await client.evaluate(`(() => {
+    document.querySelectorAll('.clip-card')[0].querySelector('.clip-look select').value = 'black-white';
+    document.querySelectorAll('.clip-card')[0].querySelector('.clip-look select').dispatchEvent(new Event('change', {bubbles: true}));
+  })()`);
+  await client.waitFor(`(() => {
+    try { return JSON.parse(document.querySelector('#report').textContent).sources.clips[0]?.look === 'black-white'; } catch { return false; }
+  })()`, 180000);
+  await client.evaluate("document.querySelectorAll('.clip-card')[0].querySelector('.clip-trim-button').click()");
+  await client.waitFor("document.querySelector('#trim-dialog')?.open === true", 5000);
+  await client.evaluate(`(() => {
+    const start = document.querySelector('#trim-start');
+    const end = document.querySelector('#trim-end');
+    start.value = '10';
+    start.dispatchEvent(new Event('input', {bubbles: true}));
+    end.value = '40';
+    end.dispatchEvent(new Event('input', {bubbles: true}));
+    document.querySelector('#trim-apply').click();
+  })()`);
+  await client.waitFor(`(() => {
+    const node = document.querySelector('#report');
+    try {
+      const report = JSON.parse(node.textContent);
+      return report.stage === 'merged' && report.sources.clips[0]?.start_frame === 10 && report.sources.clips[0]?.look === 'black-white' && report.sources.clips[0]?.speed === 1;
+    } catch { return false; }
+  })()`, 180000);
+  await client.evaluate("document.querySelector('.connector').click()");
+  await client.waitFor("document.querySelector('#transition-dialog')?.open === true", 5000);
+  await client.evaluate(`(() => {
+    document.querySelector('#transition-method').value = 'cut';
+    document.querySelector('#transition-method').dispatchEvent(new Event('change', {bubbles: true}));
+    document.querySelector('#transition-apply').click();
+  })()`);
+  await client.waitFor(`(() => {
+    try { return JSON.parse(document.querySelector('#report').textContent).transitions[0]?.method === 'cut'; } catch { return false; }
+  })()`, 180000);
+  await client.evaluate(`(() => {
+    const input = document.querySelector('#project-name');
+    input.value = 'Trim Pixels';
+    input.dispatchEvent(new Event('input', {bubbles: true}));
+  })()`);
+  await client.evaluate("document.querySelector('#export-button').click()");
+  await waitForDownload(pixelsExportPath, 30000);
+
+  const mergedFrame = framePixels(pixelsExportPath, 0);
+  const chromaSpread = meanChromaSpread(mergedFrame);
+  const neighbours = [0, 8, 9, 10, 11, 12, 14].map(index => ({
+    index,
+    difference: meanAbsRgbDiff(mergedFrame, toLumaRgb(framePixels(fixtures.speed, index))),
+  }));
+  const best = neighbours.reduce((winner, entry) => (entry.difference < winner.difference ? entry : winner));
+  const madInPoint = neighbours.find(entry => entry.index === 10).difference;
+  const madFrameZero = neighbours.find(entry => entry.index === 0).difference;
+  assert.equal(best.index, 10, `the exported frame matches source frame ${best.index} best, not the trim in-point 10`);
+  assert.ok(madInPoint <= 16, `exported frame 0 differs from source frame 10 by ${madInPoint.toFixed(2)} (tolerance 16 for encoder loss)`);
+  assert.ok(chromaSpread <= 2, `exported frame 0 is not neutral: mean chroma spread ${chromaSpread.toFixed(2)}`);
+  assert.ok(madFrameZero >= 18, `the negative half must fail: frame 0 vs source frame 0 is only ${madFrameZero.toFixed(2)}`);
+  assert.ok(madFrameZero > madInPoint + 4, `frame 0 vs source frame 0 (${madFrameZero.toFixed(2)}) must be clearly worse than vs the in-point (${madInPoint.toFixed(2)})`);
+  console.log(`PASS black & white lands on the trimmed pixels: exported frame 0 matches source frame 10 best (MAD ${madInPoint.toFixed(2)} <= 16, chroma ${chromaSpread.toFixed(2)}) and misses source frame 0 (MAD ${madFrameZero.toFixed(2)} >= 18)`);
 
   if (client.exceptions.length) throw new Error(`Browser exceptions:\n${client.exceptions.join('\n')}`);
 } finally {

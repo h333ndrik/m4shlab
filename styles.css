@@ -9,6 +9,9 @@
   --line: #d2d2ce;
   --soft-line: #deded9;
   --surface: #fafaf8;
+  --clip-card-w: 148px;
+  --clip-card-h: 211.5px;
+  --clip-control-min: 28px;
 }
 
 * { box-sizing: border-box; }
@@ -223,6 +226,12 @@ button:focus-visible,
 .trim-ranges input { width: 100%; }
 
 .trim-readout {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.trim-clamp {
   margin: 0 0 10px;
   color: var(--muted);
   font-size: 11px;
@@ -455,8 +464,9 @@ button:focus-visible,
 
 .clip-card {
   display: flex;
-  flex: 0 0 148px;
+  flex: 0 0 var(--clip-card-w);
   min-width: 0;
+  min-height: var(--clip-card-h);
   flex-direction: column;
   overflow: hidden;
   border: 1px solid #d6d6d2;
@@ -638,7 +648,7 @@ button:focus-visible,
 }
 
 .clip-controls button {
-  min-width: 28px;
+  min-width: var(--clip-control-min);
   border: 0;
   padding: 4px 7px;
   font-size: 12px;
@@ -1033,9 +1043,13 @@ button:focus-visible,
 }
 
 @media (pointer: coarse) {
+  :root {
+    --clip-card-h: 363.5px;
+    --clip-control-min: 44px;
+  }
   button,
   .button { min-height: 44px; }
-  .clip-controls button { min-width: 44px; min-height: 44px; padding: 8px; }
+  .clip-controls button { min-height: 44px; padding: 8px; }
   .clip-speed-heading button { min-height: 44px; padding: 8px; }
   .clip-look select { min-height: 44px; }
   .project-name { min-height: 44px; }

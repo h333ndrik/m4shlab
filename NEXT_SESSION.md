@@ -1,8 +1,14 @@
 # m4shlab v1.1 — user review and device testing pending
 
+## Test-infrastructure rule: capability stubs
+
+A stub that changes a global capability (for example replacing `VideoDecoder`/`VideoEncoder` with `undefined`) must be removed inside the same test's teardown, and the next scenario must run on a freshly navigated page. The WebCodecs stub in `tests/webcodecs.browser.mjs` installs right before the two ffmpeg.wasm fallback checks and is now removed with `Page.removeScriptToEvaluateOnNewDocument` immediately afterwards; a fresh page then asserts `typeof VideoDecoder + '/' + typeof VideoEncoder === 'function/function'`.
+
+Historical note: between `841a1eb` (Phase C) and `5b4cb8b` the stub stayed installed for every later navigation. The shell-guard, optional-element and reload-guard checks that ran during that window import native H.264 fixtures through the Tier-1 path and do not touch WebCodecs, so their assertions were unaffected; the connector-parity check was affected (it normalized through ffmpeg.wasm while claiming the native path) and was fixed by removing the stub and asserting the native constructors before that scenario.
+
 ## Status
 
-m4shlab v1.1 is the current complete browser release candidate. The v1.0 tag remains immutable at `2aa8ee5`; v1.1 adds per-clip looks, the persistent sound/export toggle, and live preview time and labels. Automated verification is **83 Node / 89 WebCodecs / 6 PWA** checks passing (the shell guard and settings transactionality block added 1 Node and 18 WebCodecs checks). Physical-device acceptance remains pending.
+m4shlab v1.1 is the current complete browser release candidate. The v1.0 tag remains immutable at `2aa8ee5`; v1.1 adds per-clip looks, the persistent sound/export toggle, and live preview time and labels. Automated verification is **83 Node / 100 WebCodecs / 6 PWA** checks passing (the shell guard and settings transactionality block added 1 Node and 18 WebCodecs checks). Physical-device acceptance remains pending.
 
 Do not move or delete either release tag. Record device findings first, reproduce them against a fixture where possible, and propose a scoped fix before changing the release state.
 

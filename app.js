@@ -20,7 +20,7 @@ import {
 import { isWebCodecsAvailable, normalizeWithWebCodecs } from './webcodecs.js';
 import { chooseNormalizationTarget } from './webcodecs-muxer.js';
 import { frameRateForTrack, maxMoshFrames } from './classic-mosh.js';
-import { atempoChain, normalizeSpeed, SPEED_MAX, SPEED_MIN, SPEED_STEP } from './speed.js';
+import { atempoChain, normalizeSpeed, speedOutputFrameCount, SPEED_MAX, SPEED_MIN, SPEED_STEP } from './speed.js';
 import { canRandomize, normalizeSeed, randomizeTransition } from './randomize.js';
 import { LOOKS, normalizeLook, normalizationCacheKey } from './looks.js';
 import {
@@ -37,7 +37,7 @@ import {
 } from './audio.js';
 
 const MAX_CLIPS = 12;
-const BUILD = 'v24';
+const BUILD = 'v25';
 const SHELL_NOTICE_MIXED = 'This page mixes two m4shlab versions. Reload to get a consistent editor.';
 const SHELL_NOTICE_INCOMPLETE = 'This editor is incomplete. Reload the page.';
 const REQUIRED_UI = [
@@ -103,6 +103,9 @@ const OPTIONAL_UI = [
   'trim-start-range',
   'trim-end-range',
   'trim-readout',
+  'trim-clamp',
+  'trim-start-seconds',
+  'trim-end-seconds',
   'trim-error',
   'trim-preview-in',
   'trim-preview-out',
@@ -151,6 +154,9 @@ const trimEndInput = document.querySelector('#trim-end');
 const trimStartRange = document.querySelector('#trim-start-range');
 const trimEndRange = document.querySelector('#trim-end-range');
 const trimReadout = document.querySelector('#trim-readout');
+const trimClamp = document.querySelector('#trim-clamp');
+const trimStartSeconds = document.querySelector('#trim-start-seconds');
+const trimEndSeconds = document.querySelector('#trim-end-seconds');
 const trimError = document.querySelector('#trim-error');
 const trimPreviewIn = document.querySelector('#trim-preview-in');
 const trimPreviewOut = document.querySelector('#trim-preview-out');
@@ -218,9 +224,7 @@ function reloadAfterControllerChange({registration, onReload = () => location.re
   let timer = null;
   let watchedWorker = null;
 
-  const cleanup = () => {
-    if (done) return;
-    done = true;
+  const detach = () => {
     if (timer !== null) {
       clearTimeout(timer);
       timer = null;
@@ -231,9 +235,27 @@ function reloadAfterControllerChange({registration, onReload = () => location.re
     watchedWorker = null;
   };
 
+  const cleanup = () => {
+    if (done) return;
+    done = true;
+    detach();
+  };
+
   const fire = () => {
     if (done) return;
-    cleanup();
+    done = true;
+    detach();
+    onReload();
+  };
+
+  const timeoutFallback = async () => {
+    if (done) return;
+    if (registration.installing || registration.waiting) return;
+    done = true;
+    detach();
+    try {
+      await registration.unregister?.();
+    } catch {}
     onReload();
   };
 
@@ -253,7 +275,7 @@ function reloadAfterControllerChange({registration, onReload = () => location.re
   container.addEventListener('controllerchange', fire);
   registration.addEventListener?.('updatefound', onUpdateFound);
   if (registration.installing) onUpdateFound();
-  timer = setTimeout(fire, timeoutMs);
+  timer = setTimeout(timeoutFallback, timeoutMs);
   Promise.resolve()
     .then(() => registration.update?.())
     .catch(() => {});
@@ -944,6 +966,13 @@ function preparedTrimSignature(clip) {
   return `${start}-${end}`;
 }
 
+function clipThumbnailOffset(clip) {
+  if (!clipIsTrimmed(clip)) return 0.001;
+  const fps = baseClipFps(clip);
+  if (!fps) return 0.001;
+  return Math.max(0.001, clipTrimRange(clip).startFrame / fps + 0.001);
+}
+
 function clipIsTrimmed(clip) {
   const trim = clipTrimRange(clip);
   return trim.trimmedFrames > 0 && (trim.startFrame > 0 || trim.endFrame < trim.sourceFrames);
@@ -973,12 +1002,34 @@ function moshBoundaryLimits(clip) {
   return {fps, maximumFrames: maxMoshFrames(track, boundarySample), boundarySample};
 }
 
+function clampMoshFrames(requestedFrames, maximumFrames) {
+  return Math.max(0, Math.min(maximumFrames, requestedFrames));
+}
+
+function projectedMoshSettings(clip, trim) {
+  const sourceFps = baseClipFps(clip) ?? 30;
+  const speed = normalizeSpeed(clip.speed ?? 1);
+  const frames = speed === 1 ? trim.trimmedFrames : speedOutputFrameCount(trim.trimmedFrames, sourceFps, speed);
+  const maximumFrames = Math.max(0, frames - 1);
+  const requested = clip?.moshDurationFrames === undefined || clip?.moshDurationFrames === null
+    ? maximumFrames
+    : Math.round(Number(clip.moshDurationFrames));
+  const effectiveFrames = clampMoshFrames(requested, maximumFrames);
+  return {
+    maximumFrames,
+    requestedFrames: requested,
+    effectiveFrames,
+    clamped: requested > maximumFrames,
+    fps: 30,
+  };
+}
+
 function moshSettingsForClip(clip) {
   const limits = moshBoundaryLimits(clip);
   const requested = clip?.moshDurationFrames;
   const defaultEnding = clip?.transition === 'melt' || clip?.transition === 'loop' ? 'continue' : 'restore';
   const requestedFrames = Number.isFinite(requested) ? Math.round(requested) : limits.maximumFrames;
-  const durationFrames = Math.max(0, Math.min(limits.maximumFrames, requestedFrames));
+  const durationFrames = clampMoshFrames(requestedFrames, limits.maximumFrames);
   return {
     ...limits,
     durationFrames,
@@ -1199,7 +1250,7 @@ function renderClipCard(index, clip) {
   preview.preload = 'metadata';
   preview.setAttribute('aria-hidden', 'true');
   preview.addEventListener('loadeddata', () => preview.classList.add('is-ready'), {once: true});
-  preview.src = `${clip.url}#t=0.001`;
+  preview.src = `${clip.url}#t=${clipThumbnailOffset(clip)}`;
   thumb.append(preview);
 
   const name = document.createElement('span');
@@ -1826,6 +1877,58 @@ function updateResetIntervalLimit() {
   updateResetPulseDisplay();
 }
 
+function projectedTrimRange(clip) {
+  const trim = clipTrimRange(clip);
+  const start = Math.round(Number(trimStartInput?.value));
+  const end = Math.round(Number(trimEndInput?.value));
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start || end > trim.sourceFrames) return null;
+  return {sourceFrames: trim.sourceFrames, startFrame: start, endFrame: end, trimmedFrames: end - start};
+}
+
+function trimClampPreview(index, trim) {
+  if (!trim) return [];
+  const entries = [];
+  for (const boundary of [index, index + 1]) {
+    if (!Number.isInteger(boundary) || boundary < 1 || boundary >= clips.length) continue;
+    const clip = clips[boundary];
+    if (!clip || clip.transition === 'cut') continue;
+    const settings = boundary === index ? projectedMoshSettings(clip, trim) : moshSettingsForClip(clip);
+    if (!settings.clamped) continue;
+    entries.push({
+      boundary,
+      before: settings.requestedFrames / 30,
+      after: settings.effectiveFrames / 30,
+      frames: settings.effectiveFrames,
+    });
+  }
+  return entries;
+}
+
+function updateTrimClampPreview() {
+  if (!trimClamp || trimClipIndex === null) return;
+  const clip = clips[trimClipIndex];
+  if (!clip) return;
+  const entries = trimClampPreview(trimClipIndex, projectedTrimRange(clip));
+  if (entries.length === 0) {
+    trimClamp.hidden = true;
+    trimClamp.textContent = '';
+    return;
+  }
+  const detail = entries.map(entry => `${entry.before.toFixed(2)} s → ${entry.after.toFixed(2)} s`).join(', ');
+  trimClamp.textContent = `${entries.length} transition${entries.length === 1 ? '' : 's'} will clamp: ${detail}`;
+  trimClamp.hidden = false;
+}
+
+function setTrimSecondsFromFrames() {
+  const clip = clips[trimClipIndex];
+  const fps = baseClipFps(clip);
+  if (!fps || !trimStartSeconds || !trimEndSeconds) return;
+  const start = Math.round(Number(trimStartInput.value));
+  const end = Math.round(Number(trimEndInput.value));
+  trimStartSeconds.value = Number.isFinite(start) ? (start / fps).toFixed(2) : '0';
+  trimEndSeconds.value = Number.isFinite(end) ? (end / fps).toFixed(2) : '0';
+}
+
 function trimDialogReady() {
   return Boolean(trimDialog && trimStartInput && trimEndInput && trimStartRange && trimEndRange && trimReadout && trimApply);
 }
@@ -1853,6 +1956,7 @@ function updateTrimReadout() {
   const atSource = fps ? `${transitionSeconds(frames, fps).toFixed(2)} s at ${fpsLabel} fps` : 'source fps unknown';
   const atTarget = `${transitionSeconds(frames, 30).toFixed(2)} s at 30 fps`;
   trimReadout.textContent = `${frames} frame${frames === 1 ? '' : 's'} · ${atSource} · ${atTarget}`;
+  updateTrimClampPreview();
 }
 
 function syncTrimDialog() {
@@ -1874,6 +1978,9 @@ function syncTrimDialog() {
   trimEndRange.min = '1';
   trimEndRange.max = String(sourceFrames);
   trimEndRange.value = String(trim.endFrame);
+  if (trimStartSeconds) trimStartSeconds.max = String(Math.max(0, sourceFrames - 1));
+  if (trimEndSeconds) trimEndSeconds.max = String(sourceFrames);
+  setTrimSecondsFromFrames();
   setTrimError('');
   updateTrimReadout();
 }
@@ -3126,18 +3233,40 @@ function wireOptionalUi() {
   if (trimDialogReady()) {
     trimStartInput.addEventListener('input', () => {
       trimStartRange.value = trimStartInput.value;
+      setTrimSecondsFromFrames();
       updateTrimReadout();
     });
     trimEndInput.addEventListener('input', () => {
       trimEndRange.value = trimEndInput.value;
+      setTrimSecondsFromFrames();
       updateTrimReadout();
     });
     trimStartRange.addEventListener('input', () => {
       trimStartInput.value = trimStartRange.value;
+      setTrimSecondsFromFrames();
       updateTrimReadout();
     });
     trimEndRange.addEventListener('input', () => {
       trimEndInput.value = trimEndRange.value;
+      setTrimSecondsFromFrames();
+      updateTrimReadout();
+    });
+    trimStartSeconds?.addEventListener('input', () => {
+      const fps = baseClipFps(clips[trimClipIndex]);
+      const seconds = Number(trimStartSeconds.value);
+      if (!fps || !Number.isFinite(seconds)) return;
+      const frame = Math.max(0, Math.round(seconds * fps));
+      trimStartInput.value = String(frame);
+      trimStartRange.value = String(frame);
+      updateTrimReadout();
+    });
+    trimEndSeconds?.addEventListener('input', () => {
+      const fps = baseClipFps(clips[trimClipIndex]);
+      const seconds = Number(trimEndSeconds.value);
+      if (!fps || !Number.isFinite(seconds)) return;
+      const frame = Math.max(1, Math.round(seconds * fps));
+      trimEndInput.value = String(frame);
+      trimEndRange.value = String(frame);
       updateTrimReadout();
     });
     trimPreviewIn?.addEventListener('click', () => previewTrimEdge('in'));
@@ -3150,6 +3279,7 @@ function wireOptionalUi() {
       trimEndInput.value = String(trim.sourceFrames);
       trimStartRange.value = '0';
       trimEndRange.value = String(trim.sourceFrames);
+      setTrimSecondsFromFrames();
       setTrimError('');
       updateTrimReadout();
     });
