@@ -1,10 +1,10 @@
 # m4shlab state
 
-Updated: 2026-11-05
+Updated: 2026-11-06
 
 ## Release v1.2
 
-**State: release preparation complete; the `m4shlab-v1.2` tag is deliberately not created.** The build stamp `v27` is a shell-consistency counter and **not** the release version; this release is **v1.2**.
+**State: release preparation complete; the `m4shlab-v1.2` tag is deliberately not created.** The build stamp `v32` is a shell-consistency counter and **not** the release version; this release is **v1.2**.
 
 Shipped since v1.1:
 
@@ -89,7 +89,7 @@ Browser and PWA counts are emitted PASS records. The deployment-only `201d418`/`
 - Speed: entry-specific 0.1×–4.0× frame mapping with pitch-preserving `atempo` audio.
 - Looks: Original, Black & white, B&W negative, and Color negative applied in the same WebCodecs encode pass as speed and scaling.
 - Randomize: reproducible 16-hex seeds, validated same-stream resampling, seed clearing on manual edits, and `random_seed` reports.
-- PWA: standalone install, light splash/theme, maskable m4 icons, service worker `v27`, 33 precached shell assets, runtime-cached ffmpeg.wasm, and offline app-shell startup.
+- PWA: standalone install, light splash/theme, maskable m4 icons, service worker `v32`, 33 precached shell assets, runtime-cached ffmpeg.wasm, and offline app-shell startup.
 - Preview: card-click clip selection and an **Assemble preview** action replace the removed A cut/merged toggle. The row keeps persistent sound state, live current/total time, and filename or assembled-sequence labels. The zero-clip state shows `0.00 / 0.00 s`; the export action has an explicit neutral disabled treatment; the timeline heading is title-case `Sequence` in markup and uppercase through the shared section-label style.
 - Native cursor: the h4ngelic h4 cursor artwork is used as a native CSS cursor (SVG with PNG fallback, hotspot `8 2`, every file <= 32px). A three-level `!important` cascade covers base, interactive and pressed states behind `(any-hover: hover) and (any-pointer: fine)`; touch devices keep the system cursor. `npm run test:cursor` checks a 24px hit grid at 1440/390/320, 26 mandatory surfaces, asset loading, the 32px budget, pressed state, drag and touch negatives.
 - Branding and UI: compact `m4shlab` wordmark; `m4sh` display label for the unchanged `classic-mosh` method; h4moshlab-style light layout, dark preview well, horizontal timeline, and no visible compatibility panel.
@@ -129,21 +129,21 @@ Browser and PWA counts are emitted PASS records. The deployment-only `201d418`/`
 - `manifest.json` declares standalone display, light `#f5f5f3` theme/background, `./` start/scope, SVG icon, 192px any icon, and 512px maskable PNG icon.
 - `favicon.svg` and `icon.svg` use Arial/Helvetica Bold 700 `m4` lettering on `#f5f5f3`; the favicon adapts the sibling h4 tile proportions, while the 512px PWA master keeps the wordmark within the maskable safe area. `favicon-32.png`, `icon-180.png`, `icon-192.png`, and `icon-512.png` are committed raster fallbacks.
 - `index.html` links the manifest, SVG and 32px PNG tab icons, sized 180px Apple touch icon, theme color, and Apple standalone metadata.
-- `sw.js` derives both `m4shlab-v27` and `m4shlab-runtime-v27` from one `VERSION` constant, and the same literal is stamped into `app.js` `BUILD`, the `m4shlab-build` meta tag, and `<html data-build>`; `npm test` fails on a half-bumped stamp. Install precaches 33 app-shell files, including both favicon assets, `parser/hevc.js`, `classic-mosh.js`, `speed.js`, `looks.js`, `randomize.js`, and `audio.js`, skips `converter-worker.js` and ffmpeg.wasm, calls `skipWaiting()`, and activate deletes old versioned caches before `clients.claim()`.
+- `sw.js` derives both `m4shlab-v32` and `m4shlab-runtime-v32` from one `VERSION` constant, and the same literal is stamped into `app.js` `BUILD`, the `m4shlab-build` meta tag, and `<html data-build>`; `npm test` fails on a half-bumped stamp. Install precaches 33 app-shell files, including both favicon assets, `parser/hevc.js`, `classic-mosh.js`, `speed.js`, `looks.js`, `randomize.js`, and `audio.js`, skips `converter-worker.js` and ffmpeg.wasm, calls `skipWaiting()`, and activate deletes old versioned caches before `clients.claim()`.
 - Static shell requests are cache-first. Navigation requests fall back to the cached `index.html`. Runtime cache-first applies only to `converter-worker.js` and the pinned jsDelivr ffmpeg core JS/WASM URLs.
 - `app.js` changes only by registering `./sw.js` after `load`; registration failures such as `file://` are swallowed so normal browser operation is unchanged.
 - Bump `VERSION` in `sw.js` whenever a shell or conversion-worker asset changes. Runtime cache separation keeps the 31 MB ffmpeg core out of shell precache; a version bump intentionally invalidates stale worker code too.
 
 ## Verification
 
-Current working-tree baseline on 2026-11-05 with Node 26.13.0, FFmpeg 9.0.2, and Chrome 156:
+Current working-tree baseline on 2026-11-06 with Node 26.13.0, FFmpeg 9.0.2, and Chrome 156:
 
-- `npm test`: **83/83 PASS** (includes the four-way build-stamp check at `v27`).
-- `npm run test:webcodecs`: **100/100 PASS** (includes the shell guard, optional-element matrix, settings transactionality, trim and frame-geometry cases).
+- `npm test`: **84/84 PASS** (includes the four-way build-stamp check at `v32`).
+- `npm run test:webcodecs`: **102/102 PASS with `skipped 0`** (includes the shell guard, optional-element matrix, settings transactionality, trim and frame-geometry cases, and the one-IDR cadence checks for the WebCodecs and ffmpeg.wasm encode paths). The suite prints `SUMMARY ... passed N / skipped M` as its last line and exits non-zero when a run skipped checks.
 - `npm run test:cursor`: **10/10 PASS** (hit grid, mandatory probes, rule winners, asset load, budget, pressed, dialogs, drag, touch, runtime).
 - `npm run test:pwa`: **6/6 PASS**, 33 precached shell assets.
 - `node --check` for all JavaScript and `git diff --check`: PASS.
-- Released v1.0 service worker: `v11`, SHA-256 `a177914d77bc094949cc24fef38d8086306121434b67e6bf7fe674cbe473a50e`. Current shell is `v27`.
+- Released v1.0 service worker: `v11`, SHA-256 `a177914d77bc094949cc24fef38d8086306121434b67e6bf7fe674cbe473a50e`. Current shell is `v32`.
 - PWA precache: 33 shell assets including `looks.js` and six cursor files; manifest/installability and offline reload pass.
 - Melt repeat=4: 315/315 decoded samples, with all non-header RBSP bits byte-identical. Melt duration=12/repeat=2: exact 12-frame window, Continue tail at donor 7, 105/105 decoded; Restore inserts the byte-identical incoming IDR at merged sample 37 and decodes 106/106. Gentler Melt uses source donors [1,1,2,2,3,3,4,6,8,10,11,12], caps each pre-release step at two, and decodes 99/99; Gentler Restore adds the anchor. Loop Release group=4: 99/99 decoded samples with blocks at donors 1/13 and release tail at 21; duration=12 scales to donors [1,2] 3× plus a chronological window and rejoins at donor 13. Reset Pulse interval=6/repeat=2: 99/99 with reset IDRs at merged samples 25/31, donor tables [1,1,2,2,3], and tail donor 13; Restore decodes 100/100; the default window matches an explicit full window byte-for-byte, and sub-frame durations raise `ValueError`. POC type 0 Melt: 171/171. POC type 0 Reset Pulse: 99/99 with segment frame_num/POC starts at 1. Chained Melt→Loop Release: 195/195; Loop Release→Cut: 124/124; Reset Pulse→Cut: 124/124; Reset Pulse→Classic Mosh: 123/123.
 - Native B-frame Melt/Loop Release/Reset Pulse rejects loudly; browser tests confirm native B-frame sources auto-normalize with WebCodecs before the effect runs.
@@ -166,13 +166,15 @@ Current working-tree baseline on 2026-11-05 with Node 26.13.0, FFmpeg 9.0.2, and
 - Normalization target coverage: 1440×1920 + 768×1024 + 320×240 selects one shared 540×720 target.
 - Classic Mosh restore: Phase A 10-frame window exact NAL sequence, byte-identical IDR reinsertion, 75/75 decoded source frames; Phase B 50/50 decoded frames; continue byte-identical to full-length output.
 - Duration 1 accepted; overlong windows clamp and report; durations below one frame raise `ValueError`; chained boundaries retain independent settings.
-- PWA browser test: manifest valid with resolving icons and exact favicon links; service worker v27 active and controlling; 33 shell assets cached; old cache removed; runtime cache contains three ffmpeg entries; offline reload works; offline HEVC conversion and merge produce a 120,718-byte, 59-frame H.264 export.
+- PWA browser test: manifest valid with resolving icons and exact favicon links; service worker v32 active and controlling; 33 shell assets cached; old cache removed; runtime cache contains three ffmpeg entries; offline reload works; offline HEVC conversion and merge produce a 120,718-byte, 59-frame H.264 export.
 - PWA export SHA-256: `47a7fcc6972956e34b9147fead68159350bf16d5f339098436dc5cd8dd25c7b9`.
 
 `npm run test:webcodecs` produced:
 
 - normalized source clips: 53,018 B / 52,775 B with one leading IDR sample each;
-- the 75-frame fixture produced keyframes at samples 1, 31, and 61; its merge retained two later IDRs and decoded 149/149 frames;
+- the 75-frame fixture emits one IDR at sample 1 (previously three at samples 1, 31 and 61) and its merge decodes 149/149 frames;
+- a 60-frame Melt window at merged samples 75-134 carries no IDR and decodes 194/194 frames;
+- the ffmpeg.wasm fallback (WebCodecs stubbed) converts the 75-frame 25 fps fixture to 90 frames and emits one IDR at sample 1 (previously three at samples 1, 31 and 61), decoding 90/90 frames with `has_b_frames=0`;
 - Safari-shaped POC type 0 multi-GOP pair merged with POC-LSB alignment and cleared stale errors;
 - POC type 0 with true B-frame reordering was rejected with an explicit picture-reordering message;
 - mobile layout stacked under 600px and kept 44px touch targets;
@@ -195,7 +197,7 @@ Current working-tree baseline on 2026-11-05 with Node 26.13.0, FFmpeg 9.0.2, and
 
 - manifest/installability: PASS, including `beforeinstallprompt observed=true`;
 - service worker active and controlling, 33 shell assets precached off a fresh profile;
-- activation removed the previous cache and re-registered the v27 shell;
+- activation removed the previous cache and re-registered the v32 shell;
 - runtime cache: `converter-worker.js`, `ffmpeg-core.js`, `ffmpeg-core.wasm`;
 - fully offline HEVC conversion, merge, preview, and export: 59/59 decoded frames.
 
@@ -212,7 +214,7 @@ Current working-tree baseline on 2026-11-05 with Node 26.13.0, FFmpeg 9.0.2, and
 
 - WebCodecs does not guarantee hardware acceleration or support for every profile/resolution.
 - WebCodecs normalization supports native H.264 through the H.264 sample path and conventional HEVC through the dedicated `hvcC` path. Other containers/codecs use ffmpeg.wasm; fragmented MP4 still requires conversion.
-- The 720-pixel cap is lossy for larger sources and may place the first recovery IDR earlier than requested because some encoders insert extra keyframes.
+- The 720-pixel cap is lossy for larger sources. Both encoders are asked for a single keyframe at frame 0, but a browser or ffmpeg build may still insert recovery IDRs on its own; the suites measure the real count. Without periodic keyframes, seeking into the middle of a prepared clip can show a stale frame until the decoder walks forward from the leading IDR.
 - Sequence conversion starts at most two WASM workers; additional clips wait, and peak memory can still exhaust iPhone Safari on large inputs.
 - Multi-GOP alignment supports type 2 and non-reordered type 0/1 streams. Type 0/1 requires no B-slices and no non-zero composition offsets; reordered B fails explicitly.
 - The 100 MB limit is a soft limit; available device memory can still be exceeded.

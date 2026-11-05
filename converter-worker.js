@@ -1,7 +1,16 @@
 import { MAX_TARGET_LONG_SIDE } from './conversion-settings.js';
 import { atempoFilter } from './speed.js';
+import { NORMALIZATION_KEYFRAME_INTERVAL } from './looks.js';
 
 const CORE_VERSION = '0.12.10';
+// libx264 needs a positive -g. This cap means "no periodic refresh" while staying
+// inside a signed 32-bit gop_size (about 9.3 hours at 30 fps).
+const ONE_KEYFRAME_GOP_SIZE = 1_000_000;
+
+function gopSize(interval = NORMALIZATION_KEYFRAME_INTERVAL) {
+  return interval > 0 ? Math.max(1, Math.round(interval)) : ONE_KEYFRAME_GOP_SIZE;
+}
+
 const CORE_BASE = `https://cdn.jsdelivr.net/npm/@ffmpeg/core@${CORE_VERSION}/dist/esm`;
 const CORE_JS = `${CORE_BASE}/ffmpeg-core.js`;
 const CORE_WASM = `${CORE_BASE}/ffmpeg-core.wasm`;
@@ -50,6 +59,7 @@ function conversionFilter(target) {
 }
 
 function conversionArgs(inputName, outputName, target) {
+  const keyframeGopSize = gopSize();
   return [
     '-i', inputName,
     '-map', '0:v:0',
@@ -60,8 +70,8 @@ function conversionArgs(inputName, outputName, target) {
     '-pix_fmt', 'yuv420p',
     '-crf', '23',
     '-r', '30',
-    '-g', '30',
-    '-keyint_min', '30',
+    '-g', String(keyframeGopSize),
+    '-keyint_min', String(Math.min(30, keyframeGopSize)),
     '-sc_threshold', '0',
     '-bf', '0',
     '-x264-params', 'open-gop=0:scenecut=0',

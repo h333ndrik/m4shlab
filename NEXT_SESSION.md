@@ -8,15 +8,17 @@ Historical note: between `841a1eb` (Phase C) and `5b4cb8b` the stub stayed insta
 
 ## Status
 
-The build stamp `v31` is a shell-consistency counter and **not** the release version; this release is **v1.2**.
+The build stamp `v32` is a shell-consistency counter and **not** the release version; this release is **v1.2**.
 
-m4shlab v1.2 is the current complete browser release candidate. The v1.0 and v1.1 tags remain immutable. Since v1.1 this release adds settings files with the persisted project name, editable Randomize seeds, the bitstream report, the shell consistency guard, the frame-exact trimmer and the custom cursor. Automated verification is **84 Node / 101 WebCodecs / 10 cursor-contract / 6 PWA** checks passing. The release tag and physical-device acceptance remain pending.
+m4shlab v1.2 is the current complete browser release candidate. The v1.0 and v1.1 tags remain immutable. Since v1.1 this release adds settings files with the persisted project name, editable Randomize seeds, the bitstream report, the shell consistency guard, the frame-exact trimmer and the custom cursor. Automated verification is **84 Node / 102 WebCodecs / 10 cursor-contract / 6 PWA** checks passing. The release tag and physical-device acceptance remain pending.
+
+`npm run test:webcodecs` always prints `SUMMARY ... passed N / skipped M` as its last line. A run with `skipped > 0` exits with status 2 and is marked `INCOMPLETE` unless `M4SHLAB_ALLOW_SKIPS=1` is set for deliberate offline runs; a release gate must show `skipped 0`.
 
 Do not move or delete existing release tags. Record device findings first, reproduce them against a fixture where possible, and propose a scoped fix before changing the release state. Use `docs/release/v1.2-checklist.md` for the acceptance run.
 
 ## Normalization keyframe policy
 
-Normalized clips request a keyframe only at frame 0 (`NORMALIZATION_KEYFRAME_INTERVAL = 0` in `looks.js`), so one prepared clip carries a single IDR and the mosh prediction chain runs to the clip end instead of resetting every 30 frames. The cost: seeking into the middle of a prepared clip can show a stale frame until the decoder walks forward from that single IDR. Encoders may still insert their own recovery IDRs; both suites measure the actual count rather than assuming one. The ffmpeg.wasm conversion worker still encodes with `-g 30`, so clips that never touch the WebCodecs normalizer keep the old one-second refresh until that path is aligned.
+Normalized clips request a keyframe only at frame 0 (`NORMALIZATION_KEYFRAME_INTERVAL = 0` in `looks.js`), so one prepared clip carries a single IDR and the mosh prediction chain runs to the clip end instead of resetting every 30 frames. The cost: seeking into the middle of a prepared clip can show a stale frame until the decoder walks forward from that single IDR. Encoders may still insert their own recovery IDRs; both suites measure the actual count rather than assuming one. The ffmpeg.wasm conversion worker imports the same constant and passes `-g 1000000` (the explicit one-keyframe cap) with `-keyint_min 30`, so clips that never touch the WebCodecs normalizer behave the same way: a 90-frame fallback conversion now emits one IDR instead of three. Fallback conversions never consult `normalizationCacheKey()`: they produce in-memory clip bytes once per import and persist no media, and the runtime-cached worker is versioned through the service-worker cache name, so a stamp bump evicts stale worker code on activate.
 
 ## Manual device checklist
 

@@ -9,6 +9,29 @@ import {parseMp4} from '../parser/mp4.js';
 import {extractNals} from '../parser/nal.js';
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
+
+const checkTally = {passed: 0, skipped: []};
+const logLine = console.log.bind(console);
+console.log = (...args) => {
+  const first = typeof args[0] === 'string' ? args[0] : '';
+  if (first.startsWith('PASS ')) checkTally.passed += 1;
+  else if (first.startsWith('SKIP ')) checkTally.skipped.push(first.slice(5));
+  logLine(...args);
+};
+let summaryPrinted = false;
+function printSummary() {
+  if (summaryPrinted) return;
+  summaryPrinted = true;
+  const skipped = checkTally.skipped.length;
+  const allowed = process.env.M4SHLAB_ALLOW_SKIPS === '1';
+  const state = skipped === 0 ? 'complete' : allowed ? 'INCOMPLETE, allowed by M4SHLAB_ALLOW_SKIPS=1' : 'INCOMPLETE - skipped checks did not run';
+  logLine(`SUMMARY WebCodecs browser suite: passed ${checkTally.passed} / skipped ${skipped} (${state})${skipped ? ` :: ${checkTally.skipped.join(' | ')}` : ''}`);
+}
+process.on('exit', printSummary);
+
+function skipExitCode() {
+  return checkTally.skipped.length > 0 && process.env.M4SHLAB_ALLOW_SKIPS !== '1' ? 2 : 0;
+}
 const port = Number(process.env.WEBCODECS_TEST_PORT || 4182);
 const baseUrl = `http://127.0.0.1:${port}/`;
 const fixtures = {
@@ -36,6 +59,7 @@ const audioMergedPath = join(projectRoot, 'testmedia', 'webcodecs-audio-merged.m
 const speedMergedPath = join(projectRoot, 'testmedia', 'webcodecs-speed-merged.mp4');
 const multiGopMergedPath = join(projectRoot, 'testmedia', 'webcodecs-browser-multigop-merged.mp4');
 const multiGopMergeWindowPath = join(projectRoot, 'testmedia', 'webcodecs-browser-mosh-window.mp4');
+const fallbackCadencePath = join(projectRoot, 'testmedia', 'webcodecs-fallback-cadence.mp4');
 const hybridExportPath = join(projectRoot, 'testmedia', 'webcodecs-hybrid-export.mp4');
 const multiTimelineExportPath = join(projectRoot, 'testmedia', 'webcodecs-multitimeline-export.mp4');
 const looksMergedPath = join(projectRoot, 'testmedia', 'webcodecs-looks-merged.mp4');
@@ -58,7 +82,22 @@ function skip(message) {
   client?.close();
   chrome?.process.kill('SIGTERM');
   server?.kill('SIGTERM');
-  process.exit(0);
+  printSummary();
+  process.exit(skipExitCode());
+}
+
+async function closeDialog(selector) {
+  await client.evaluate(`(() => {
+    const dialog = document.querySelector(${JSON.stringify(selector)});
+    window.__dialogClosed = false;
+    if (!dialog.open) {
+      window.__dialogClosed = true;
+      return;
+    }
+    dialog.addEventListener('close', () => { window.__dialogClosed = true; }, {once: true});
+    dialog.close();
+  })()`);
+  await client.waitFor('window.__dialogClosed === true', 5000);
 }
 
 function command(program, args, label) {
@@ -2413,6 +2452,40 @@ try {
     assert.ok(fallback.sources.a.conversion.elapsedMs > 0);
     assert.ok(fallback.sources.b.conversion.elapsedMs > 0);
     console.log('PASS WebCodecs stubbed unavailable: ffmpeg.wasm fallback ran and the report identifies it');
+    const fallbackCadence = await client.evaluate(`(async () => {
+      const {convertToH264} = await import('./converter.js');
+      const {parseMp4} = await import('./parser/mp4.js');
+      const {extractNals} = await import('./parser/nal.js');
+      const input = new Uint8Array(await (await fetch('/testmedia/synthetic-h264.mp4')).arrayBuffer());
+      const result = await convertToH264(input, {});
+      const parsed = parseMp4(result.bytes);
+      const nals = extractNals(result.bytes, parsed.videoTrack);
+      const idrSamples = [...new Set(nals.filter(nal => nal.type === 5).map(nal => nal.sampleIndex))];
+      return {
+        engine: result.encodeEngine,
+        hybrid: result.hybrid,
+        samples: parsed.videoTrack.samples.length,
+        keyframes: idrSamples.map(index => index + 1),
+        bytes: Array.from(result.bytes),
+      };
+    })()`);
+    assert.equal(fallbackCadence.engine, 'ffmpeg.wasm');
+    assert.equal(fallbackCadence.hybrid, false);
+    assert.equal(fallbackCadence.samples, 90, 'the 25 fps fixture must become 90 frames at the 30 fps normalization grid');
+    assert.ok(
+      fallbackCadence.keyframes.length < 3,
+      `the ffmpeg.wasm fallback emitted ${fallbackCadence.keyframes.length} IDRs at samples ${fallbackCadence.keyframes.join(', ')} on a 90-frame clip; the fallback still resets the mosh chain`,
+    );
+    assert.equal(fallbackCadence.keyframes[0], 1, 'the fallback output must still start with an IDR');
+    writeFileSync(fallbackCadencePath, Uint8Array.from(fallbackCadence.bytes));
+    const fallbackProbe = command('ffprobe', [
+      '-v', 'error', '-select_streams', 'v:0', '-count_frames',
+      '-show_entries', 'stream=nb_read_frames,has_b_frames', '-of', 'default=noprint_wrappers=1', fallbackCadencePath,
+    ], 'ffmpeg.wasm fallback cadence probe');
+    assert.match(fallbackProbe.stdout, /nb_read_frames=90/);
+    assert.match(fallbackProbe.stdout, /has_b_frames=0/);
+    command('ffmpeg', ['-v', 'error', '-i', fallbackCadencePath, '-f', 'null', '-'], 'ffmpeg.wasm fallback cadence strict decode');
+    console.log(`PASS ffmpeg.wasm fallback emits ${fallbackCadence.keyframes.length} IDR (samples ${fallbackCadence.keyframes.join(', ')}) on 90 frames and decodes 90/90`);
     // The stub replaced the global constructors, so drop the pre-script and reload before any later test.
     await client.send('Page.removeScriptToEvaluateOnNewDocument', {identifier: webCodecsStub.identifier});
     await client.send('Page.navigate', {url: `${baseUrl}?webcodecs-restored=1`});
@@ -3034,7 +3107,7 @@ try {
   console.log(`PASS re-render after a 2.0x speed change keeps scrollLeft ${safetyAfter.scrollLeft}, the previewed clip, undo/redo availability, and the open dialog in sync (${safetyAfter.dialogFrames} frames)`);
 
   const beforeIdle = await client.evaluate(readDurations);
-  await client.evaluate("document.querySelector('#transition-dialog').close()");
+  await closeDialog('#transition-dialog');
   await client.evaluate("document.querySelectorAll('.clip-card')[0].click()");
   await client.waitFor("document.querySelectorAll('.clip-card')[0].getAttribute('aria-current') === 'true'", 5000);
   const afterPreview = await client.evaluate(readDurations);
@@ -3228,7 +3301,7 @@ try {
     max: Number(document.querySelector('#transition-duration').max),
     text: document.querySelector('#transition-duration-value').textContent,
   })`);
-  await client.evaluate("document.querySelector('#transition-dialog').close()");
+  await closeDialog('#transition-dialog');
   assert.equal(clampState.mode, 'clamped');
   assert.equal(clampState.frames, afterShrink.boundaries[0].effective);
   assert.equal(clampState.max, afterShrink.boundaries[0].effective);
@@ -3377,7 +3450,7 @@ try {
   assert.match(secondsSync.readout, /30 frames · 1\.00 s at 30 fps · 1\.00 s at 30 fps/);
   console.log('PASS seconds inputs (inputmode decimal, step 0.1) map 1.0/1.5 s to frames 30/45 and round-trip 12/42 without drift');
 
-  await client.evaluate("document.querySelector('#trim-dialog').close()");
+  await closeDialog('#trim-dialog');
   await client.evaluate("document.querySelector('.connector').click()");
   await client.waitFor("document.querySelector('#transition-dialog')?.open === true", 5000);
   await client.evaluate(`(() => {
@@ -3434,8 +3507,8 @@ try {
   assert.ok(clampPreview.text.endsWith(`0.30 s`), 'the previewed value must equal the applied value');
   console.log(`PASS the trim dialog previews "${clampPreview.text}" before Apply and the connector lands on exactly ${afterClampPreview.connector}`);
 
+  await closeDialog('#trim-dialog');
   const thumbBefore = await client.evaluate(`(async () => {
-    document.querySelector('#trim-dialog').close();
     const card = document.querySelectorAll('.clip-card')[0];
     const video = card.querySelector('.clip-thumb video');
     for (let i = 0; i < 60 && video.readyState < 2; i += 1) await new Promise(r => setTimeout(r, 100));
@@ -3576,6 +3649,7 @@ try {
 
   if (client.exceptions.length) throw new Error(`Browser exceptions:\n${client.exceptions.join('\n')}`);
 } finally {
+  printSummary();
   client?.close();
   chrome?.process.kill('SIGTERM');
   server.kill('SIGTERM');
