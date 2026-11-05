@@ -2,6 +2,29 @@
 
 Updated: 2026-11-05
 
+## Release v1.2
+
+**State: release preparation complete; the `m4shlab-v1.2` tag is deliberately not created.** The build stamp `v27` is a shell-consistency counter and **not** the release version; this release is **v1.2**.
+
+Shipped since v1.1:
+
+- Settings files (`.m4settings`) with persisted project name, sound state, clip count, per-clip speed/look, transition values and seeds; loading validates the whole file before applying.
+- Editable Randomize seed with copy feedback and deterministic variants.
+- Collapsed bitstream report showing the completed merge JSON.
+- Shell consistency guard: a build-stamp mismatch shows a dismissible reload notice without stopping imports or exports.
+- Frame-exact per-clip trimmer with seconds and frame inputs, clamp preview, and an in-point card thumbnail.
+- Custom native cursor with h4 typography, covering player, timeline, controls and dialogs; touch devices keep the system cursor.
+
+Known limits for release notes:
+
+- Normalization caps the long side at 720 px.
+- The timeline holds up to 12 clips.
+- The conversion input limit is 100 MB (soft).
+- The first load needs a network connection.
+- The ffmpeg.wasm core is fetched on demand and runtime-cached.
+- iOS can hit memory pressure during large conversions or exports.
+- Audio follows the clip timeline and is not moshed.
+
 ## Release v1.1
 
 **State: release candidate complete — `m4shlab-v1.1`.** The v1.0 tag remains immutable at `2aa8ee5536474581c05f4fe5ca30635597a0c526`. v1.1 adds the post-release parity work: per-clip looks, sound/export control, and live preview metadata. The final automated baseline is **83 Node / 100 WebCodecs / 6 PWA / 10 cursor-contract** checks passing.

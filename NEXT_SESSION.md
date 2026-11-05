@@ -1,4 +1,4 @@
-# m4shlab v1.1 — user review and device testing pending
+# m4shlab v1.2 — maintainer tag and device acceptance pending
 
 ## Test-infrastructure rule: capability stubs
 
@@ -8,9 +8,11 @@ Historical note: between `841a1eb` (Phase C) and `5b4cb8b` the stub stayed insta
 
 ## Status
 
-m4shlab v1.1 is the current complete browser release candidate. The v1.0 tag remains immutable at `2aa8ee5`; v1.1 adds per-clip looks, the persistent sound/export toggle, and live preview time and labels. Automated verification is **83 Node / 100 WebCodecs / 6 PWA** checks passing (the shell guard and settings transactionality block added 1 Node and 18 WebCodecs checks). Physical-device acceptance remains pending.
+The build stamp `v27` is a shell-consistency counter and **not** the release version; this release is **v1.2**.
 
-Do not move or delete either release tag. Record device findings first, reproduce them against a fixture where possible, and propose a scoped fix before changing the release state.
+m4shlab v1.2 is the current complete browser release candidate. The v1.0 and v1.1 tags remain immutable. Since v1.1 this release adds settings files with the persisted project name, editable Randomize seeds, the bitstream report, the shell consistency guard, the frame-exact trimmer and the custom cursor. Automated verification is **83 Node / 100 WebCodecs / 10 cursor-contract / 6 PWA** checks passing. The release tag and physical-device acceptance remain pending.
+
+Do not move or delete existing release tags. Record device findings first, reproduce them against a fixture where possible, and propose a scoped fix before changing the release state. Use `docs/release/v1.2-checklist.md` for the acceptance run.
 
 ## Manual device checklist
 
