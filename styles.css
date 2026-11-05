@@ -123,7 +123,6 @@ button,
   font-size: 12px;
   line-height: 1;
   white-space: nowrap;
-  cursor: pointer;
 }
 
 button:hover:not(:disabled),
@@ -134,7 +133,6 @@ button:hover:not(:disabled),
 
 button:disabled {
   opacity: 0.4;
-  cursor: wait;
 }
 
 .button { display: inline-block; }
@@ -188,7 +186,6 @@ button:focus-visible,
   background: #fffdf6;
   color: #242424;
   font: inherit;
-  cursor: pointer;
 }
 
 .shell-notice-dismiss {
@@ -276,7 +273,6 @@ button:focus-visible,
 
 .shell-notice button[aria-busy="true"] {
   opacity: 0.7;
-  cursor: progress;
 }
 
 .viewer {
@@ -343,7 +339,6 @@ button:focus-visible,
   align-items: center;
   gap: 6px;
   color: #555;
-  cursor: pointer;
   white-space: nowrap;
 }
 
@@ -359,7 +354,6 @@ button:focus-visible,
   background: #e2e1dd;
   color: #777670;
   opacity: 1;
-  cursor: not-allowed;
   box-shadow: inset 0 0 0 1px #efeeea;
 }
 
@@ -397,7 +391,6 @@ button:focus-visible,
 
 .project-menu summary {
   padding: 8px;
-  cursor: pointer;
   white-space: nowrap;
 }
 
@@ -465,7 +458,6 @@ button:focus-visible,
 }
 
 .section-tools button:disabled {
-  cursor: not-allowed;
 }
 
 .timeline {
@@ -509,7 +501,6 @@ button:focus-visible,
   box-shadow: 0 0 0 1px #454545 inset;
 }
 
-.clip-card[draggable="true"] { cursor: grab; }
 
 .clip-card.dragging {
   opacity: 0.4;
@@ -674,7 +665,6 @@ button:focus-visible,
   border: 0;
   padding: 4px 7px;
   font-size: 12px;
-  cursor: pointer;
 }
 
 .clip-controls button:hover:not(:disabled) {
@@ -682,7 +672,6 @@ button:focus-visible,
 }
 
 .clip-controls button:disabled {
-  cursor: not-allowed;
 }
 
 .connector {
@@ -876,7 +865,6 @@ button:focus-visible,
   border: 1px solid var(--soft-line);
   border-radius: 4px;
   background: #fff;
-  cursor: pointer;
 }
 
 .transition-dialog fieldset label:has(input:checked) {
@@ -998,7 +986,6 @@ button:focus-visible,
   font-weight: 500;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  cursor: pointer;
 }
 
 .bitstream-report summary:focus-visible {
@@ -1109,14 +1096,60 @@ button:focus-visible,
   .clip-thumb video { transition: none; }
 }
 
-/* ── Native cursor tokens (M-C1) ────────────────────────────────────────────
+/* ── Native cursor cascade (M-C1) ────────────────────────────────────────────
    The h4 cursor is a CSS cursor image, not a JS overlay: the browser tracks the
    pointer, hides it when the window loses focus and keeps the hotspot in every
    state. Assets are the h4ngelic artwork (same viewBox, #000 fill with a #fff
    stroke) scaled to the 32px cap; hotspot 8 2 matches the 19.7px base width.
-   These values are the single source; the coverage cascade follows. */
+   Tuning: change the three tokens only - nothing else declares a cursor. */
 :root {
   --m4-cursor: url('./assets/cursor/m4-cursor.svg') 8 2, url('./assets/cursor/m4-cursor.png') 8 2, auto;
   --m4-cursor-interactive: url('./assets/cursor/m4-cursor-interactive.svg') 8 2, url('./assets/cursor/m4-cursor-interactive.png') 8 2, pointer;
   --m4-cursor-pressed: url('./assets/cursor/m4-cursor-pressed.svg') 8 2, url('./assets/cursor/m4-cursor-pressed.png') 8 2, auto;
+}
+
+/* any-hover/any-pointer (not hover/pointer) so hybrid laptops with a touch
+   screen and a mouse still get the custom pointer. */
+@media (any-hover: hover) and (any-pointer: fine) {
+  /* Level 1 - base: the document paints the idle cursor.
+     With a native cursor there is no JS safety net; the cascade IS the
+     guarantee, so every level is !important and comes last in the sheet. */
+  html,
+  html *,
+  *::before,
+  *::after {
+    cursor: var(--m4-cursor) !important;
+  }
+
+  /* Level 2 - interactive surfaces. */
+  a[href],
+  button,
+  summary,
+  [role='button'],
+  input,
+  select,
+  textarea,
+  label,
+  [draggable='true'],
+  [contenteditable],
+  video,
+  canvas {
+    cursor: var(--m4-cursor-interactive) !important;
+  }
+
+  /* Level 3 - pressed. */
+  a[href]:active,
+  button:active,
+  summary:active,
+  [role='button']:active,
+  input:active,
+  select:active,
+  textarea:active,
+  label:active,
+  [draggable='true']:active,
+  [contenteditable]:active,
+  video:active,
+  canvas:active {
+    cursor: var(--m4-cursor-pressed) !important;
+  }
 }
