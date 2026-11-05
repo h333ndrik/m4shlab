@@ -1,0 +1,1537 @@
+{
+  "capturedAt": "2026-11-05T17:22:36.852Z",
+  "viewport": {
+    "desktop": "1440x900",
+    "mobile": "390x844 (touch)"
+  },
+  "beforeStylesheet": "git show HEAD:styles.css (d3a829d; M-C1 cascade disabled and HEAD stylesheet injected)",
+  "selectors": {
+    "header": "header",
+    "wordmark": "header h1",
+    "importLabel": "header label.button",
+    "player": "#preview-video",
+    "previewMeta": ".preview-meta",
+    "soundLabel": ".sound-toggle",
+    "soundCheckbox": "#sound-toggle",
+    "exportButton": "#export-button",
+    "assembleButton": "#assemble-preview",
+    "undo": "#undo-button",
+    "redo": "#redo-button",
+    "projectSummary": "#project-menu summary",
+    "sequenceHeading": "#source-heading",
+    "clipCard": ".clip-card",
+    "clipThumb": ".clip-thumb",
+    "lookSelect": ".clip-look select",
+    "speedSlider": ".clip-speed input[type=\"range\"]",
+    "speedReset": ".clip-speed button",
+    "trimButton": ".clip-trim-button",
+    "reorderButton": ".clip-controls button[aria-label^=\"Move\"]",
+    "connector": ".connector",
+    "dropZone": "#drop-zone",
+    "footer": "footer",
+    "bitstreamSummary": "#bitstream-report summary",
+    "transitionDialog": "#transition-dialog",
+    "transitionMethod": "#transition-method",
+    "transitionDuration": "#transition-duration",
+    "transitionEnding": "#transition-ending",
+    "transitionRandomize": "#transition-randomize",
+    "seed": "#transition-seed",
+    "apply": "#transition-apply"
+  },
+  "before": {
+    "header": {
+      "selector": "header",
+      "tag": "header",
+      "cursor": "auto",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 944,
+        "height": 54
+      }
+    },
+    "wordmark": {
+      "selector": "header h1",
+      "tag": "h1",
+      "cursor": "auto",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 84.71875,
+        "height": 24
+      }
+    },
+    "importLabel": {
+      "selector": "header label.button",
+      "tag": "label",
+      "cursor": "pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 112.375,
+        "height": 34
+      }
+    },
+    "player": {
+      "selector": "#preview-video",
+      "tag": "video",
+      "cursor": "auto",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 944,
+        "height": 380
+      }
+    },
+    "previewMeta": {
+      "selector": ".preview-meta",
+      "tag": "div",
+      "cursor": "auto",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 944,
+        "height": 15
+      }
+    },
+    "soundLabel": {
+      "selector": ".sound-toggle",
+      "tag": "label",
+      "cursor": "pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 68.109375,
+        "height": 15
+      }
+    },
+    "soundCheckbox": {
+      "selector": "#sound-toggle",
+      "tag": "input",
+      "cursor": "default",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 15,
+        "height": 15
+      }
+    },
+    "exportButton": {
+      "selector": "#export-button",
+      "tag": "button",
+      "cursor": "pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 108.03125,
+        "height": 34
+      }
+    },
+    "assembleButton": {
+      "selector": "#assemble-preview",
+      "tag": "button",
+      "cursor": "pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 127.375,
+        "height": 34
+      }
+    },
+    "undo": {
+      "selector": "#undo-button",
+      "tag": "button",
+      "cursor": "pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 32.875,
+        "height": 28
+      }
+    },
+    "redo": {
+      "selector": "#redo-button",
+      "tag": "button",
+      "cursor": "not-allowed",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": true,
+      "box": {
+        "width": 32.875,
+        "height": 28
+      }
+    },
+    "projectSummary": {
+      "selector": "#project-menu summary",
+      "tag": "summary",
+      "cursor": "pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 61.890625,
+        "height": 28
+      }
+    },
+    "sequenceHeading": {
+      "selector": "#source-heading",
+      "tag": "h2",
+      "cursor": "auto",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 72.296875,
+        "height": 12
+      }
+    },
+    "clipCard": {
+      "selector": ".clip-card",
+      "tag": "article",
+      "cursor": "grab",
+      "pointerEvents": "auto",
+      "draggable": true,
+      "disabled": false,
+      "box": {
+        "width": 148,
+        "height": 211.5
+      }
+    },
+    "clipThumb": {
+      "selector": ".clip-thumb",
+      "tag": "div",
+      "cursor": "grab",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 146,
+        "height": 72
+      }
+    },
+    "lookSelect": {
+      "selector": ".clip-look select",
+      "tag": "select",
+      "cursor": "default",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 98.546875,
+        "height": 23
+      }
+    },
+    "speedSlider": {
+      "selector": ".clip-speed input[type=\"range\"]",
+      "tag": "input",
+      "cursor": "default",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 130,
+        "height": 16
+      }
+    },
+    "speedReset": {
+      "selector": ".clip-speed button",
+      "tag": "button",
+      "cursor": "wait",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": true,
+      "box": {
+        "width": 29.515625,
+        "height": 13
+      }
+    },
+    "trimButton": {
+      "selector": ".clip-trim-button",
+      "tag": "button",
+      "cursor": "pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 28,
+        "height": 20
+      }
+    },
+    "reorderButton": {
+      "selector": ".clip-controls button[aria-label^=\"Move\"]",
+      "tag": "button",
+      "cursor": "not-allowed",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": true,
+      "box": {
+        "width": 28,
+        "height": 20
+      }
+    },
+    "connector": {
+      "selector": ".connector",
+      "tag": "button",
+      "cursor": "pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 99.984375,
+        "height": 55.6875
+      }
+    },
+    "dropZone": {
+      "selector": "#drop-zone",
+      "tag": "section",
+      "cursor": "auto",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 944,
+        "height": 304.5
+      }
+    },
+    "footer": {
+      "selector": "footer",
+      "tag": "footer",
+      "cursor": "auto",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 944,
+        "height": 51
+      }
+    },
+    "bitstreamSummary": {
+      "selector": "#bitstream-report summary",
+      "tag": "summary",
+      "cursor": "pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 944,
+        "height": 36
+      }
+    },
+    "transitionDialog": {
+      "selector": "#transition-dialog",
+      "tag": "dialog",
+      "cursor": "auto",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 0,
+        "height": 0
+      }
+    },
+    "transitionMethod": {
+      "selector": "#transition-method",
+      "tag": "select",
+      "cursor": "default",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 0,
+        "height": 0
+      }
+    },
+    "transitionDuration": {
+      "selector": "#transition-duration",
+      "tag": "input",
+      "cursor": "default",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 0,
+        "height": 0
+      }
+    },
+    "transitionEnding": {
+      "selector": "#transition-ending",
+      "tag": "select",
+      "cursor": "default",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 0,
+        "height": 0
+      }
+    },
+    "transitionRandomize": {
+      "selector": "#transition-randomize",
+      "tag": "button",
+      "cursor": "pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 0,
+        "height": 0
+      }
+    },
+    "seed": {
+      "selector": "#transition-seed",
+      "tag": "input",
+      "cursor": "text",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 0,
+        "height": 0
+      }
+    },
+    "apply": {
+      "selector": "#transition-apply",
+      "tag": "button",
+      "cursor": "pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 0,
+        "height": 0
+      }
+    }
+  },
+  "beforeDialog": {
+    "header": {
+      "selector": "header",
+      "tag": "header",
+      "cursor": "auto",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 944,
+        "height": 54
+      }
+    },
+    "wordmark": {
+      "selector": "header h1",
+      "tag": "h1",
+      "cursor": "auto",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 84.71875,
+        "height": 24
+      }
+    },
+    "importLabel": {
+      "selector": "header label.button",
+      "tag": "label",
+      "cursor": "pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 112.375,
+        "height": 34
+      }
+    },
+    "player": {
+      "selector": "#preview-video",
+      "tag": "video",
+      "cursor": "auto",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 944,
+        "height": 380
+      }
+    },
+    "previewMeta": {
+      "selector": ".preview-meta",
+      "tag": "div",
+      "cursor": "auto",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 944,
+        "height": 15
+      }
+    },
+    "soundLabel": {
+      "selector": ".sound-toggle",
+      "tag": "label",
+      "cursor": "pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 68.109375,
+        "height": 15
+      }
+    },
+    "soundCheckbox": {
+      "selector": "#sound-toggle",
+      "tag": "input",
+      "cursor": "default",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 15,
+        "height": 15
+      }
+    },
+    "exportButton": {
+      "selector": "#export-button",
+      "tag": "button",
+      "cursor": "pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 108.03125,
+        "height": 34
+      }
+    },
+    "assembleButton": {
+      "selector": "#assemble-preview",
+      "tag": "button",
+      "cursor": "pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 127.375,
+        "height": 34
+      }
+    },
+    "undo": {
+      "selector": "#undo-button",
+      "tag": "button",
+      "cursor": "pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 32.875,
+        "height": 28
+      }
+    },
+    "redo": {
+      "selector": "#redo-button",
+      "tag": "button",
+      "cursor": "not-allowed",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": true,
+      "box": {
+        "width": 32.875,
+        "height": 28
+      }
+    },
+    "projectSummary": {
+      "selector": "#project-menu summary",
+      "tag": "summary",
+      "cursor": "pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 61.890625,
+        "height": 28
+      }
+    },
+    "sequenceHeading": {
+      "selector": "#source-heading",
+      "tag": "h2",
+      "cursor": "auto",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 72.296875,
+        "height": 12
+      }
+    },
+    "clipCard": {
+      "selector": ".clip-card",
+      "tag": "article",
+      "cursor": "grab",
+      "pointerEvents": "auto",
+      "draggable": true,
+      "disabled": false,
+      "box": {
+        "width": 148,
+        "height": 211.5
+      }
+    },
+    "clipThumb": {
+      "selector": ".clip-thumb",
+      "tag": "div",
+      "cursor": "grab",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 146,
+        "height": 72
+      }
+    },
+    "lookSelect": {
+      "selector": ".clip-look select",
+      "tag": "select",
+      "cursor": "default",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 98.546875,
+        "height": 23
+      }
+    },
+    "speedSlider": {
+      "selector": ".clip-speed input[type=\"range\"]",
+      "tag": "input",
+      "cursor": "default",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 130,
+        "height": 16
+      }
+    },
+    "speedReset": {
+      "selector": ".clip-speed button",
+      "tag": "button",
+      "cursor": "wait",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": true,
+      "box": {
+        "width": 29.515625,
+        "height": 13
+      }
+    },
+    "trimButton": {
+      "selector": ".clip-trim-button",
+      "tag": "button",
+      "cursor": "pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 28,
+        "height": 20
+      }
+    },
+    "reorderButton": {
+      "selector": ".clip-controls button[aria-label^=\"Move\"]",
+      "tag": "button",
+      "cursor": "not-allowed",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": true,
+      "box": {
+        "width": 28,
+        "height": 20
+      }
+    },
+    "connector": {
+      "selector": ".connector",
+      "tag": "button",
+      "cursor": "pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 99.984375,
+        "height": 55.6875
+      }
+    },
+    "dropZone": {
+      "selector": "#drop-zone",
+      "tag": "section",
+      "cursor": "auto",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 944,
+        "height": 304.5
+      }
+    },
+    "footer": {
+      "selector": "footer",
+      "tag": "footer",
+      "cursor": "auto",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 944,
+        "height": 51
+      }
+    },
+    "bitstreamSummary": {
+      "selector": "#bitstream-report summary",
+      "tag": "summary",
+      "cursor": "pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 944,
+        "height": 36
+      }
+    },
+    "transitionDialog": {
+      "selector": "#transition-dialog",
+      "tag": "dialog",
+      "cursor": "auto",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 440,
+        "height": 428
+      }
+    },
+    "transitionMethod": {
+      "selector": "#transition-method",
+      "tag": "select",
+      "cursor": "default",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 402,
+        "height": 38
+      }
+    },
+    "transitionDuration": {
+      "selector": "#transition-duration",
+      "tag": "input",
+      "cursor": "default",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 372,
+        "height": 16
+      }
+    },
+    "transitionEnding": {
+      "selector": "#transition-ending",
+      "tag": "select",
+      "cursor": "default",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 372,
+        "height": 38
+      }
+    },
+    "transitionRandomize": {
+      "selector": "#transition-randomize",
+      "tag": "button",
+      "cursor": "pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 86.03125,
+        "height": 34
+      }
+    },
+    "seed": {
+      "selector": "#transition-seed",
+      "tag": "input",
+      "cursor": "text",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 105.953125,
+        "height": 27.1875
+      }
+    },
+    "apply": {
+      "selector": "#transition-apply",
+      "tag": "button",
+      "cursor": "pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 58.6875,
+        "height": 34
+      }
+    }
+  },
+  "after": {
+    "header": {
+      "selector": "header",
+      "tag": "header",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor.png\") 8 2, auto",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 944,
+        "height": 54
+      }
+    },
+    "wordmark": {
+      "selector": "header h1",
+      "tag": "h1",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor.png\") 8 2, auto",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 84.71875,
+        "height": 24
+      }
+    },
+    "importLabel": {
+      "selector": "header label.button",
+      "tag": "label",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 112.375,
+        "height": 34
+      }
+    },
+    "player": {
+      "selector": "#preview-video",
+      "tag": "video",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 944,
+        "height": 380
+      }
+    },
+    "previewMeta": {
+      "selector": ".preview-meta",
+      "tag": "div",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor.png\") 8 2, auto",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 944,
+        "height": 15
+      }
+    },
+    "soundLabel": {
+      "selector": ".sound-toggle",
+      "tag": "label",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 68.109375,
+        "height": 15
+      }
+    },
+    "soundCheckbox": {
+      "selector": "#sound-toggle",
+      "tag": "input",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 15,
+        "height": 15
+      }
+    },
+    "exportButton": {
+      "selector": "#export-button",
+      "tag": "button",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 108.03125,
+        "height": 34
+      }
+    },
+    "assembleButton": {
+      "selector": "#assemble-preview",
+      "tag": "button",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 127.375,
+        "height": 34
+      }
+    },
+    "undo": {
+      "selector": "#undo-button",
+      "tag": "button",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 32.875,
+        "height": 28
+      }
+    },
+    "redo": {
+      "selector": "#redo-button",
+      "tag": "button",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": true,
+      "box": {
+        "width": 32.875,
+        "height": 28
+      }
+    },
+    "projectSummary": {
+      "selector": "#project-menu summary",
+      "tag": "summary",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 61.890625,
+        "height": 28
+      }
+    },
+    "sequenceHeading": {
+      "selector": "#source-heading",
+      "tag": "h2",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor.png\") 8 2, auto",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 72.296875,
+        "height": 12
+      }
+    },
+    "clipCard": {
+      "selector": ".clip-card",
+      "tag": "article",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": true,
+      "disabled": false,
+      "box": {
+        "width": 148,
+        "height": 211.5
+      }
+    },
+    "clipThumb": {
+      "selector": ".clip-thumb",
+      "tag": "div",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor.png\") 8 2, auto",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 146,
+        "height": 72
+      }
+    },
+    "lookSelect": {
+      "selector": ".clip-look select",
+      "tag": "select",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 98.546875,
+        "height": 23
+      }
+    },
+    "speedSlider": {
+      "selector": ".clip-speed input[type=\"range\"]",
+      "tag": "input",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 130,
+        "height": 16
+      }
+    },
+    "speedReset": {
+      "selector": ".clip-speed button",
+      "tag": "button",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": true,
+      "box": {
+        "width": 29.515625,
+        "height": 13
+      }
+    },
+    "trimButton": {
+      "selector": ".clip-trim-button",
+      "tag": "button",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 28,
+        "height": 20
+      }
+    },
+    "reorderButton": {
+      "selector": ".clip-controls button[aria-label^=\"Move\"]",
+      "tag": "button",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": true,
+      "box": {
+        "width": 28,
+        "height": 20
+      }
+    },
+    "connector": {
+      "selector": ".connector",
+      "tag": "button",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 99.984375,
+        "height": 55.6875
+      }
+    },
+    "dropZone": {
+      "selector": "#drop-zone",
+      "tag": "section",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor.png\") 8 2, auto",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 944,
+        "height": 304.5
+      }
+    },
+    "footer": {
+      "selector": "footer",
+      "tag": "footer",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor.png\") 8 2, auto",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 944,
+        "height": 51
+      }
+    },
+    "bitstreamSummary": {
+      "selector": "#bitstream-report summary",
+      "tag": "summary",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 944,
+        "height": 36
+      }
+    },
+    "transitionDialog": {
+      "selector": "#transition-dialog",
+      "tag": "dialog",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor.png\") 8 2, auto",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 0,
+        "height": 0
+      }
+    },
+    "transitionMethod": {
+      "selector": "#transition-method",
+      "tag": "select",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 0,
+        "height": 0
+      }
+    },
+    "transitionDuration": {
+      "selector": "#transition-duration",
+      "tag": "input",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 0,
+        "height": 0
+      }
+    },
+    "transitionEnding": {
+      "selector": "#transition-ending",
+      "tag": "select",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 0,
+        "height": 0
+      }
+    },
+    "transitionRandomize": {
+      "selector": "#transition-randomize",
+      "tag": "button",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 0,
+        "height": 0
+      }
+    },
+    "seed": {
+      "selector": "#transition-seed",
+      "tag": "input",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 0,
+        "height": 0
+      }
+    },
+    "apply": {
+      "selector": "#transition-apply",
+      "tag": "button",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 0,
+        "height": 0
+      }
+    }
+  },
+  "afterDialog": {
+    "header": {
+      "selector": "header",
+      "tag": "header",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor.png\") 8 2, auto",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 944,
+        "height": 54
+      }
+    },
+    "wordmark": {
+      "selector": "header h1",
+      "tag": "h1",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor.png\") 8 2, auto",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 84.71875,
+        "height": 24
+      }
+    },
+    "importLabel": {
+      "selector": "header label.button",
+      "tag": "label",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 112.375,
+        "height": 34
+      }
+    },
+    "player": {
+      "selector": "#preview-video",
+      "tag": "video",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 944,
+        "height": 380
+      }
+    },
+    "previewMeta": {
+      "selector": ".preview-meta",
+      "tag": "div",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor.png\") 8 2, auto",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 944,
+        "height": 15
+      }
+    },
+    "soundLabel": {
+      "selector": ".sound-toggle",
+      "tag": "label",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 68.109375,
+        "height": 15
+      }
+    },
+    "soundCheckbox": {
+      "selector": "#sound-toggle",
+      "tag": "input",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 15,
+        "height": 15
+      }
+    },
+    "exportButton": {
+      "selector": "#export-button",
+      "tag": "button",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 108.03125,
+        "height": 34
+      }
+    },
+    "assembleButton": {
+      "selector": "#assemble-preview",
+      "tag": "button",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 127.375,
+        "height": 34
+      }
+    },
+    "undo": {
+      "selector": "#undo-button",
+      "tag": "button",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 32.875,
+        "height": 28
+      }
+    },
+    "redo": {
+      "selector": "#redo-button",
+      "tag": "button",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": true,
+      "box": {
+        "width": 32.875,
+        "height": 28
+      }
+    },
+    "projectSummary": {
+      "selector": "#project-menu summary",
+      "tag": "summary",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 61.890625,
+        "height": 28
+      }
+    },
+    "sequenceHeading": {
+      "selector": "#source-heading",
+      "tag": "h2",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor.png\") 8 2, auto",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 72.296875,
+        "height": 12
+      }
+    },
+    "clipCard": {
+      "selector": ".clip-card",
+      "tag": "article",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": true,
+      "disabled": false,
+      "box": {
+        "width": 148,
+        "height": 211.5
+      }
+    },
+    "clipThumb": {
+      "selector": ".clip-thumb",
+      "tag": "div",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor.png\") 8 2, auto",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 146,
+        "height": 72
+      }
+    },
+    "lookSelect": {
+      "selector": ".clip-look select",
+      "tag": "select",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 98.546875,
+        "height": 23
+      }
+    },
+    "speedSlider": {
+      "selector": ".clip-speed input[type=\"range\"]",
+      "tag": "input",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 130,
+        "height": 16
+      }
+    },
+    "speedReset": {
+      "selector": ".clip-speed button",
+      "tag": "button",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": true,
+      "box": {
+        "width": 29.515625,
+        "height": 13
+      }
+    },
+    "trimButton": {
+      "selector": ".clip-trim-button",
+      "tag": "button",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 28,
+        "height": 20
+      }
+    },
+    "reorderButton": {
+      "selector": ".clip-controls button[aria-label^=\"Move\"]",
+      "tag": "button",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": true,
+      "box": {
+        "width": 28,
+        "height": 20
+      }
+    },
+    "connector": {
+      "selector": ".connector",
+      "tag": "button",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 99.984375,
+        "height": 55.6875
+      }
+    },
+    "dropZone": {
+      "selector": "#drop-zone",
+      "tag": "section",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor.png\") 8 2, auto",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 944,
+        "height": 304.5
+      }
+    },
+    "footer": {
+      "selector": "footer",
+      "tag": "footer",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor.png\") 8 2, auto",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 944,
+        "height": 51
+      }
+    },
+    "bitstreamSummary": {
+      "selector": "#bitstream-report summary",
+      "tag": "summary",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 944,
+        "height": 36
+      }
+    },
+    "transitionDialog": {
+      "selector": "#transition-dialog",
+      "tag": "dialog",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor.png\") 8 2, auto",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 440,
+        "height": 428
+      }
+    },
+    "transitionMethod": {
+      "selector": "#transition-method",
+      "tag": "select",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 402,
+        "height": 38
+      }
+    },
+    "transitionDuration": {
+      "selector": "#transition-duration",
+      "tag": "input",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 372,
+        "height": 16
+      }
+    },
+    "transitionEnding": {
+      "selector": "#transition-ending",
+      "tag": "select",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 372,
+        "height": 38
+      }
+    },
+    "transitionRandomize": {
+      "selector": "#transition-randomize",
+      "tag": "button",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 86.03125,
+        "height": 34
+      }
+    },
+    "seed": {
+      "selector": "#transition-seed",
+      "tag": "input",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 105.953125,
+        "height": 27.1875
+      }
+    },
+    "apply": {
+      "selector": "#transition-apply",
+      "tag": "button",
+      "cursor": "url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.svg\") 8 2, url(\"http://127.0.0.1:4186/assets/cursor/m4-cursor-interactive.png\") 8 2, pointer",
+      "pointerEvents": "auto",
+      "draggable": false,
+      "disabled": false,
+      "box": {
+        "width": 58.6875,
+        "height": 34
+      }
+    }
+  }
+}
