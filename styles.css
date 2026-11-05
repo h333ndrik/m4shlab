@@ -12,6 +12,17 @@
   --clip-card-w: 148px;
   --clip-card-h: 211.5px;
   --clip-control-min: 28px;
+  /* Header scale: one place to tune the wordmark without touching the rest of
+     the shell. --header-wordmark-size drives only the h1; --header-tagline-size
+     exists for a future tagline and never follows the wordmark. Changing
+     --header-pad-block adds equal space above and below the header row, and
+     --header-gap is the space between the wordmark and the import control. */
+  --header-wordmark-size: 15px;
+  --header-wordmark-line: 1.15;
+  --header-tagline-size: 12px;
+  --header-pad-block: 0px;
+  --header-gap: 16px;
+  --header-margin-block: 30px;
 }
 
 * { box-sizing: border-box; }
@@ -51,14 +62,25 @@ header,
   gap: 16px;
 }
 
-header { margin-bottom: 30px; }
+header {
+  gap: var(--header-gap);
+  margin-bottom: var(--header-margin-block);
+  padding-block: var(--header-pad-block);
+}
 
 h1 {
   margin: 0;
   color: #242424;
-  font-size: 15px;
+  font-size: var(--header-wordmark-size);
+  line-height: var(--header-wordmark-line);
   font-weight: 700;
   letter-spacing: normal;
+}
+
+header p {
+  margin: 0;
+  font-size: var(--header-tagline-size);
+  line-height: 1.3;
 }
 
 h2 {
@@ -1007,10 +1029,11 @@ button:focus-visible,
 @media (max-width: 600px) {
   main { padding: 24px 16px; }
   header {
+    --header-margin-block: 24px;
     min-height: 44px;
     align-items: flex-start;
     flex-direction: row;
-    margin-bottom: 24px;
+    margin-bottom: var(--header-margin-block);
   }
   .file-actions {
     width: auto;
