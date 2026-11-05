@@ -51,11 +51,14 @@ export function applyLookToRgba(rgba, look = 'original', width = null, height = 
   return rgba;
 }
 
-export function normalizationCacheKey({sourceKey = '', target, speed = 1, look = 'original'} = {}) {
+export function normalizationCacheKey({sourceKey = '', target, speed = 1, look = 'original', startFrame = 0, endFrame = null} = {}) {
   if (!target || !Number.isFinite(target.width) || !Number.isFinite(target.height)) {
     throw new LookValueError('A normalization cache key needs finite target dimensions.');
   }
   const width = Math.max(2, Math.round(target.width));
   const height = Math.max(2, Math.round(target.height));
-  return `${String(sourceKey)}|${width}x${height}|${normalizeSpeed(speed).toFixed(1)}|${normalizeLook(look)}`;
+  const start = Number.isInteger(startFrame) ? Math.max(0, startFrame) : 0;
+  const end = Number.isInteger(endFrame) ? endFrame : null;
+  const trim = start === 0 && end === null ? 'full' : `${start}-${end ?? 'end'}`;
+  return `${String(sourceKey)}|${width}x${height}|${normalizeSpeed(speed).toFixed(1)}|trim:${trim}|${normalizeLook(look)}`;
 }

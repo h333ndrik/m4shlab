@@ -37,7 +37,7 @@ import {
 } from './audio.js';
 
 const MAX_CLIPS = 12;
-const BUILD = 'v23';
+const BUILD = 'v24';
 const SHELL_NOTICE_MIXED = 'This page mixes two m4shlab versions. Reload to get a consistent editor.';
 const SHELL_NOTICE_INCOMPLETE = 'This editor is incomplete. Reload the page.';
 const REQUIRED_UI = [
@@ -96,6 +96,18 @@ const OPTIONAL_UI = [
   'bitstream-report',
   'bitstream-report-json',
   'sequence-label',
+  'trim-dialog',
+  'trim-subtitle',
+  'trim-start',
+  'trim-end',
+  'trim-start-range',
+  'trim-end-range',
+  'trim-readout',
+  'trim-error',
+  'trim-preview-in',
+  'trim-preview-out',
+  'trim-reset',
+  'trim-apply',
 ];
 const missingRequiredUi = REQUIRED_UI.filter(id => !document.getElementById(id));
 const inputA = document.querySelector('#file-input-a');
@@ -132,6 +144,18 @@ const bitstreamReportJson = document.querySelector('#bitstream-report-json');
 const undoButton = document.querySelector('#undo-button');
 const redoButton = document.querySelector('#redo-button');
 const coarsePointerQuery = window.matchMedia('(pointer: coarse)');
+const trimDialog = document.querySelector('#trim-dialog');
+const trimSubtitle = document.querySelector('#trim-subtitle');
+const trimStartInput = document.querySelector('#trim-start');
+const trimEndInput = document.querySelector('#trim-end');
+const trimStartRange = document.querySelector('#trim-start-range');
+const trimEndRange = document.querySelector('#trim-end-range');
+const trimReadout = document.querySelector('#trim-readout');
+const trimError = document.querySelector('#trim-error');
+const trimPreviewIn = document.querySelector('#trim-preview-in');
+const trimPreviewOut = document.querySelector('#trim-preview-out');
+const trimReset = document.querySelector('#trim-reset');
+const trimApply = document.querySelector('#trim-apply');
 const transitionDialog = document.querySelector('#transition-dialog');
 const transitionSubtitle = document.querySelector('#transition-subtitle');
 const transitionMethod = document.querySelector('#transition-method');
@@ -173,6 +197,7 @@ let merged = null;
 let refreshToken = 0;
 let importToken = 0;
 let activeBoundary = null;
+let trimClipIndex = null;
 let activeMoshFps = 25;
 let activeMoshMaximum = 0;
 let activeRandomSeed = null;
@@ -408,12 +433,17 @@ function currentSettingsSnapshot() {
     project: (projectName?.value ?? DEFAULT_PROJECT_NAME).trim() || DEFAULT_PROJECT_NAME,
     sound: soundEnabled,
     clip_count: clips.length,
-    clips: clips.map(clip => ({
-      name: clip.file.name,
-      frames: clip.mp4.videoTrack.samples.length,
-      speed: Number(clip.speed ?? 1),
-      look: normalizeLook(clip.look ?? 'original'),
-    })),
+    clips: clips.map(clip => {
+      const trim = clipTrimRange(clip);
+      return {
+        name: clip.file.name,
+        frames: clip.mp4.videoTrack.samples.length,
+        speed: Number(clip.speed ?? 1),
+        look: normalizeLook(clip.look ?? 'original'),
+        start_frame: trim.startFrame,
+        end_frame: trim.endFrame,
+      };
+    }),
     transitions: clips.slice(1).map(transitionSettingsForClip),
   };
 }
@@ -524,9 +554,20 @@ async function applySettingsPayload(payload) {
     if (!saved || typeof saved !== 'object' || Array.isArray(saved)) {
       throw new Error(`Clip ${index + 1} settings are invalid.`);
     }
+    const sourceFrames = clipSourceFrames(clips[index]);
+    const startFrame = saved.start_frame === undefined ? 0 : saved.start_frame;
+    const endFrame = saved.end_frame === undefined ? sourceFrames : saved.end_frame;
+    if (!Number.isInteger(startFrame) || !Number.isInteger(endFrame)) {
+      throw new Error(`Clip ${index + 1} has an invalid trim range.`);
+    }
+    if (startFrame < 0 || endFrame <= startFrame || endFrame > sourceFrames || endFrame - startFrame < 1) {
+      throw new Error(`Clip ${index + 1} trim ${startFrame}–${endFrame} is outside the ${sourceFrames} source frames.`);
+    }
     return {
       speed: normalizeSpeed(saved.speed),
       look: normalizeLook(saved.look ?? 'original'),
+      startFrame,
+      endFrame,
     };
   });
   const transitions = payload.transitions.map(validateSettingsTransition);
@@ -536,6 +577,8 @@ async function applySettingsPayload(payload) {
       ...clip,
       speed: clipSettings[index].speed,
       look: clipSettings[index].look,
+      trimStart: clipSettings[index].startFrame,
+      trimEnd: clipSettings[index].endFrame,
     };
     return index === 0 ? next : clipWithSavedTransition(next, transitions[index - 1]);
   });
@@ -712,6 +755,23 @@ async function extractClipAudio(sourceBytes, mp4, label) {
   };
 }
 
+function trimClipAudio(baseAudio, trim, fps) {
+  if (!baseAudio) return null;
+  const frameSamples = samplesPerFrame(fps, AUDIO_SAMPLE_RATE);
+  const trimmedFrames = Math.max(0, trim.trimmedFrames);
+  if (!baseAudio.hasAudio || !baseAudio.pcm) {
+    return {...silentClipAudio(trimmedFrames, baseAudio.source ?? 'silent'), trimStartFrame: trim.startFrame};
+  }
+  const startSample = trim.startFrame * frameSamples * AUDIO_CHANNELS;
+  const endSample = trim.endFrame * frameSamples * AUDIO_CHANNELS;
+  const pcm = baseAudio.pcm.slice(startSample, endSample);
+  const expectedSamples = trimmedFrames * frameSamples * AUDIO_CHANNELS;
+  if (pcm.length !== expectedSamples) {
+    throw new RuntimeError(`Trimmed audio has ${pcm.length / AUDIO_CHANNELS} samples but ${trimmedFrames} frames need ${expectedSamples / AUDIO_CHANNELS}.`);
+  }
+  return {...baseAudio, pcm, frames: trimmedFrames, trimStartFrame: trim.startFrame};
+}
+
 async function applySpeedToClipAudio(baseAudio, outputFrames, speed, label) {
   const resolvedSpeed = normalizeSpeed(speed);
   const targetSamples = outputFrames * samplesPerFrame(30, AUDIO_SAMPLE_RATE);
@@ -794,6 +854,9 @@ function clipReport(clip, index) {
     lookReport: clip.lookReport ? {...clip.lookReport} : null,
     input_frames: clip.baseMp4?.videoTrack.samples.length ?? clip.speedReport?.inputFrames ?? clip.mp4.videoTrack.samples.length,
     output_frames: clip.mp4.videoTrack.samples.length,
+    start_frame: clipTrimRange(clip).startFrame,
+    end_frame: clipTrimRange(clip).endFrame,
+    trimmed_frames: clipTrimRange(clip).trimmedFrames,
     speedReport: clip.speedReport ? {...clip.speedReport} : null,
     conversion: clip.conversion ? {...clip.conversion} : null,
     audio: clip.audio ? {
@@ -854,6 +917,46 @@ function clipSeconds(clip) {
   return units / track.mdhd.timescale;
 }
 
+function clipSourceFrames(clip) {
+  const track = (clip?.baseMp4 ?? clip?.mp4)?.videoTrack;
+  return track?.samples?.length ?? 0;
+}
+
+function clipTrimRange(clip) {
+  const sourceFrames = clipSourceFrames(clip);
+  if (sourceFrames < 1) return {sourceFrames: 0, startFrame: 0, endFrame: 0, trimmedFrames: 0};
+  const rawStart = Number.isInteger(clip?.trimStart) ? clip.trimStart : 0;
+  const rawEnd = Number.isInteger(clip?.trimEnd) ? clip.trimEnd : sourceFrames;
+  const startFrame = Math.max(0, Math.min(rawStart, sourceFrames - 1));
+  const endFrame = Math.min(sourceFrames, Math.max(startFrame + 1, rawEnd));
+  return {sourceFrames, startFrame, endFrame, trimmedFrames: endFrame - startFrame};
+}
+
+function clipTrimSignature(clip) {
+  const trim = clipTrimRange(clip);
+  return `${trim.startFrame}-${trim.endFrame}`;
+}
+
+function preparedTrimSignature(clip) {
+  const sourceFrames = clipSourceFrames(clip);
+  const start = Number.isInteger(clip?.preparedTrimStart) ? clip.preparedTrimStart : 0;
+  const end = Number.isInteger(clip?.preparedTrimEnd) ? clip.preparedTrimEnd : sourceFrames;
+  return `${start}-${end}`;
+}
+
+function clipIsTrimmed(clip) {
+  const trim = clipTrimRange(clip);
+  return trim.trimmedFrames > 0 && (trim.startFrame > 0 || trim.endFrame < trim.sourceFrames);
+}
+
+function baseClipFps(clip) {
+  try {
+    return frameRateForTrack((clip?.baseMp4 ?? clip?.mp4)?.videoTrack);
+  } catch {
+    return null;
+  }
+}
+
 function formatSeconds(seconds) {
   return seconds === null || !Number.isFinite(seconds) ? null : `${seconds.toFixed(2)} s`;
 }
@@ -882,6 +985,7 @@ function moshSettingsForClip(clip) {
     durationSeconds: transitionSeconds(durationFrames, limits.fps) ?? 0,
     ending: clip?.moshEnding === 'continue' || clip?.moshEnding === 'restore' ? clip.moshEnding : defaultEnding,
     explicitDuration: requested !== undefined && requested !== null,
+    requestedFrames,
     clamped: requestedFrames > limits.maximumFrames,
   };
 }
@@ -1105,7 +1209,8 @@ function renderClipCard(index, clip) {
 
   const detail = document.createElement('span');
   detail.className = 'clip-detail';
-  detail.textContent = formatSeconds(clipSeconds(clip)) ?? 'video';
+  const clipText = formatSeconds(clipSeconds(clip)) ?? 'video';
+  detail.textContent = clipIsTrimmed(clip) ? `${clipText} · trimmed` : clipText;
 
   const lookControl = document.createElement('label');
   lookControl.className = 'clip-look';
@@ -1160,6 +1265,13 @@ function renderClipCard(index, clip) {
 
   const controls = document.createElement('div');
   controls.className = 'clip-controls';
+  const trimAction = document.createElement('button');
+  trimAction.type = 'button';
+  trimAction.className = 'clip-trim-button';
+  trimAction.textContent = '✂';
+  trimAction.setAttribute('aria-label', `Trim ${clip.file.name}`);
+  trimAction.title = `Trim ${clip.file.name}`;
+  trimAction.addEventListener('click', () => openTrimDialog(index));
   const actions = [
     ['←', `Move ${clipDisplayLabel(index)} left`, () => moveClip(index, index - 1), index === 0],
     ['→', `Move ${clipDisplayLabel(index)} right`, () => moveClip(index, index + 1), index === clips.length - 1],
@@ -1175,6 +1287,7 @@ function renderClipCard(index, clip) {
     button.addEventListener('click', action);
     controls.append(button);
   }
+  controls.append(trimAction);
 
   card.tabIndex = 0;
   card.setAttribute('aria-label', `Preview ${clip.file.name}`);
@@ -1298,7 +1411,7 @@ function renderSkeletonCard(skeleton) {
   const controls = document.createElement('div');
   controls.className = 'clip-controls';
   controls.setAttribute('aria-hidden', 'true');
-  for (const glyph of ['←', '→', '×']) {
+  for (const glyph of ['←', '→', '×', '✂']) {
     const button = document.createElement('button');
     button.type = 'button';
     button.textContent = glyph;
@@ -1713,6 +1826,127 @@ function updateResetIntervalLimit() {
   updateResetPulseDisplay();
 }
 
+function trimDialogReady() {
+  return Boolean(trimDialog && trimStartInput && trimEndInput && trimStartRange && trimEndRange && trimReadout && trimApply);
+}
+
+function setTrimError(message = '') {
+  if (!trimError) return;
+  trimError.textContent = message;
+  trimError.hidden = !message;
+}
+
+function trimFpsLabel(fps) {
+  if (!Number.isFinite(fps) || fps <= 0) return null;
+  return Number.isInteger(fps) ? String(fps) : fps.toFixed(2);
+}
+
+function updateTrimReadout() {
+  if (!trimDialogReady() || trimClipIndex === null) return;
+  const clip = clips[trimClipIndex];
+  if (!clip) return;
+  const start = Math.round(Number(trimStartInput.value));
+  const end = Math.round(Number(trimEndInput.value));
+  const frames = Number.isFinite(start) && Number.isFinite(end) ? end - start : 0;
+  const fps = baseClipFps(clip);
+  const fpsLabel = trimFpsLabel(fps);
+  const atSource = fps ? `${transitionSeconds(frames, fps).toFixed(2)} s at ${fpsLabel} fps` : 'source fps unknown';
+  const atTarget = `${transitionSeconds(frames, 30).toFixed(2)} s at 30 fps`;
+  trimReadout.textContent = `${frames} frame${frames === 1 ? '' : 's'} · ${atSource} · ${atTarget}`;
+}
+
+function syncTrimDialog() {
+  if (!trimDialogReady() || trimClipIndex === null) return;
+  const clip = clips[trimClipIndex];
+  if (!clip) return;
+  const trim = clipTrimRange(clip);
+  const sourceFrames = trim.sourceFrames;
+  trimSubtitle.textContent = `${clip.file.name} · ${sourceFrames} source frames`;
+  trimStartInput.min = '0';
+  trimStartInput.max = String(Math.max(0, sourceFrames - 1));
+  trimEndInput.min = '1';
+  trimEndInput.max = String(sourceFrames);
+  trimStartInput.value = String(trim.startFrame);
+  trimEndInput.value = String(trim.endFrame);
+  trimStartRange.min = '0';
+  trimStartRange.max = String(Math.max(0, sourceFrames - 1));
+  trimStartRange.value = String(trim.startFrame);
+  trimEndRange.min = '1';
+  trimEndRange.max = String(sourceFrames);
+  trimEndRange.value = String(trim.endFrame);
+  setTrimError('');
+  updateTrimReadout();
+}
+
+function openTrimDialog(index) {
+  if (!trimDialogReady()) return;
+  if (!Number.isInteger(index) || index < 0 || index >= clips.length) return;
+  trimClipIndex = index;
+  syncTrimDialog();
+  if (trimDialog.open) trimDialog.close();
+  trimDialog.show();
+}
+
+function previewTrimEdge(edge) {
+  if (trimClipIndex === null || !trimDialogReady()) return;
+  const clip = clips[trimClipIndex];
+  const fps = baseClipFps(clip);
+  if (!clip || !fps) return;
+  const end = Math.round(Number(trimEndInput.value));
+  const start = Math.round(Number(trimStartInput.value));
+  const frame = edge === 'out' ? Math.max(0, (Number.isFinite(end) ? end : 1) - 1) : Math.max(0, Number.isFinite(start) ? start : 0);
+  const seconds = frame / fps;
+  if (previewAssembled || previewedClipId !== clip.id) previewClip(trimClipIndex);
+  video.pause();
+  const seek = () => {
+    try {
+      video.currentTime = seconds;
+    } catch {}
+  };
+  if (video.readyState >= 1) seek();
+  else video.addEventListener('loadedmetadata', seek, {once: true});
+}
+
+function applyTrimRange() {
+  if (!trimDialogReady() || trimClipIndex === null) return;
+  const index = trimClipIndex;
+  const clip = clips[index];
+  if (!clip) return;
+  const sourceFrames = clipTrimRange(clip).sourceFrames;
+  const start = Number(trimStartInput.value);
+  const end = Number(trimEndInput.value);
+  if (!Number.isInteger(start) || !Number.isInteger(end)) {
+    setTrimError('Enter whole frame numbers for in and out.');
+    return;
+  }
+  if (start < 0) {
+    setTrimError('In must be 0 or greater.');
+    return;
+  }
+  if (end <= start) {
+    setTrimError('Out must be greater than in.');
+    return;
+  }
+  if (end > sourceFrames) {
+    setTrimError(`Out must be at most ${sourceFrames}, the clip's source frames.`);
+    return;
+  }
+  if (end - start < 1) {
+    setTrimError('Keep at least one frame.');
+    return;
+  }
+  const current = clipTrimRange(clip);
+  trimDialog.close('apply');
+  trimClipIndex = null;
+  setTrimError('');
+  if (current.startFrame === start && current.endFrame === end) return;
+  rememberState();
+  clips = clips.map((item, itemIndex) => (itemIndex === index ? {...item, trimStart: start, trimEnd: end} : item));
+  normalizationAttempted = false;
+  setError('');
+  refreshSequence();
+}
+
 function openTransition(boundaryIndex) {
   if (boundaryIndex < 1 || boundaryIndex >= clips.length) return;
   activeBoundary = boundaryIndex;
@@ -1728,9 +1962,9 @@ function openTransition(boundaryIndex) {
   transitionDuration.disabled = settings.maximumFrames < 1;
   transitionDuration.value = String(settings.durationFrames > 0 ? settings.durationFrames : activeMoshMaximum);
   transitionEnding.value = settings.ending;
-  transitionDurationMode.textContent = clip.moshDurationFrames === undefined || clip.moshDurationFrames === null
-    ? 'full length'
-    : 'custom';
+  transitionDurationMode.textContent = settings.clamped
+    ? 'clamped'
+    : (clip.moshDurationFrames === undefined || clip.moshDurationFrames === null ? 'full length' : 'custom');
   activeRandomSeed = clip.randomSeed ?? null;
   updateTransitionSeedDisplay();
   updateTransitionDurationDisplay(false);
@@ -2080,6 +2314,10 @@ async function readClipFile(file, index, token, onImportStatus = () => {}) {
     speed: 1,
     preparedSpeed: 1,
     speedReport: null,
+    trimStart: 0,
+    trimEnd: null,
+    preparedTrimStart: 0,
+    preparedTrimEnd: null,
     look: 'original',
     preparedLook: 'original',
     lookReport: null,
@@ -2247,10 +2485,15 @@ async function normalizeAllClips(token, target) {
   let webcodecsFallbackReason = null;
   const speedPreparation = originals.some(clip => normalizeSpeed(clip.speed ?? 1) !== normalizeSpeed(clip.preparedSpeed ?? 1));
   const lookPreparation = originals.some(clip => normalizeLook(clip.look ?? 'original') !== normalizeLook(clip.preparedLook ?? 'original'));
-  const renderPreparation = speedPreparation || lookPreparation;
+  const trimPreparation = originals.some(clip => clipTrimSignature(clip) !== preparedTrimSignature(clip));
+  const renderPreparation = speedPreparation || lookPreparation || trimPreparation;
   if (renderPreparation && !isWebCodecsAvailable()) {
-    const requirement = speedPreparation && lookPreparation ? 'Clip speed and looks' : speedPreparation ? 'Clip speed' : 'Clip looks';
-    throw new Error(`${requirement} require WebCodecs VideoDecoder and VideoEncoder for the one-pass frame mapping, look, and re-encode.`);
+    const requirements = [
+      trimPreparation ? 'Clip trim' : null,
+      speedPreparation ? 'Clip speed' : null,
+      lookPreparation ? 'Clip looks' : null,
+    ].filter(Boolean);
+    throw new Error(`${requirements.join(', ')} require WebCodecs VideoDecoder and VideoEncoder for the one-pass frame mapping, look, and re-encode.`);
   }
 
   if (isWebCodecsAvailable() && (renderPreparation || originals.every(clip => !clip.conversion))) {
@@ -2264,15 +2507,27 @@ async function normalizeAllClips(token, target) {
         const label = clipDisplayLabel(index);
         const speed = normalizeSpeed(clip.speed ?? 1);
         const look = normalizeLook(clip.look ?? 'original');
+        const trim = clipTrimRange(clip);
+        const sourceFps = baseClipFps(clip);
         const sourceBytes = clip.baseBytes ?? clip.bytes;
         const sourceKey = `${clip.file.name}:${clip.file.size}:${clip.file.lastModified}`;
-        const cacheKey = normalizationCacheKey({sourceKey, target, speed, look});
+        const cacheKey = normalizationCacheKey({
+          sourceKey,
+          target,
+          speed,
+          look,
+          startFrame: trim.startFrame,
+          endFrame: trim.endFrame,
+        });
         const lookText = look === 'original' ? 'original look' : `${look.replaceAll('-', ' ')} look`;
-        showConversion(label, 'normalizing', `Applying ${speed.toFixed(1)}× speed and ${lookText}, then re-encoding ${clip.file.name} with WebCodecs at ${target.width}×${target.height}…`, null, progressSlot(index));
+        const trimText = trim.trimmedFrames === trim.sourceFrames ? '' : `frames ${trim.startFrame}–${trim.endFrame - 1}, `;
+        showConversion(label, 'normalizing', `Applying ${trimText}${speed.toFixed(1)}× speed and ${lookText}, then re-encoding ${clip.file.name} with WebCodecs at ${target.width}×${target.height}…`, null, progressSlot(index));
         const result = await normalizeWithWebCodecs(sourceBytes, {
           target,
           speed,
           look,
+          startFrame: trim.startFrame,
+          endFrame: trim.endFrame,
           onStatus: message => {
             if (token === refreshToken) showConversion(label, 'working', message, null, progressSlot(index));
           },
@@ -2282,13 +2537,14 @@ async function normalizeAllClips(token, target) {
             showConversion(label, 'working', `Normalizing with WebCodecs · ${percent}%`, progress, progressSlot(index));
           },
         });
-        const audio = await applySpeedToClipAudio(clip.baseAudio ?? clip.audio, result.outputFrames, speed, label);
+        const trimmedAudio = trimClipAudio(clip.baseAudio ?? clip.audio, trim, sourceFps);
+        const audio = await applySpeedToClipAudio(trimmedAudio, result.outputFrames, speed, label);
         advanceConversionProgress();
-        return {result, sourceBytes: sourceBytes.byteLength, audio, cacheKey, sourceKey};
+        return {result, sourceBytes: sourceBytes.byteLength, audio, cacheKey, sourceKey, trim};
       });
       if (token !== refreshToken || normalized.some(item => !item)) return false;
       clips = originals.map((clip, index) => {
-        const {result, sourceBytes, audio, cacheKey, sourceKey} = normalized[index];
+        const {result, sourceBytes, audio, cacheKey, sourceKey, trim} = normalized[index];
         const mp4 = parseMp4(result.bytes);
         const speed = normalizeSpeed(clip.speed ?? 1);
         const look = normalizeLook(clip.look ?? 'original');
@@ -2302,6 +2558,14 @@ async function normalizeAllClips(token, target) {
           audio,
           preparedSpeed: speed,
           preparedLook: look,
+          preparedTrimStart: trim.startFrame,
+          preparedTrimEnd: trim.endFrame,
+          trimReport: {
+            sourceFrames: trim.sourceFrames,
+            startFrame: trim.startFrame,
+            endFrame: trim.endFrame,
+            trimmedFrames: trim.trimmedFrames,
+          },
           lookReport: {
             look,
             cacheKey,
@@ -2312,6 +2576,9 @@ async function normalizeAllClips(token, target) {
             speed,
             inputFrames: result.inputFrames,
             outputFrames: result.outputFrames,
+            trimmedFrames: trim.trimmedFrames,
+            startFrame: trim.startFrame,
+            endFrame: trim.endFrame,
             inputFps: result.sourceFps,
             outputFps: result.fps,
             audioFrames: audio.frames,
@@ -2556,12 +2823,17 @@ async function refreshSequenceInternal() {
   }
   const speedPreparationNeeded = clips.some(clip => normalizeSpeed(clip.speed ?? 1) !== normalizeSpeed(clip.preparedSpeed ?? 1));
   const lookPreparationNeeded = clips.some(clip => normalizeLook(clip.look ?? 'original') !== normalizeLook(clip.preparedLook ?? 'original'));
-  if (speedPreparationNeeded || lookPreparationNeeded) {
+  const trimPreparationNeeded = clips.some(clip => clipTrimSignature(clip) !== preparedTrimSignature(clip));
+  if (speedPreparationNeeded || lookPreparationNeeded || trimPreparationNeeded) {
     const target = chooseNormalizationTarget(...clips.map(clip => ({
       width: clip.mp4.videoTrack.width,
       height: clip.mp4.videoTrack.height,
     })));
-    const preparationText = speedPreparationNeeded && lookPreparationNeeded ? 'clip speed and looks' : speedPreparationNeeded ? 'clip speed' : 'clip looks';
+    const preparationText = [
+      trimPreparationNeeded ? 'clip trim' : null,
+      speedPreparationNeeded ? 'speed' : null,
+      lookPreparationNeeded ? 'looks' : null,
+    ].filter(Boolean).join(' and ');
     status.textContent = `Applying ${preparationText} at ${target.width}×${target.height}, 30 fps…`;
     report.textContent = JSON.stringify({
       stage: 'render-normalizing',
@@ -2739,6 +3011,9 @@ async function refreshSequenceInternal() {
           output_frames: clip.mp4.videoTrack.samples.length,
           durationFrames: settings?.durationFrames ?? null,
           durationSeconds: settings?.durationSeconds ?? null,
+          requested_frames: settings?.requestedFrames ?? null,
+          effective_frames: settings?.durationFrames ?? null,
+          clamped: settings?.clamped === true,
           ending: settings?.ending ?? null,
           repeat: effect?.repeat ?? null,
           smooth: effect?.smooth ?? false,
@@ -2848,6 +3123,42 @@ function wireOptionalUi() {
     closeProjectMenu();
     if (file) loadSettingsFile(file);
   });
+  if (trimDialogReady()) {
+    trimStartInput.addEventListener('input', () => {
+      trimStartRange.value = trimStartInput.value;
+      updateTrimReadout();
+    });
+    trimEndInput.addEventListener('input', () => {
+      trimEndRange.value = trimEndInput.value;
+      updateTrimReadout();
+    });
+    trimStartRange.addEventListener('input', () => {
+      trimStartInput.value = trimStartRange.value;
+      updateTrimReadout();
+    });
+    trimEndRange.addEventListener('input', () => {
+      trimEndInput.value = trimEndRange.value;
+      updateTrimReadout();
+    });
+    trimPreviewIn?.addEventListener('click', () => previewTrimEdge('in'));
+    trimPreviewOut?.addEventListener('click', () => previewTrimEdge('out'));
+    trimReset?.addEventListener('click', () => {
+      const clip = clips[trimClipIndex];
+      if (!clip) return;
+      const trim = clipTrimRange(clip);
+      trimStartInput.value = '0';
+      trimEndInput.value = String(trim.sourceFrames);
+      trimStartRange.value = '0';
+      trimEndRange.value = String(trim.sourceFrames);
+      setTrimError('');
+      updateTrimReadout();
+    });
+    trimApply.addEventListener('click', applyTrimRange);
+    trimDialog.addEventListener('close', () => {
+      trimClipIndex = null;
+      setTrimError('');
+    });
+  }
   if (projectMenu) {
     document.addEventListener('click', event => {
       if (projectMenu.open && !projectMenu.contains(event.target)) projectMenu.open = false;

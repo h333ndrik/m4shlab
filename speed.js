@@ -57,6 +57,39 @@ export function speedFramePlan(sourceFrames, sourceFps, speed) {
   return {speed: resolved, sourceFrames, sourceFps, outputFrames, donorIndexes, outputsBySource};
 }
 
+export function trimFrameCount(startFrame, endFrame, sourceFrames) {
+  if (!Number.isInteger(sourceFrames) || sourceFrames < 1) throw new SpeedValueError('Trim planning needs at least one source frame.');
+  const start = Number.isInteger(startFrame) ? startFrame : 0;
+  const end = Number.isInteger(endFrame) ? endFrame : sourceFrames;
+  if (start < 0 || start >= sourceFrames) throw new SpeedValueError(`Trim start ${start} is outside the ${sourceFrames} source frames.`);
+  if (end <= start || end > sourceFrames) throw new SpeedValueError(`Trim end ${end} must be greater than ${start} and at most ${sourceFrames}.`);
+  return end - start;
+}
+
+export function trimSpeedPlan({sourceFrames, startFrame = 0, endFrame = sourceFrames, sourceFps, speed = 1} = {}) {
+  const trimmedFrames = trimFrameCount(startFrame, endFrame, sourceFrames);
+  const resolved = normalizeSpeed(speed);
+  const outputFrames = speedOutputFrameCount(trimmedFrames, sourceFps, resolved);
+  const relativeDonors = Array.from({length: outputFrames}, (_, index) => (
+    resolved === 1
+      ? Math.min(index, trimmedFrames - 1)
+      : speedDonorIndex(index, trimmedFrames, sourceFps, resolved)
+  ));
+  const outputsBySource = Array.from({length: trimmedFrames}, () => []);
+  relativeDonors.forEach((donor, outputIndex) => outputsBySource[donor].push(outputIndex));
+  return {
+    speed: resolved,
+    sourceFrames,
+    startFrame,
+    endFrame,
+    trimmedFrames,
+    sourceFps,
+    outputFrames,
+    donorIndexes: relativeDonors.map(index => startFrame + index),
+    outputsBySource,
+  };
+}
+
 export function atempoChain(speed) {
   let remaining = normalizeSpeed(speed);
   const stages = [];

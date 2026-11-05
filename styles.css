@@ -177,6 +177,72 @@ button:focus-visible,
   outline-offset: 2px;
 }
 
+.trim-dialog {
+  position: fixed;
+  top: auto;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  margin: 0;
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+}
+
+.trim-fields {
+  display: grid;
+  grid-template-columns: auto 1fr auto 1fr;
+  gap: 8px;
+  align-items: center;
+  margin: 16px 0 8px;
+}
+
+.trim-fields label {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.trim-fields input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #fff;
+  color: var(--ink);
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 12px;
+}
+
+.trim-ranges {
+  display: grid;
+  gap: 6px;
+  margin: 4px 0 12px;
+}
+
+.trim-ranges input { width: 100%; }
+
+.trim-readout {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.trim-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.trim-preview button { flex: 1 1 auto; }
+
+.trim-fields input:focus-visible,
+.trim-ranges input:focus-visible {
+  outline: 2px solid #64647a;
+  outline-offset: 2px;
+}
+
 .shell-notice button[aria-busy="true"] {
   opacity: 0.7;
   cursor: progress;
@@ -979,6 +1045,10 @@ button:focus-visible,
   .sound-toggle input { width: 20px; height: 20px; }
   .shell-notice button { min-height: 44px; }
   .clip-speed input[type="range"] { min-height: 44px; }
+  .clip-controls { flex-wrap: wrap; row-gap: 4px; }
+  .trim-fields input,
+  .trim-ranges input,
+  .trim-preview button { min-height: 44px; }
   .connector { min-height: 44px; }
   .transition-dialog fieldset label { min-height: 44px; }
   .classic-mosh-options input[type="range"],

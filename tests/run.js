@@ -14,7 +14,7 @@ import { MAX_TARGET_LONG_SIDE, capNormalizationDimensions } from '../conversion-
 import { parseSps } from '../parser/sps.js';
 import { ValueError, frameRateForTrack } from '../classic-mosh.js';
 import { assembleAudioTimeline, buildAdts, retimeMuxedAudio, RuntimeError, samplesPerFrame, wavBytes } from '../audio.js';
-import { SpeedValueError, atempoChain, atempoFilter, normalizeSpeed, speedFramePlan } from '../speed.js';
+import { SpeedValueError, atempoChain, atempoFilter, normalizeSpeed, speedFramePlan, speedOutputFrameCount, trimSpeedPlan } from '../speed.js';
 import { LOOKS, LookValueError, applyLookToRgba, normalizationCacheKey, normalizeLook } from '../looks.js';
 import { RANDOM_METHODS, RandomizeError, canRandomize, randomizeTransition, validateRandomTransition } from '../randomize.js';
 
@@ -1394,6 +1394,30 @@ assert.throws(() => normalizeSpeed(0.05), SpeedValueError);
 assert.throws(() => normalizeSpeed(5), SpeedValueError);
 assert.throws(() => normalizeSpeed(1.25), SpeedValueError);
 pass('Speed plans map 60 frames to 30/120/60/35 frames at 2×/0.5×/1×/1.7× and reject out-of-range values');
+
+const trimmedPlan = trimSpeedPlan({sourceFrames: 60, startFrame: 10, endFrame: 40, sourceFps: 30, speed: 2});
+assert.equal(trimmedPlan.trimmedFrames, 30);
+assert.equal(trimmedPlan.outputFrames, speedOutputFrameCount(30, 30, 2));
+assert.equal(trimmedPlan.outputFrames, 15);
+assert.ok(trimmedPlan.donorIndexes.every(index => index >= 10 && index < 40), `trim donors escaped the range: ${trimmedPlan.donorIndexes.join(',')}`);
+assert.deepEqual(trimmedPlan.donorIndexes.slice(0, 5), [10, 12, 14, 16, 18]);
+const trimmedSameSpeed = trimSpeedPlan({sourceFrames: 60, startFrame: 10, endFrame: 40, sourceFps: 30, speed: 1});
+assert.deepEqual(trimmedSameSpeed.donorIndexes, Array.from({length: 30}, (_, index) => 10 + index));
+assert.throws(() => trimSpeedPlan({sourceFrames: 60, startFrame: 40, endFrame: 40, sourceFps: 30, speed: 1}), SpeedValueError);
+assert.throws(() => trimSpeedPlan({sourceFrames: 60, startFrame: 10, endFrame: 61, sourceFps: 30, speed: 1}), SpeedValueError);
+pass('trimSpeedPlan maps 30 of 60 frames at 2× to 15 outputs with every donor inside [10,40) and rejects empty or over-long trims');
+
+const target = {width: 540, height: 720};
+const trimKeyA = normalizationCacheKey({sourceKey: 'clip.mp4:1234:9', target, speed: 1, look: 'original', startFrame: 0, endFrame: 30});
+const trimKeyB = normalizationCacheKey({sourceKey: 'clip.mp4:1234:9', target, speed: 1, look: 'original', startFrame: 10, endFrame: 40});
+const trimKeyARepeat = normalizationCacheKey({sourceKey: 'clip.mp4:1234:9', target, speed: 1, look: 'original', startFrame: 0, endFrame: 30});
+const fullKey = normalizationCacheKey({sourceKey: 'clip.mp4:1234:9', target, speed: 1, look: 'original'});
+assert.notEqual(trimKeyA, trimKeyB, 'different trims of one source must not share a cache key');
+assert.equal(trimKeyA, trimKeyARepeat);
+assert.notEqual(trimKeyA, fullKey);
+assert.match(trimKeyA, /trim:0-30\|original$/);
+assert.match(fullKey, /trim:full\|original$/);
+pass('normalization cache keys carry the trim range: two trims differ, one trim repeats, and full-clip keys stay stable');
 
 const lookPixels = () => Uint8ClampedArray.from([10, 100, 200, 255, 255, 0, 128, 77]);
 const originalPixels = applyLookToRgba(lookPixels(), 'original');

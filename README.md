@@ -9,6 +9,7 @@
 - **Timeline editor:** import and arrange up to 12 clips, reorder by dragging cards on fine-pointer devices or with the arrow buttons, remove clips, and undo/redo timeline edits. Click any card to preview that clip, or use **Assemble preview** for the complete chained result.
 - **Seven transition methods:** Cut plus six mosh variants: m4sh (internal key `classic-mosh`); Melt Original; Melt Gentler; Loop Release Original; Loop Release Gentler; Reset Pulse. Every mosh variant exposes frame-quantized duration and Restore/Continue ending controls.
 - **Gentler cadence:** Melt bounds donor advances to two frames before its release point and uses consecutive donors for the final quarter. Loop Release bridges the 3×→2× and release-tail jumps with donor advances of at most two frames while preserving the repeated block wraps. Both keep the selected window, video frame count, and audio timeline exact.
+- **Per-clip trim:** the ✂ button on a clip card opens a **Trim** dialog with in/out frame inputs, two sliders, a live `frames · seconds at source fps · seconds at 30 fps` readout, Preview in/out on the existing preview, Reset and Apply. The selection is `[start_frame, end_frame)` on the imported frames; trim, look, speed and scaling run in one WebCodecs pass, audio follows the trimmed range, and a trim that shrinks the mosh budget shows up as `clamped` in the dialog, on the connector and in the bitstream report.
 - **Per-clip speed:** every timeline entry has an independent 0.1×–4.0× control in 0.1× steps and Reset. Speed uses one WebCodecs frame-mapping/normalization pass at 30 fps; audio follows through a chained ffmpeg.wasm `atempo` path with pitch preserved and an exact sample count.
 - **Per-clip looks:** Original, Black & white, B&W negative, and Color negative are independent timeline-entry settings. Non-Original looks are applied to decoded RGBA pixels before the same WebCodecs encode pass and remain visible in preview and export.
 - **Seeded Randomize:** the editable 16-hex seed deterministically selects a valid method, duration, ending, repeat/group size, and Reset interval for m4sh, Melt, Loop Release, or Reset Pulse. The same seed and clips reproduce the same variant; copy support makes a good variant reusable, and manual edits clear the seed.
@@ -120,6 +121,15 @@ The seed is stored as `randomSeed` on the timeline entry, survives undo/redo and
 Loop Release keeps m4shlab's Block G 3×/2×/tail schedule in **Original** mode. **Gentler** mode bridges forward donor jumps at the 3×→2× and release-tail boundaries using steps of at most two source frames. The wrap-around inside each repeated block remains intact, and bridged output frames replace the leading slots at the affected boundary so the duration window, merged frame count, and linear audio timeline remain exact. Repeated payloads stay byte-identical; frame_num and type-0 POC-LSB values are renumbered through the existing RBSP/EBSP-safe path. Later IDRs remain natural reset points.
 
 h4moshlab deliberately does not offer Gentler cadence on Loop Release. This is an m4shlab extension and must be judged visually on the intended source; it is not interpolation or a smoothness guarantee.
+
+### Per-clip trim
+
+1. Every clip carries `start_frame` / `end_frame` (integer, exclusive end) over the imported frames. The pipeline order for one clip is fixed: select `[start_frame, end_frame)` → apply look → speed map → scale to the target → encode. Trim always reads the clip's base imported bytes, so trimming after a speed change never stacks re-encodes.
+2. `trimSpeedPlan()` in `speed.js` plans from `trimmedFrames`, computes donors over the trimmed count and adds `start_frame`, so every donor index stays inside the selection. `speedOutputFrameCount(trimmedFrames, fps, speed)` sets the output length.
+3. `normalizationCacheKey()` includes the trim range, so two trims of one source never share a prepared copy while the same trim reuses one.
+4. The mosh budget follows the trimmed clip: `moshSettingsForClip()` clamps an explicit duration to the new maximum and reports `requestedFrames`, `effective_frames` and `clamped`. The connector, the dialog mode and `report.transitions[i]` all expose the clamp.
+5. Audio is sliced to the trimmed frame range before the atempo stage, so the assembled PCM length still equals `merged video frames × (48000 / fps)`; silent or audio-less clips contribute exact silence and a mismatch still raises before export.
+6. `.m4settings` stores `start_frame` / `end_frame` per clip. Files without those fields load as full-clip trims, and a trim beyond the current clip length is rejected before anything is applied.
 
 ### Per-clip speed
 

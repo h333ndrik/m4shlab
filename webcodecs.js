@@ -5,7 +5,7 @@ import { parseSps } from './parser/sps.js';
 import { parseAvcConfig } from './merge.js';
 import { buildNormalizedMp4, chooseNormalizationTarget } from './webcodecs-muxer.js';
 import { frameRateForTrack } from './classic-mosh.js';
-import { normalizeSpeed, speedFramePlan } from './speed.js';
+import { normalizeSpeed, trimSpeedPlan } from './speed.js';
 import { applyLookToRgba, normalizeLook } from './looks.js';
 
 const OUTPUT_FPS = 30;
@@ -373,8 +373,14 @@ export async function normalizeWithWebCodecs(inputBytes, options = {}) {
   let pendingFrames = 0;
   let processing = Promise.resolve();
   const sourceFps = frameRateForTrack(parsed.videoTrack);
-  const speedPlan = speed === 1 ? null : speedFramePlan(chunks.length, sourceFps, speed);
-  const outputFrameTarget = speedPlan?.outputFrames ?? chunks.length;
+  const trimPlan = trimSpeedPlan({
+    sourceFrames: chunks.length,
+    startFrame: Number.isInteger(options.startFrame) ? options.startFrame : 0,
+    endFrame: Number.isInteger(options.endFrame) ? options.endFrame : chunks.length,
+    sourceFps,
+    speed,
+  });
+  const outputFrameTarget = trimPlan.outputFrames;
 
   const encoder = new VideoEncoder({
     output: (chunk, metadata) => {
@@ -398,7 +404,10 @@ export async function normalizeWithWebCodecs(inputBytes, options = {}) {
         try {
           throwIfAborted(options.signal);
           if (encoderError) throw encoderError;
-          const outputIndexes = speedPlan ? speedPlan.outputsBySource[sourceIndex] ?? [] : [encodedFrames];
+          const relativeSource = sourceIndex - trimPlan.startFrame;
+          const outputIndexes = relativeSource >= 0 && relativeSource < trimPlan.trimmedFrames
+            ? trimPlan.outputsBySource[relativeSource] ?? []
+            : [];
           for (const outputIndex of outputIndexes) {
             const scale = Math.min(target.width / frame.displayWidth, target.height / frame.displayHeight);
             const drawWidth = Math.max(1, Math.round(frame.displayWidth * scale));
@@ -437,6 +446,7 @@ export async function normalizeWithWebCodecs(inputBytes, options = {}) {
     decoder.configure(decoderSelection.config);
     const sourceLabel = parsed.videoTrack.codecFamily === 'hevc' ? 'HEVC' : 'H.264';
     const operations = [];
+    if (trimPlan.trimmedFrames !== chunks.length) operations.push(`frames ${trimPlan.startFrame}–${trimPlan.endFrame - 1} of ${chunks.length}`);
     if (speed !== 1) operations.push(`${speed.toFixed(1)}× speed`);
     if (look !== 'original') operations.push(`${look.replaceAll('-', ' ')} look`);
     const operationPrefix = operations.length ? `Applying ${operations.join(' and ')}, ` : '';
@@ -512,11 +522,17 @@ export async function normalizeWithWebCodecs(inputBytes, options = {}) {
       speed,
       look,
       sourceFps,
-      inputFrames: chunks.length,
+      inputFrames: trimPlan.trimmedFrames,
       outputFrames: encoded.length,
-      speedFramePlan: speedPlan ? {
-        donorIndexes: speedPlan.donorIndexes,
-      } : null,
+      trim: {
+        sourceFrames: trimPlan.sourceFrames,
+        startFrame: trimPlan.startFrame,
+        endFrame: trimPlan.endFrame,
+        trimmedFrames: trimPlan.trimmedFrames,
+      },
+      speedFramePlan: speed === 1 ? null : {
+        donorIndexes: trimPlan.donorIndexes,
+      },
       outputBytes: muxed.bytes.byteLength,
       idrCount,
       keyframes: muxed.report.keyframes,

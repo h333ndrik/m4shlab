@@ -2869,6 +2869,268 @@ try {
   console.log('PASS a preview click and a clip reorder leave every connector duration unchanged');
   await client.send('Emulation.setDeviceMetricsOverride', {width: 1200, height: 1600, deviceScaleFactor: 1, mobile: false});
 
+  // Frame-exact trimmer: model, one-pass preparation, budget, audio, settings.
+  const trimExceptionsStart = client.exceptions.length;
+  await client.send('Emulation.setDeviceMetricsOverride', {width: 1200, height: 1600, deviceScaleFactor: 1, mobile: false});
+  await client.send('Page.navigate', {url: `${baseUrl}?trim=1`});
+  await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
+  await client.setFiles('#file-input-a', [fixtures.speed, fixtures.silentB]);
+  await client.waitFor("document.querySelectorAll('.clip-card').length === 2", 30000);
+  await client.waitFor(`(() => {
+    const node = document.querySelector('#report');
+    if (!node.textContent) return false;
+    try { return JSON.parse(node.textContent).stage === 'merged'; } catch { return false; }
+  })()`, 180000);
+
+  const geometry = await client.evaluate(`(() => {
+    const rect = document.querySelectorAll('.clip-card')[0].getBoundingClientRect();
+    const controls = document.querySelectorAll('.clip-card')[0].querySelectorAll('.clip-controls button');
+    return {width: rect.width, height: rect.height, buttons: controls.length, trimLabel: controls[controls.length - 1].getAttribute('aria-label')};
+  })()`);
+  assert.ok(Math.abs(geometry.width - 148) < 0.6, `clip card width drifted to ${geometry.width}`);
+  assert.ok(Math.abs(geometry.height - 211.5) < 1, `clip card height drifted to ${geometry.height}`);
+  assert.equal(geometry.buttons, 4);
+  assert.equal(geometry.trimLabel, 'Trim synthetic-speed-60.mp4');
+  console.log(`PASS the trim button fits the unchanged ${geometry.width}x${geometry.height} clip card with a "Trim <file>" label`);
+
+  const applyTrim = async (index, startFrame, endFrame) => {
+    await client.evaluate(`document.querySelectorAll('.clip-card')[${index}].querySelector('.clip-trim-button').click()`);
+    await client.waitFor("document.querySelector('#trim-dialog')?.open === true", 5000);
+    await client.evaluate(`(() => {
+      const start = document.querySelector('#trim-start');
+      const end = document.querySelector('#trim-end');
+      start.value = '${startFrame}';
+      start.dispatchEvent(new Event('input', {bubbles: true}));
+      end.value = '${endFrame}';
+      end.dispatchEvent(new Event('input', {bubbles: true}));
+      document.querySelector('#trim-apply').click();
+    })()`);
+    await client.waitFor(`(() => {
+      const node = document.querySelector('#report');
+      if (!node.textContent) return false;
+      try { return JSON.parse(node.textContent).stage === 'merged'; } catch { return false; }
+    })()`, 180000);
+  };
+
+  const readTrimState = `(() => {
+    const report = JSON.parse(document.querySelector('#report').textContent);
+    return {
+      stage: report.stage,
+      sources: report.sources.clips.map(clip => ({
+        name: clip.name,
+        start: clip.start_frame,
+        end: clip.end_frame,
+        trimmed: clip.trimmed_frames,
+        frames: clip.output_frames,
+        speed: clip.speed,
+        look: clip.look,
+        encodePasses: clip.lookReport?.encodePasses ?? null,
+        audio: clip.audio ? {frames: clip.audio.frames, hasAudio: clip.audio.hasAudio === true} : null,
+      })),
+      boundaries: report.transitions.map(item => ({
+        method: item.method,
+        frames: item.durationFrames,
+        requested: item.requested_frames,
+        effective: item.effective_frames,
+        clamped: item.clamped,
+        seconds: item.durationSeconds,
+      })),
+      connectors: [...document.querySelectorAll('.connector')].map(node => node.lastElementChild.textContent),
+      cards: [...document.querySelectorAll('.clip-card .clip-detail')].map(node => node.textContent),
+    };
+  })()`;
+
+  await applyTrim(0, 10, 40);
+  const trimmedOnce = await client.evaluate(readTrimState);
+  assert.deepEqual(
+    {start: trimmedOnce.sources[0].start, end: trimmedOnce.sources[0].end, trimmed: trimmedOnce.sources[0].trimmed},
+    {start: 10, end: 40, trimmed: 30},
+  );
+  assert.equal(trimmedOnce.sources[0].frames, 30);
+  assert.match(trimmedOnce.cards[0], /trimmed/);
+  console.log(`PASS trim 10–40 keeps 30 of 60 source frames, re-encodes once (${trimmedOnce.sources[0].frames} frames) and marks the card`);
+
+  await client.evaluate("document.querySelector('#undo-button').click()");
+  await client.waitFor(`(() => {
+    const node = document.querySelector('#report');
+    if (!node.textContent) return false;
+    try {
+      const report = JSON.parse(node.textContent);
+      return report.stage === 'merged' && report.sources.clips[0]?.start_frame === 0 && report.sources.clips[0]?.end_frame === 60;
+    } catch { return false; }
+  })()`, 180000);
+  const undone = await client.evaluate(readTrimState);
+  assert.equal(undone.sources[0].trimmed, 60);
+  assert.equal(undone.sources[0].frames, 60);
+  assert.doesNotMatch(undone.cards[0], /trimmed/);
+  console.log('PASS one undo after Apply trim restores the full 60-frame clip, its card text and the merge budget');
+
+  await client.evaluate(`(() => {
+    const card = document.querySelectorAll('.clip-card')[0];
+    const look = card.querySelector('.clip-look select');
+    look.value = 'black-white';
+    look.dispatchEvent(new Event('change', {bubbles: true}));
+    const speed = card.querySelector('.clip-speed input');
+    speed.value = '1.7';
+    speed.dispatchEvent(new Event('change', {bubbles: true}));
+  })()`);
+  await client.waitFor(`(() => {
+    try {
+      const report = JSON.parse(document.querySelector('#report').textContent);
+      return report.stage === 'merged' && report.sources.clips[0]?.speed === 1.7 && report.sources.clips[0]?.look === 'black-white';
+    } catch { return false; }
+  })()`, 180000);
+  await applyTrim(0, 10, 40);
+  const combined = await client.evaluate(readTrimState);
+  assert.equal(combined.sources[0].speed, 1.7);
+  assert.equal(combined.sources[0].look, 'black-white');
+  assert.equal(combined.sources[0].encodePasses, 1, 'trim, look and speed must share one encode pass');
+  assert.equal(combined.sources[0].frames, 18, '30 trimmed frames at 1.7x must plan 18 outputs');
+  assert.equal(combined.sources[0].audio.frames, 18);
+  assert.equal(combined.sources[1].audio.hasAudio, false);
+  assert.equal(combined.sources[1].audio.frames, combined.sources[1].frames);
+  const speedReportDonors = await client.evaluate(`(() => {
+    const report = JSON.parse(document.querySelector('#report').textContent);
+    const speedReport = report.sources.clips[0]?.speedReport ?? null;
+    return speedReport ? {donors: speedReport.donorIndexes, audioFrames: speedReport.audioFrames, audioSamples: speedReport.audioSamples} : null;
+  })()`);
+  assert.ok(Array.isArray(speedReportDonors.donors) && speedReportDonors.donors.every(index => index >= 10 && index < 40), JSON.stringify(speedReportDonors.donors));
+  assert.equal(speedReportDonors.audioFrames, 18);
+  assert.equal(speedReportDonors.audioSamples, 18 * 1600, 'trimmed 1.7x audio must be exactly outputFrames x 1600 samples');
+  console.log('PASS trim + black & white + 1.7x prepares in one pass, keeps every donor inside [10,40) and sizes the audio to 18 frames');
+
+  await client.evaluate("document.querySelector('.connector').click()");
+  await client.waitFor("document.querySelector('#transition-dialog')?.open === true", 5000);
+  await client.evaluate(`(() => {
+    const slider = document.querySelector('#transition-duration');
+    slider.value = slider.max;
+    slider.dispatchEvent(new Event('input', {bubbles: true}));
+    document.querySelector('#transition-apply').click();
+  })()`);
+  await client.waitFor(`(() => {
+    try { return JSON.parse(document.querySelector('#report').textContent).stage === 'merged'; } catch { return false; }
+  })()`, 180000);
+  const beforeShrink = await client.evaluate(readTrimState);
+  await applyTrim(1, 0, 10);
+  const afterShrink = await client.evaluate(readTrimState);
+  assert.equal(afterShrink.boundaries[0].clamped, true, 'the shrunk budget must clamp the stored duration');
+  assert.ok(afterShrink.boundaries[0].requested > afterShrink.boundaries[0].effective);
+  assert.equal(
+    afterShrink.connectors[0],
+    `${afterShrink.boundaries[0].seconds.toFixed(2)} s · restore`,
+    'the connector must show the clamped value',
+  );
+  assert.ok(beforeShrink.boundaries[0].requested <= beforeShrink.boundaries[0].effective + 0);
+  await client.evaluate("document.querySelector('.connector').click()");
+  await client.waitFor("document.querySelector('#transition-dialog')?.open === true", 5000);
+  const clampState = await client.evaluate(`({
+    mode: document.querySelector('#transition-duration-mode').textContent,
+    frames: Number(document.querySelector('#transition-duration').value),
+    max: Number(document.querySelector('#transition-duration').max),
+    text: document.querySelector('#transition-duration-value').textContent,
+  })`);
+  await client.evaluate("document.querySelector('#transition-dialog').close()");
+  assert.equal(clampState.mode, 'clamped');
+  assert.equal(clampState.frames, afterShrink.boundaries[0].effective);
+  assert.equal(clampState.max, afterShrink.boundaries[0].effective);
+  assert.ok(clampState.text.startsWith(`${afterShrink.boundaries[0].seconds.toFixed(2)} s`));
+  console.log(`PASS a trim that shrinks the budget re-clamps the connector to ${afterShrink.boundaries[0].effective} frames, marks the dialog "clamped" and reports requested ${afterShrink.boundaries[0].requested} vs effective ${afterShrink.boundaries[0].effective}`);
+
+  const trimSettingsPath = join(downloadDir, 'Trim-Set.m4settings');
+  const trimlessPath = join(downloadDir, 'Trim-Set-notrim.m4settings');
+  const trimBeyondPath = join(downloadDir, 'Trim-Set-beyond.m4settings');
+  for (const path of [trimSettingsPath, trimlessPath, trimBeyondPath]) rmSync(path, {force: true});
+  await client.evaluate(`(() => {
+    const input = document.querySelector('#project-name');
+    input.value = 'Trim Set';
+    input.dispatchEvent(new Event('input', {bubbles: true}));
+    document.querySelector('#project-menu').open = true;
+  })()`);
+  await client.evaluate("document.querySelector('#save-settings').click()");
+  await waitForDownload(trimSettingsPath, 10000);
+  const savedTrimSettings = JSON.parse(readFileSync(trimSettingsPath, 'utf8'));
+  assert.equal(savedTrimSettings.clips[0].start_frame, 10);
+  assert.equal(savedTrimSettings.clips[0].end_frame, 40);
+  assert.equal(savedTrimSettings.clips[0].speed, 1.7);
+  assert.equal(savedTrimSettings.clips[0].look, 'black-white');
+  assert.equal(savedTrimSettings.clips[1].start_frame, 0);
+  assert.equal(savedTrimSettings.clips[1].end_frame, 10);
+
+  await client.send('Page.navigate', {url: `${baseUrl}?trim-settings=1`});
+  await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
+  await client.setFiles('#file-input-a', [fixtures.speed, fixtures.silentB]);
+  await client.waitFor("document.querySelectorAll('.clip-card').length === 2", 30000);
+  await client.waitFor(`(() => {
+    try { return JSON.parse(document.querySelector('#report').textContent).stage === 'merged'; } catch { return false; }
+  })()`, 180000);
+  await client.evaluate(`(() => {
+    const input = document.querySelector('#project-name');
+    input.value = 'Trim Load';
+    input.dispatchEvent(new Event('input', {bubbles: true}));
+  })()`);
+  await client.evaluate("document.querySelector('#project-menu').open = true");
+  await client.setFile('#settings-input', trimSettingsPath);
+  await client.waitFor("document.querySelector('#status').textContent === 'Settings loaded for 1 boundaries.'", 180000);
+  const loadedTrim = await client.evaluate(readTrimState);
+  assert.equal(loadedTrim.sources[0].start, 10);
+  assert.equal(loadedTrim.sources[0].end, 40);
+  assert.equal(loadedTrim.sources[0].speed, 1.7);
+  assert.equal(loadedTrim.sources[0].look, 'black-white');
+  assert.equal(loadedTrim.sources[0].frames, 18);
+  assert.equal(loadedTrim.sources[1].start, 0);
+  assert.equal(loadedTrim.sources[1].end, 10);
+  assert.equal(loadedTrim.sources[1].frames, 10);
+  console.log('PASS settings round-trip restores both trims plus the 1.7x speed and black & white look after a reload');
+
+  const trimlessSettings = JSON.parse(readFileSync(trimSettingsPath, 'utf8'));
+  for (const clip of trimlessSettings.clips) {
+    delete clip.start_frame;
+    delete clip.end_frame;
+  }
+  writeFileSync(trimlessPath, JSON.stringify(trimlessSettings, null, 2));
+  await client.evaluate("document.querySelector('#project-menu').open = true");
+  await client.setFile('#settings-input', trimlessPath);
+  await client.waitFor("document.querySelector('#status').textContent === 'Settings loaded for 1 boundaries.'", 180000);
+  const trimlessState = await client.evaluate(readTrimState);
+  assert.deepEqual(
+    trimlessState.sources.map(clip => [clip.start, clip.end, clip.trimmed]),
+    [[0, 60, 60], [0, 25, 25]],
+    'files without trim fields must load as full-clip trims',
+  );
+  assert.equal(trimlessState.sources[0].speed, 1.7);
+  console.log('PASS settings files without trim fields load as full-clip trims and keep speed/look');
+
+  const beforeBadTrim = await client.evaluate(`(() => {
+    const report = JSON.parse(document.querySelector('#report').textContent);
+    return {
+      names: [...document.querySelectorAll('.clip-card .clip-name')].map(node => node.textContent),
+      sources: report.sources.clips.map(clip => [clip.name, clip.start_frame, clip.end_frame, clip.speed, clip.look]),
+      transitions: report.transitions.map(item => [item.method, item.durationFrames, item.ending]),
+      project: document.querySelector('#project-name').value,
+      reportText: document.querySelector('#report').textContent,
+    };
+  })()`);
+  const beyondSettings = JSON.parse(readFileSync(trimSettingsPath, 'utf8'));
+  beyondSettings.clips[1].start_frame = 20;
+  beyondSettings.clips[1].end_frame = 999;
+  writeFileSync(trimBeyondPath, JSON.stringify(beyondSettings, null, 2));
+  await client.evaluate("document.querySelector('#project-menu').open = true");
+  await client.setFile('#settings-input', trimBeyondPath);
+  await client.waitFor("!document.querySelector('#error').hidden && /is outside the 25 source frames/.test(document.querySelector('#error').textContent)", 10000);
+  const afterBadTrim = await client.evaluate(`(() => {
+    const report = JSON.parse(document.querySelector('#report').textContent);
+    return {
+      names: [...document.querySelectorAll('.clip-card .clip-name')].map(node => node.textContent),
+      sources: report.sources.clips.map(clip => [clip.name, clip.start_frame, clip.end_frame, clip.speed, clip.look]),
+      transitions: report.transitions.map(item => [item.method, item.durationFrames, item.ending]),
+      project: document.querySelector('#project-name').value,
+      reportText: document.querySelector('#report').textContent,
+    };
+  })()`);
+  assert.deepEqual(afterBadTrim, beforeBadTrim, 'a trim beyond the clip must leave the timeline byte-identical');
+  assert.equal(client.exceptions.length, trimExceptionsStart);
+  console.log('PASS a settings trim beyond the clip length errors out and leaves names, trims, transitions and report untouched');
+
   if (client.exceptions.length) throw new Error(`Browser exceptions:\n${client.exceptions.join('\n')}`);
 } finally {
   client?.close();
