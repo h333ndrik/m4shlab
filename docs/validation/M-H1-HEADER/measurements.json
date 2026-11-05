@@ -1,0 +1,57 @@
+[
+  {
+    "label": "1440",
+    "state": {
+      "header": 54,
+      "wordmark": 20.88,
+      "button": 34,
+      "displayMode": false,
+      "scrollWidth": 1440,
+      "clientWidth": 1440
+    }
+  },
+  {
+    "label": "1024",
+    "state": {
+      "header": 50.38,
+      "wordmark": 18,
+      "button": 34,
+      "displayMode": false,
+      "scrollWidth": 1024,
+      "clientWidth": 1024
+    }
+  },
+  {
+    "label": "390",
+    "state": {
+      "header": 44,
+      "wordmark": 18,
+      "button": 34,
+      "displayMode": false,
+      "scrollWidth": 390,
+      "clientWidth": 390
+    }
+  },
+  {
+    "label": "320",
+    "state": {
+      "header": 44,
+      "wordmark": 18,
+      "button": 34,
+      "displayMode": false,
+      "scrollWidth": 320,
+      "clientWidth": 320
+    }
+  },
+  {
+    "label": "390-standalone",
+    "state": {
+      "header": 44,
+      "wordmark": 18,
+      "button": 34,
+      "displayMode": false,
+      "scrollWidth": 390,
+      "clientWidth": 390
+    }
+  }
+]
