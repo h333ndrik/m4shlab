@@ -1,0 +1,23 @@
+M-C1 deployed network proof
+captured: 2026-11-05T17:29:21Z
+origin: https://h333ndrik.github.io/m4shlab/
+
+path                                         HTTP  bytes  served-sha256                                                    local-sha256                                                     match
+sw.js                                        200   3852  456ba1042798931273b1814047d5d4da4d3b604fdb8d97a74b634cc5117b9d8f  456ba1042798931273b1814047d5d4da4d3b604fdb8d97a74b634cc5117b9d8f  yes
+index.html                                   200  10977  6893c764f769fbff28c61ab6004275df5f06d167c966458c234e1e33fbedbbb6  6893c764f769fbff28c61ab6004275df5f06d167c966458c234e1e33fbedbbb6  yes
+app.js                                       200 124966  0927e65d0124d54de9da260d2e547908d930caaee2c064c1d0e8f3646fc69863  0927e65d0124d54de9da260d2e547908d930caaee2c064c1d0e8f3646fc69863  yes
+merge.js                                     200  81226  3d47d2337bb8d2ced7918a2f9b53facb269000a774dbc0a0be1b3b10ec2062c0  3d47d2337bb8d2ced7918a2f9b53facb269000a774dbc0a0be1b3b10ec2062c0  yes
+styles.css                                   200  22313  b9358d6af6904ab6544a4e00945c54359729bcab288300de5a396c8ce71126df  b9358d6af6904ab6544a4e00945c54359729bcab288300de5a396c8ce71126df  yes
+assets/cursor/m4-cursor.svg                  200  12354  0a4c207d9c1267f46fe03bafa3504db0bce0f5082ea11d2aa5aecb449395528f  0a4c207d9c1267f46fe03bafa3504db0bce0f5082ea11d2aa5aecb449395528f  yes
+assets/cursor/m4-cursor.png                  200    944  c1201efe368653a9a067fd4da45acaa48ededf6675e0c08c50f20f6bd0f8ed6a  c1201efe368653a9a067fd4da45acaa48ededf6675e0c08c50f20f6bd0f8ed6a  yes
+assets/cursor/m4-cursor-interactive.svg      200  12356  dc0290a4c06d36763bc24b5a5301ddd8f92b3ccd967865de70aadbd325aec71f  dc0290a4c06d36763bc24b5a5301ddd8f92b3ccd967865de70aadbd325aec71f  yes
+assets/cursor/m4-cursor-interactive.png      200    957  c2504b27995341acb4edb1f2b2419ea631b1a595e77d3d0005383f3d8eb0a4d4  c2504b27995341acb4edb1f2b2419ea631b1a595e77d3d0005383f3d8eb0a4d4  yes
+assets/cursor/m4-cursor-pressed.svg          200  12356  bcb80ea8d2e6bc8951cf42b4cfdda639d50615de38bc596dc55611d6cb7809d5  bcb80ea8d2e6bc8951cf42b4cfdda639d50615de38bc596dc55611d6cb7809d5  yes
+assets/cursor/m4-cursor-pressed.png          200   1007  630dc9a286241900781e1d9ba6fcb3ab1d4da65479d49293e237bb90c1079a98  630dc9a286241900781e1d9ba6fcb3ab1d4da65479d49293e237bb90c1079a98  yes
+manifest.json                                200    620  497ed349ac3a277799fec051df0d9f8b4e96825f26f1612be9958f65bec7bb3e  497ed349ac3a277799fec051df0d9f8b4e96825f26f1612be9958f65bec7bb3e  yes
+
+sw.js VERSION: const VERSION = 'v27'
+sw.js served == local: yes
+
+Check command: curl -sS -o /tmp/deployed-asset -w '%{http_code}' https://h333ndrik.github.io/m4shlab/<path>
+All cursor URLs returned HTTP 200 under the /m4shlab/ project subpath.
