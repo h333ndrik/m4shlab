@@ -18,7 +18,7 @@
 <body>
   <main>
     <header>
-      <h1>m4 sh lab</h1>
+      <h1>m4shlab</h1>
       <div class="file-actions" aria-label="Import videos">
         <label class="button">+ Import videos<input id="file-input-a" type="file" multiple accept="video/*,.mp4,.mov,.m4v,.mkv,.webm,.avi"></label>
         <input id="file-input-b" class="legacy-input" type="file" accept="video/*,.mp4,.mov,.m4v,.mkv,.webm,.avi" tabindex="-1" aria-hidden="true">
@@ -47,12 +47,20 @@
             <button id="undo-button" type="button" aria-label="Undo" title="Undo" disabled>↶</button>
             <button id="redo-button" type="button" aria-label="Redo" title="Redo" disabled>↷</button>
           </div>
-          <input id="project-name" class="project-name" type="text" value="Project" maxlength="60" size="7" aria-label="Project name">
+          <details id="project-menu" class="project-menu">
+            <summary>Project</summary>
+            <div class="project-menu-panel">
+              <input id="project-name" class="project-name" type="text" value="Project" maxlength="60" size="7" aria-label="Project name">
+              <button id="save-settings" type="button" disabled>Save settings</button>
+              <button id="load-settings" type="button">Load settings</button>
+              <input id="settings-input" class="legacy-input" type="file" accept=".m4settings,application/json" tabindex="-1" aria-hidden="true">
+            </div>
+          </details>
           <span id="sequence-label">0 clips</span>
         </div>
       </div>
       <div id="source-tiers" class="timeline"></div>
-      <p class="drop-hint">Drop video files here · up to 12 clips · each connector chooses Cut, Classic Mosh, Melt or Loop</p>
+      <p class="drop-hint">Drop video files here · up to 12 clips · each connector chooses Cut, m4sh, Melt or Loop</p>
     </section>
 
     <div id="conversion-progress" class="conversion-progress" role="status" aria-live="polite" hidden>
@@ -63,6 +71,11 @@
     <p id="status" class="status" role="status">No videos loaded.</p>
     <p id="error" class="error" role="alert" hidden></p>
     <pre id="report" hidden></pre>
+
+    <details id="bitstream-report" class="bitstream-report">
+      <summary>BITSTREAM REPORT</summary>
+      <pre id="bitstream-report-json">Run an export to see the bitstream report.</pre>
+    </details>
 
     <dialog id="transition-dialog" class="transition-dialog" aria-labelledby="transition-title">
       <form method="dialog">
@@ -75,13 +88,17 @@
         </div>
         <div class="randomize-row">
           <button id="transition-randomize" type="button">randomize</button>
-          <output id="transition-seed" for="transition-randomize">seed —</output>
+          <div class="seed-field">
+            <input id="transition-seed" class="seed-input" type="text" maxlength="16" placeholder="seed —" aria-label="Random seed" inputmode="text" spellcheck="false">
+            <button id="copy-seed" type="button">copy</button>
+          </div>
         </div>
+        <p id="transition-seed-error" class="dialog-inline-error" role="alert" hidden></p>
         <div class="transition-method-field">
           <label for="transition-method">Method</label>
           <select id="transition-method">
             <option value="cut">Cut</option>
-            <option value="classic-mosh">Classic Mosh</option>
+            <option value="classic-mosh">m4sh</option>
             <option value="melt">Melt</option>
             <option value="loop">Loop Release</option>
             <option value="reset-pulse">Reset Pulse</option>

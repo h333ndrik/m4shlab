@@ -21,7 +21,7 @@ import { isWebCodecsAvailable, normalizeWithWebCodecs } from './webcodecs.js';
 import { chooseNormalizationTarget } from './webcodecs-muxer.js';
 import { frameRateForTrack, maxMoshFrames } from './classic-mosh.js';
 import { atempoChain, normalizeSpeed, SPEED_MAX, SPEED_MIN, SPEED_STEP } from './speed.js';
-import { canRandomize, randomizeTransition } from './randomize.js';
+import { canRandomize, normalizeSeed, randomizeTransition } from './randomize.js';
 import { LOOKS, normalizeLook, normalizationCacheKey } from './looks.js';
 import {
   assembleAudioTimeline,
@@ -54,11 +54,20 @@ const previewLabel = document.querySelector('#preview-label');
 const previewTime = document.querySelector('#preview-time');
 const soundToggle = document.querySelector('#sound-toggle');
 const projectName = document.querySelector('#project-name');
+const projectMenu = document.querySelector('#project-menu');
+const saveSettingsButton = document.querySelector('#save-settings');
+const loadSettingsButton = document.querySelector('#load-settings');
+const settingsInput = document.querySelector('#settings-input');
 const AUDIO_PREFERENCE_KEY = 'm4shlab-audio';
 const PROJECT_NAME_KEY = 'm4shlab-project';
+const SETTINGS_FORMAT = 'm4shlab-settings';
+const SETTINGS_VERSION = 1;
+const SETTINGS_MAX_BYTES = 1024 * 1024;
 const DEFAULT_PROJECT_NAME = 'Project';
 const DEFAULT_EXPORT_FILENAME = 'm4shlab-merge.mp4';
+const TRANSITION_METHODS = new Set(['cut', 'classic-mosh', 'melt', 'loop', 'reset-pulse']);
 const report = document.querySelector('#report');
+const bitstreamReportJson = document.querySelector('#bitstream-report-json');
 const undoButton = document.querySelector('#undo-button');
 const redoButton = document.querySelector('#redo-button');
 const coarsePointerQuery = window.matchMedia('(pointer: coarse)');
@@ -68,6 +77,8 @@ const transitionMethod = document.querySelector('#transition-method');
 const transitionApply = document.querySelector('#transition-apply');
 const transitionRandomize = document.querySelector('#transition-randomize');
 const transitionSeed = document.querySelector('#transition-seed');
+const copySeedButton = document.querySelector('#copy-seed');
+const transitionSeedError = document.querySelector('#transition-seed-error');
 const classicMoshOptions = document.querySelector('#classic-mosh-options');
 const transitionDuration = document.querySelector('#transition-duration');
 const transitionDurationValue = document.querySelector('#transition-duration-value');
@@ -160,13 +171,259 @@ function autoSizeProjectName() {
   projectName.size = Math.min(18, Math.max(7, projectName.value.length || 1));
 }
 
-function projectExportFilename() {
+function projectFileBaseName() {
   const trimmed = (projectName?.value ?? DEFAULT_PROJECT_NAME).trim();
-  if (!trimmed || trimmed === DEFAULT_PROJECT_NAME) return DEFAULT_EXPORT_FILENAME;
+  if (!trimmed || trimmed === DEFAULT_PROJECT_NAME) return 'm4shlab-merge';
   const sanitized = trimmed
     .replace(/[\u0000-\u001f\u007f\/\\:*?"<>|]/g, '')
     .replace(/\s+/g, '-');
-  return sanitized ? `${sanitized}.mp4` : DEFAULT_EXPORT_FILENAME;
+  return sanitized || 'm4shlab-merge';
+}
+
+function projectExportFilename() {
+  return `${projectFileBaseName()}.mp4`;
+}
+
+function projectSettingsFilename() {
+  return `${projectFileBaseName()}.m4settings`;
+}
+
+function settingsBusy() {
+  return refreshInFlight > 0 || importInFlight > 0;
+}
+
+function updateSettingsControls() {
+  if (saveSettingsButton) saveSettingsButton.disabled = settingsBusy() || clips.length === 0;
+  if (loadSettingsButton) loadSettingsButton.disabled = settingsBusy();
+}
+
+function closeProjectMenu() {
+  if (projectMenu) projectMenu.open = false;
+}
+
+function transitionSettingsForClip(clip) {
+  const method = clip.transition;
+  const base = {
+    method,
+    duration_frames: null,
+    ending: null,
+    repeat: null,
+    loop_frames: null,
+    reset_interval: null,
+    smooth: false,
+    random_seed: clip.randomSeed ?? null,
+  };
+  if (method === 'cut') return base;
+  const effect = effectSettingsForClip(clip);
+  if (effect) {
+    return {
+      ...base,
+      duration_frames: effect.durationFrames,
+      ending: effect.ending,
+      repeat: effect.repeat ?? null,
+      loop_frames: effect.loopFrames ?? null,
+      reset_interval: effect.resetInterval ?? null,
+      smooth: effect.smooth === true,
+    };
+  }
+  const settings = moshSettingsForClip(clip);
+  return {
+    ...base,
+    duration_frames: settings.durationFrames,
+    ending: settings.ending,
+  };
+}
+
+function currentSettingsSnapshot() {
+  return {
+    format: SETTINGS_FORMAT,
+    version: SETTINGS_VERSION,
+    project: (projectName?.value ?? DEFAULT_PROJECT_NAME).trim() || DEFAULT_PROJECT_NAME,
+    sound: soundEnabled,
+    clip_count: clips.length,
+    clips: clips.map(clip => ({
+      name: clip.file.name,
+      frames: clip.mp4.videoTrack.samples.length,
+      speed: Number(clip.speed ?? 1),
+      look: normalizeLook(clip.look ?? 'original'),
+    })),
+    transitions: clips.slice(1).map(transitionSettingsForClip),
+  };
+}
+
+function validateSettingsTransition(saved, index) {
+  if (!saved || typeof saved !== 'object' || Array.isArray(saved)) {
+    throw new Error(`Transition ${index + 1} is invalid.`);
+  }
+  if (!TRANSITION_METHODS.has(saved.method)) {
+    throw new Error(`Transition ${index + 1} has an unsupported method.`);
+  }
+  let randomSeed = null;
+  if (saved.random_seed !== null && saved.random_seed !== undefined) {
+    randomSeed = normalizeSeed(String(saved.random_seed).trim().toLowerCase());
+  }
+  const method = saved.method;
+  const result = {
+    method,
+    duration_frames: null,
+    ending: null,
+    repeat: null,
+    loop_frames: null,
+    reset_interval: null,
+    smooth: false,
+    random_seed: randomSeed,
+  };
+  if (method === 'cut') return result;
+  if (saved.ending !== 'restore' && saved.ending !== 'continue') {
+    throw new Error(`Transition ${index + 1} has an invalid ending.`);
+  }
+  if (!Number.isInteger(saved.duration_frames) || saved.duration_frames < 1) {
+    throw new Error(`Transition ${index + 1} needs a positive frame duration.`);
+  }
+  if (saved.smooth !== undefined && typeof saved.smooth !== 'boolean') {
+    throw new Error(`Transition ${index + 1} has an invalid smooth setting.`);
+  }
+  result.duration_frames = saved.duration_frames;
+  result.ending = saved.ending;
+  result.smooth = saved.smooth === true;
+  if (method === 'melt') {
+    if (!Number.isInteger(saved.repeat) || saved.repeat < 2 || saved.repeat > 12) {
+      throw new Error(`Transition ${index + 1} has an invalid Melt repeat.`);
+    }
+    result.repeat = saved.repeat;
+  } else if (method === 'loop') {
+    if (!Number.isInteger(saved.loop_frames) || saved.loop_frames < 2 || saved.loop_frames > 48) {
+      throw new Error(`Transition ${index + 1} has invalid Loop frames.`);
+    }
+    result.loop_frames = saved.loop_frames;
+  } else if (method === 'reset-pulse') {
+    if (!Number.isInteger(saved.reset_interval) || saved.reset_interval < 4 || saved.reset_interval > 48) {
+      throw new Error(`Transition ${index + 1} has an invalid Reset Pulse interval.`);
+    }
+    if (!Number.isInteger(saved.repeat) || saved.repeat < 2 || saved.repeat > 12) {
+      throw new Error(`Transition ${index + 1} has an invalid Reset Pulse repeat.`);
+    }
+    result.reset_interval = saved.reset_interval;
+    result.repeat = saved.repeat;
+  }
+  return result;
+}
+
+function clipWithSavedTransition(clip, saved) {
+  const next = {
+    ...clip,
+    transition: saved.method,
+    randomSeed: saved.random_seed,
+  };
+  if (saved.method === 'cut') {
+    next.moshDurationFrames = null;
+    next.moshEnding = 'restore';
+    return next;
+  }
+  next.moshDurationFrames = saved.duration_frames;
+  next.moshEnding = saved.ending;
+  if (saved.method === 'melt') {
+    next.meltRepeat = saved.repeat;
+    next.meltSmooth = saved.smooth;
+  } else if (saved.method === 'loop') {
+    next.loopFrames = saved.loop_frames;
+    next.loopSmooth = saved.smooth;
+  } else if (saved.method === 'reset-pulse') {
+    next.resetInterval = saved.reset_interval;
+    next.resetRepeat = saved.repeat;
+  }
+  return next;
+}
+
+async function applySettingsPayload(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload) || payload.format !== SETTINGS_FORMAT) {
+    throw new Error('This is not an m4shlab settings file.');
+  }
+  if (payload.version !== SETTINGS_VERSION) {
+    throw new Error(`Unsupported settings version ${String(payload.version ?? 'missing')}.`);
+  }
+  if (!Number.isInteger(payload.clip_count) || payload.clip_count !== clips.length) {
+    throw new Error(`Settings are for ${String(payload.clip_count ?? 'an unknown number of')} clips, but this timeline has ${clips.length}. Import the same clips first.`);
+  }
+  if (!Array.isArray(payload.clips) || payload.clips.length !== clips.length) {
+    throw new Error('The settings clip list does not match the timeline.');
+  }
+  if (!Array.isArray(payload.transitions) || payload.transitions.length !== Math.max(0, clips.length - 1)) {
+    throw new Error('The settings transition list does not match the timeline boundaries.');
+  }
+  if (typeof payload.sound !== 'boolean') throw new Error('The settings sound value is invalid.');
+
+  const clipSettings = payload.clips.map((saved, index) => {
+    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) {
+      throw new Error(`Clip ${index + 1} settings are invalid.`);
+    }
+    return {
+      speed: normalizeSpeed(saved.speed),
+      look: normalizeLook(saved.look ?? 'original'),
+    };
+  });
+  const transitions = payload.transitions.map(validateSettingsTransition);
+
+  const nextClips = clips.map((clip, index) => {
+    const next = {
+      ...clip,
+      speed: clipSettings[index].speed,
+      look: clipSettings[index].look,
+    };
+    return index === 0 ? next : clipWithSavedTransition(next, transitions[index - 1]);
+  });
+
+  rememberState();
+  clips = nextClips;
+  normalizationAttempted = false;
+  if (projectName) {
+    projectName.value = (typeof payload.project === 'string' ? payload.project : DEFAULT_PROJECT_NAME).slice(0, 60);
+    autoSizeProjectName();
+    saveProjectName();
+  }
+  soundEnabled = payload.sound;
+  soundToggle.checked = soundEnabled;
+  writeSoundPreference();
+  applySoundPreference();
+  await refreshSequence();
+  if (error.hidden) status.textContent = `Settings loaded for ${Math.max(0, clips.length - 1)} boundaries.`;
+}
+
+async function loadSettingsFile(file) {
+  if (!file) return;
+  if (file.size > SETTINGS_MAX_BYTES) {
+    setError('Settings files are limited to 1 MiB.');
+    return;
+  }
+  let payload;
+  try {
+    payload = JSON.parse(await file.text());
+  } catch {
+    setError('This settings file is not valid JSON.');
+    return;
+  }
+  try {
+    await applySettingsPayload(payload);
+    setError('');
+  } catch (cause) {
+    setError(cause instanceof Error ? cause.message : String(cause));
+  }
+}
+
+function saveSettingsFile() {
+  if (!saveSettingsButton || saveSettingsButton.disabled) return;
+  const link = document.createElement('a');
+  const url = URL.createObjectURL(new Blob([JSON.stringify(currentSettingsSnapshot(), null, 2)], {
+    type: 'application/json',
+  }));
+  link.href = url;
+  link.download = projectSettingsFilename();
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  saveProjectName();
+  closeProjectMenu();
+  setError('');
+  status.textContent = 'Settings saved. Videos are not included.';
 }
 
 function formatBytes(value) {
@@ -447,7 +704,7 @@ function transitionLabel(method) {
   if (method === 'melt') return 'Melt';
   if (method === 'loop') return 'Loop Release';
   if (method === 'reset-pulse') return 'Reset Pulse';
-  return 'Classic Mosh';
+  return 'm4sh';
 }
 
 function clipDisplayLabel(index) {
@@ -537,6 +794,7 @@ function syncClipDragState() {
     if (!allowed) card.classList.remove('dragging');
   }
   if (!allowed) clearDropTargets();
+  updateSettingsControls();
 }
 
 function wireClipDrag(card, clip, index) {
@@ -718,6 +976,7 @@ function renderConnector(index) {
   connector.type = 'button';
   connector.className = 'connector';
   connector.setAttribute('aria-label', `${transitionLabel(incoming.transition)} into ${clipDisplayLabel(index)}`);
+  if (incoming.randomSeed) connector.title = `Random seed ${incoming.randomSeed}`;
   const effect = document.createElement('span');
   effect.textContent = transitionLabel(incoming.transition);
   const duration = document.createElement('span');
@@ -1089,11 +1348,19 @@ function redoTimeline() {
   restoreState(next);
 }
 
+function setSeedError(message = '') {
+  if (!transitionSeedError) return;
+  transitionSeedError.textContent = message;
+  transitionSeedError.hidden = !message;
+}
+
 function updateTransitionSeedDisplay() {
-  transitionSeed.textContent = activeRandomSeed ? `seed ${activeRandomSeed}` : 'seed —';
+  if (!transitionSeed) return;
+  transitionSeed.value = activeRandomSeed ?? '';
 }
 
 function clearRandomSeed() {
+  setSeedError('');
   if (activeRandomSeed === null) return;
   activeRandomSeed = null;
   updateTransitionSeedDisplay();
@@ -1264,6 +1531,89 @@ function generateRandomSeed() {
   return [...bytes].map(value => value.toString(16).padStart(2, '0')).join('');
 }
 
+function applyRandomizedTransition(settings) {
+  const clip = clips[activeBoundary];
+  if (!clip || !settings) return;
+  if (![...transitionMethod.options].some(option => option.value === settings.method)) {
+    throw new Error(`Randomized method ${settings.method} is unavailable.`);
+  }
+  transitionMethod.value = settings.method;
+  const randomizedClip = {
+    ...clip,
+    transition: settings.method,
+    moshDurationFrames: settings.durationFrames,
+    moshEnding: settings.ending,
+    meltRepeat: settings.repeat ?? clip.meltRepeat,
+    loopFrames: settings.loopFrames ?? clip.loopFrames,
+    resetInterval: settings.resetInterval ?? clip.resetInterval,
+    resetRepeat: settings.repeat ?? clip.resetRepeat,
+  };
+  updateTransitionOptionsVisibility();
+  setEffectParameterControl(settings.method, randomizedClip);
+  setResetPulseControls(settings.method, randomizedClip);
+  if (settings.method === 'melt' || settings.method === 'loop') meltCadence.value = 'original';
+  transitionDuration.value = String(settings.durationFrames);
+  transitionEnding.value = settings.ending;
+  activeRandomSeed = settings.randomSeed;
+  updateTransitionSeedDisplay();
+  updateTransitionDurationDisplay(false);
+  transitionDurationMode.textContent = 'randomized';
+  updateEffectParameterDisplay();
+  updateResetPulseDisplay();
+  setSeedError('');
+  setError('');
+}
+
+function applyTypedSeed() {
+  const clip = clips[activeBoundary];
+  if (!clip) return;
+  const normalized = transitionSeed.value.trim().toLowerCase();
+  try {
+    normalizeSeed(normalized);
+    const settings = randomizeTransition({
+      seed: normalized,
+      availableFrames: activeMoshMaximum,
+      fps: activeMoshFps,
+      methods: randomMethodsForClip(clip),
+    });
+    applyRandomizedTransition(settings);
+  } catch (cause) {
+    setSeedError(cause instanceof Error ? cause.message : String(cause));
+  }
+}
+
+async function copySeedToClipboard() {
+  const value = transitionSeed.value.trim();
+  if (!value) {
+    setSeedError('Generate or enter a seed first.');
+    return;
+  }
+  let copied = false;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      copied = true;
+    } else if (typeof document.execCommand === 'function') {
+      transitionSeed.focus();
+      transitionSeed.select();
+      copied = document.execCommand('copy');
+    }
+  } catch {}
+  if (!copied) {
+    setSeedError('Could not copy the seed. Select it and copy manually.');
+    return;
+  }
+  setSeedError('');
+  if (!copySeedButton) return;
+  copySeedButton.textContent = 'copied';
+  if (copySeedButton.dataset.resetTimer) clearTimeout(Number(copySeedButton.dataset.resetTimer));
+  const timer = setTimeout(() => {
+    copySeedButton.textContent = 'copy';
+    delete copySeedButton.dataset.resetTimer;
+  }, 1200);
+  copySeedButton.dataset.resetTimer = String(timer);
+}
+
 transitionRandomize.addEventListener('click', () => {
   const clip = clips[activeBoundary];
   if (!clip) return;
@@ -1274,36 +1624,34 @@ transitionRandomize.addEventListener('click', () => {
       fps: activeMoshFps,
       methods: randomMethodsForClip(clip),
     });
-    if (![...transitionMethod.options].some(option => option.value === settings.method)) {
-      throw new Error(`Randomized method ${settings.method} is unavailable.`);
-    }
-    transitionMethod.value = settings.method;
-    const randomizedClip = {
-      ...clip,
-      transition: settings.method,
-      moshDurationFrames: settings.durationFrames,
-      moshEnding: settings.ending,
-      meltRepeat: settings.repeat ?? clip.meltRepeat,
-      loopFrames: settings.loopFrames ?? clip.loopFrames,
-      resetInterval: settings.resetInterval ?? clip.resetInterval,
-      resetRepeat: settings.repeat ?? clip.resetRepeat,
-    };
-    updateTransitionOptionsVisibility();
-    setEffectParameterControl(settings.method, randomizedClip);
-    setResetPulseControls(settings.method, randomizedClip);
-    if (settings.method === 'melt' || settings.method === 'loop') meltCadence.value = 'original';
-    transitionDuration.value = String(settings.durationFrames);
-    transitionEnding.value = settings.ending;
-    activeRandomSeed = settings.randomSeed;
-    updateTransitionSeedDisplay();
-    updateTransitionDurationDisplay(false);
-    transitionDurationMode.textContent = 'randomized';
-    updateEffectParameterDisplay();
-    updateResetPulseDisplay();
-    setError('');
+    applyRandomizedTransition(settings);
   } catch (cause) {
     setError(cause instanceof Error ? cause.message : String(cause));
   }
+});
+transitionSeed.addEventListener('keydown', event => {
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  applyTypedSeed();
+});
+transitionSeed.addEventListener('change', applyTypedSeed);
+copySeedButton?.addEventListener('click', copySeedToClipboard);
+saveSettingsButton?.addEventListener('click', saveSettingsFile);
+loadSettingsButton?.addEventListener('click', () => {
+  closeProjectMenu();
+  settingsInput?.click();
+});
+settingsInput?.addEventListener('change', () => {
+  const [file] = settingsInput.files;
+  settingsInput.value = '';
+  closeProjectMenu();
+  if (file) loadSettingsFile(file);
+});
+document.addEventListener('click', event => {
+  if (projectMenu?.open && !projectMenu.contains(event.target)) projectMenu.open = false;
+});
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && projectMenu?.open) projectMenu.open = false;
 });
 
 transitionApply.addEventListener('click', event => {
@@ -1640,7 +1988,7 @@ function effectNormalizationBoundaries() {
 
 function effectNormalizationError(failure) {
   const effects = failure.method === 'melt' ? 'Melt' : failure.method === 'loop' ? 'Loop Release' : 'Reset Pulse';
-  return `${effects} needs clips without B-frames. Normalize this sequence first, or choose Cut/Classic Mosh.`;
+  return `${effects} needs clips without B-frames. Normalize this sequence first, or choose Cut/m4sh.`;
 }
 
 async function checkSequenceCompatibility() {
@@ -1941,7 +2289,7 @@ async function addMergedAudio(result, clips) {
     webcodecsFallbackReason: fallbackReason,
     segments: timeline.segments,
     sources: sourceClipReport,
-    policy: 'audio follows the clip timeline; Classic Mosh, Loop and Reset Pulse drop one incoming frame; explicit-window Melt starts one frame in; extra picture-only frames are padded with silence',
+    policy: 'audio follows the clip timeline; m4sh, Loop and Reset Pulse drop one incoming frame; explicit-window Melt starts one frame in; extra picture-only frames are padded with silence',
   };
   finishConversionPanel();
   return result;
@@ -2141,7 +2489,7 @@ async function refreshSequenceInternal() {
     previewClip(clips.findIndex(clip => clip.id === previewedClipId) >= 0 ? clips.findIndex(clip => clip.id === previewedClipId) : 0);
     const audioLabel = result.report.audio?.included ? 'video + AAC audio' : 'video only';
     status.textContent = `${clips.length} clips · ${result.report.mergedSamples} samples · ${result.report.mergedDurationSeconds.toFixed(2)} s · ${audioLabel}`;
-    report.textContent = JSON.stringify({
+    const mergeReport = {
       stage: 'merged',
       sources: sourcesReport(),
       normalization: sequenceNormalizationReport(),
@@ -2174,7 +2522,10 @@ async function refreshSequenceInternal() {
       merge: result.report,
       cutByteIdentical: result.cut.byteLength === clips[0].bytes.byteLength
         && result.cut.every((value, index) => value === clips[0].bytes[index]),
-    }, null, 2);
+    };
+    const serializedReport = JSON.stringify(mergeReport, null, 2);
+    report.textContent = serializedReport;
+    if (bitstreamReportJson) bitstreamReportJson.textContent = serializedReport;
   } catch (cause) {
     if (token !== refreshToken) return;
     status.textContent = 'No merged MP4 was produced.';
@@ -2241,6 +2592,7 @@ if (projectName) {
   projectName.value = readProjectName();
   autoSizeProjectName();
 }
+updateSettingsControls();
 updateHistoryButtons();
 updateSingleClipState();
 document.documentElement.dataset.appReady = 'true';

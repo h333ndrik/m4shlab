@@ -288,6 +288,11 @@ try {
       footerActionOrder: [...document.querySelectorAll('.limits .actions button')].map(node => node.id),
       footer: document.querySelector('.limits p').textContent,
       legacyReport: document.querySelector('#report-panel, .report-panel'),
+      bitstreamOpen: document.querySelector('#bitstream-report').open,
+      bitstreamSummary: document.querySelector('#bitstream-report summary').textContent,
+      bitstreamText: document.querySelector('#bitstream-report-json').textContent,
+      saveDisabled: document.querySelector('#save-settings').disabled,
+      loadDisabled: document.querySelector('#load-settings').disabled,
       disabled: button.disabled,
       background: style.backgroundColor,
       color: style.color,
@@ -297,7 +302,7 @@ try {
   })()`);
   assert.equal(emptyState.time, '0.00 / 0.00 s');
   assert.equal(emptyState.heading, 'Sequence');
-  assert.equal(emptyState.header, 'm4 sh lab');
+  assert.equal(emptyState.header, 'm4shlab');
   assert.equal(emptyState.tagline, null);
   assert.equal(emptyState.importLabel, '+ Import videos');
   assert.equal(emptyState.projectName, 'Project');
@@ -305,10 +310,15 @@ try {
   assert.equal(emptyState.projectAria, 'Project name');
   assert.equal(emptyState.exportLabel, 'Export MP4 ↗');
   assert.deepEqual(emptyState.previewOrder, ['sound', 'time']);
-  assert.deepEqual(emptyState.sequenceOrder, ['undo-button', 'redo-button', 'project-name', 'sequence-label']);
+  assert.deepEqual(emptyState.sequenceOrder, ['undo-button', 'redo-button', 'project-menu', 'sequence-label']);
   assert.deepEqual(emptyState.footerActionOrder, ['assemble-preview', 'export-button']);
   assert.equal(emptyState.footer, 'Real H.264 bitstream editing · max 720px · 30 fps · originals untouched');
   assert.equal(emptyState.legacyReport, null);
+  assert.equal(emptyState.bitstreamOpen, false);
+  assert.equal(emptyState.bitstreamSummary, 'BITSTREAM REPORT');
+  assert.equal(emptyState.bitstreamText, 'Run an export to see the bitstream report.');
+  assert.equal(emptyState.saveDisabled, true);
+  assert.equal(emptyState.loadDisabled, false);
   assert.equal(emptyState.disabled, true);
   assert.equal(emptyState.background, 'rgb(226, 225, 221)');
   assert.equal(emptyState.color, 'rgb(119, 118, 112)');
@@ -349,7 +359,7 @@ try {
     const section = rect('.section-label');
     const sectionHeading = rect('#source-heading');
     const sectionTools = rect('.section-tools');
-    const projectName = rect('#project-name');
+    const projectSummary = rect('#project-menu summary');
     const sequenceLabel = rect('#sequence-label');
     const undo = rect('#undo-button');
     const redo = rect('#redo-button');
@@ -364,7 +374,7 @@ try {
       previewOptionsRight: Math.abs(previewOptions.right - previewMeta.right) < 2,
       sectionHeadingLeft: sectionHeading.left < sectionTools.left,
       sectionToolsRight: Math.abs(sectionTools.right - section.right) < 2,
-      sequenceControlOrder: undo.left < redo.left && redo.left < projectName.left && projectName.left < sequenceLabel.left,
+      sequenceControlOrder: undo.left < redo.left && redo.left < projectSummary.left && projectSummary.left < sequenceLabel.left,
       limitsLeft: limits.left < actions.left,
       actionsRight: Math.abs(actions.right - footer.right) < 2,
       actionRow: Math.abs(assemble.top - exportButton.top) < 2 && assemble.left < exportButton.left,
@@ -483,13 +493,17 @@ try {
       connector: document.querySelector('.connector')?.textContent ?? '',
       reportText: reportNode.textContent,
       report: reportNode.textContent ? JSON.parse(reportNode.textContent) : null,
+      bitstreamText: document.querySelector('#bitstream-report-json').textContent,
+      bitstreamOpen: document.querySelector('#bitstream-report').open,
     };
   })()`);
   assert.equal(poc0Pair.error, null, 'A successful merge must clear stale errors');
   assert.equal(poc0Pair.compatibilityMarkup, null, 'Compatibility UI must not exist');
   assert.equal(poc0Pair.cards, 2);
-  assert.match(poc0Pair.connector, /Classic Mosh/);
+  assert.match(poc0Pair.connector, /m4sh/);
   assert.ok(!poc0Pair.reportText.includes('spsHash'), 'SPS/PPS hashes must not be rendered');
+  assert.equal(poc0Pair.bitstreamText, poc0Pair.reportText);
+  assert.equal(poc0Pair.bitstreamOpen, false);
   assert.equal(poc0Pair.report.compatibility.compatible, true);
   assert.equal(poc0Pair.report.merge.mergedSamples, 99);
   assert.equal(poc0Pair.report.merge.frameAlignment.applied, true);
@@ -507,6 +521,11 @@ try {
     const exportButton = document.querySelector('#export-button').getBoundingClientRect();
     const controls = [...document.querySelectorAll('.section-tools > *, .section-tools .history-tools > *')]
       .map(node => node.getBoundingClientRect());
+    const menu = document.querySelector('#project-menu');
+    menu.open = true;
+    const panel = document.querySelector('.project-menu-panel').getBoundingClientRect();
+    const projectHeight = document.querySelector('#project-name').getBoundingClientRect().height;
+    menu.open = false;
     return {
       headerDirection: getComputedStyle(document.querySelector('header')).flexDirection,
       previewDirection: getComputedStyle(document.querySelector('.preview-meta')).flexDirection,
@@ -514,7 +533,8 @@ try {
       clipControlHeight: document.querySelector('.clip-controls button').getBoundingClientRect().height,
       timelineScrolls: document.querySelector('.timeline').scrollWidth > document.querySelector('.timeline').clientWidth,
       sequenceRow: controls.every(rect => Math.abs((rect.top + rect.height / 2) - (controls[0].top + controls[0].height / 2)) < 4),
-      projectHeight: document.querySelector('#project-name').getBoundingClientRect().height,
+      projectHeight,
+      panelWithinViewport: panel.left >= 0 && panel.right <= innerWidth,
       footerActionsWidth: Math.abs(actions.width - footer.width) < 2,
       footerButtonsRow: Math.abs(assemble.top - exportButton.top) < 2 && assemble.width > 100 && exportButton.width > 100,
     };
@@ -526,9 +546,10 @@ try {
   assert.equal(mobileLayout.timelineScrolls, true);
   assert.equal(mobileLayout.sequenceRow, true);
   assert.ok(mobileLayout.projectHeight >= 44);
+  assert.equal(mobileLayout.panelWithinViewport, true);
   assert.equal(mobileLayout.footerActionsWidth, true);
   assert.equal(mobileLayout.footerButtonsRow, true);
-  console.log('PASS mobile layout keeps the reference header/meta/sequence rows and side-by-side footer actions with 44px touch targets');
+  console.log('PASS mobile layout keeps the reference header/meta/sequence rows, an in-viewport project panel, and side-by-side footer actions with 44px touch targets');
   await client.send('Emulation.setTouchEmulationEnabled', {enabled: false});
   await client.send('Emulation.setDeviceMetricsOverride', {width: 1200, height: 1600, deviceScaleFactor: 1, mobile: false});
 
@@ -613,7 +634,7 @@ try {
   assert.equal(multiInitial.error, null, multiInitial.error || 'multi-clip sequence did not normalize');
   assert.equal(multiInitial.cards.length, 3);
   assert.equal(multiInitial.connectors.length, 2);
-  assert.ok(multiInitial.connectors.every(text => /Classic Mosh/.test(text)));
+  assert.ok(multiInitial.connectors.every(text => /m4sh/.test(text)));
   assert.equal(multiInitial.compatibilityMarkup, null);
   assert.equal(multiInitial.report.normalization.autoNormalized, true);
   assert.equal(multiInitial.report.normalization.parallel, true);
@@ -643,7 +664,8 @@ try {
       durationValue: Number(duration.value),
       durationMode: document.querySelector('#transition-duration-mode').textContent,
       randomizeDisabled: document.querySelector('#transition-randomize').disabled,
-      seed: document.querySelector('#transition-seed').textContent,
+      seed: document.querySelector('#transition-seed').value,
+      seedPlaceholder: document.querySelector('#transition-seed').placeholder,
     };
   })()`);
   assert.equal(dialogMethods.open, true);
@@ -661,12 +683,57 @@ try {
   assert.equal(dialogMethods.durationValue, dialogMethods.durationMax);
   assert.equal(dialogMethods.durationMode, 'full length');
   assert.equal(dialogMethods.randomizeDisabled, false);
-  assert.equal(dialogMethods.seed, 'seed —');
+  assert.equal(dialogMethods.seed, '');
+  assert.equal(dialogMethods.seedPlaceholder, 'seed —');
+  const typedSeed = await client.evaluate(`(() => {
+    const input = document.querySelector('#transition-seed');
+    input.value = '0123456789ABCDEF';
+    input.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true, cancelable: true}));
+    return {
+      value: input.value,
+      method: document.querySelector('#transition-method').value,
+      duration: Number(document.querySelector('#transition-duration').value),
+      ending: document.querySelector('#transition-ending').value,
+      mode: document.querySelector('#transition-duration-mode').textContent,
+      errorHidden: document.querySelector('#transition-seed-error').hidden,
+    };
+  })()`);
+  assert.equal(typedSeed.value, '0123456789abcdef');
+  assert.ok(['classic-mosh', 'melt', 'loop', 'reset-pulse'].includes(typedSeed.method));
+  assert.ok(typedSeed.duration >= 12 && typedSeed.duration <= dialogMethods.durationMax);
+  assert.ok(typedSeed.ending === 'restore' || typedSeed.ending === 'continue');
+  assert.equal(typedSeed.mode, 'randomized');
+  assert.equal(typedSeed.errorHidden, true);
+  await client.evaluate(`Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: {writeText: async text => { window.__copiedSeed = text; }},
+  })`);
+  await client.evaluate("document.querySelector('#copy-seed').click()");
+  await client.waitFor("document.querySelector('#copy-seed').textContent === 'copied'", 2000);
+  assert.equal(await client.evaluate('window.__copiedSeed'), '0123456789abcdef');
+  const invalidSeed = await client.evaluate(`(() => {
+    const input = document.querySelector('#transition-seed');
+    const method = document.querySelector('#transition-method').value;
+    const duration = document.querySelector('#transition-duration').value;
+    input.value = 'not-a-seed';
+    input.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true, cancelable: true}));
+    return {
+      error: document.querySelector('#transition-seed-error').hidden ? null : document.querySelector('#transition-seed-error').textContent,
+      method: document.querySelector('#transition-method').value,
+      duration: document.querySelector('#transition-duration').value,
+      previousMethod: method,
+      previousDuration: duration,
+    };
+  })()`);
+  assert.match(invalidSeed.error, /16 hexadecimal/i);
+  assert.equal(invalidSeed.method, invalidSeed.previousMethod);
+  assert.equal(invalidSeed.duration, invalidSeed.previousDuration);
+  console.log('PASS typed seed normalizes, copy exposes the exact seed, and invalid input stays inline without changing controls');
   const randomizedUi = await client.evaluate(`(() => {
     const button = document.querySelector('#transition-randomize');
     button.click();
     const seeded = {
-      seedText: document.querySelector('#transition-seed').textContent,
+      seedText: document.querySelector('#transition-seed').value,
       method: document.querySelector('#transition-method').value,
       duration: Number(document.querySelector('#transition-duration').value),
       ending: document.querySelector('#transition-ending').value,
@@ -676,18 +743,20 @@ try {
     duration.dispatchEvent(new Event('input', {bubbles: true}));
     return {
       ...seeded,
-      clearedSeedText: document.querySelector('#transition-seed').textContent,
+      clearedSeedText: document.querySelector('#transition-seed').value,
+      clearedSeedPlaceholder: document.querySelector('#transition-seed').placeholder,
     };
   })()`);
-  assert.match(randomizedUi.seedText, /^seed [0-9a-f]{16}$/);
+  assert.match(randomizedUi.seedText, /^[0-9a-f]{16}$/);
   assert.ok(['classic-mosh', 'melt', 'loop', 'reset-pulse'].includes(randomizedUi.method));
   assert.ok(randomizedUi.duration >= 12 && randomizedUi.duration <= dialogMethods.durationMax);
   assert.ok(randomizedUi.ending === 'restore' || randomizedUi.ending === 'continue');
   assert.equal(randomizedUi.mode, 'randomized');
-  assert.equal(randomizedUi.clearedSeedText, 'seed —');
+  assert.equal(randomizedUi.clearedSeedText, '');
+  assert.equal(randomizedUi.clearedSeedPlaceholder, 'seed —');
   const appliedRandomSeed = await client.evaluate(`(() => {
     document.querySelector('#transition-randomize').click();
-    const seed = document.querySelector('#transition-seed').textContent.replace('seed ', '');
+    const seed = document.querySelector('#transition-seed').value;
     document.querySelector('#transition-apply').click();
     return seed;
   })()`);
@@ -814,12 +883,12 @@ try {
     assembleEnabled: !document.querySelector('#assemble-preview').disabled,
   }))()`);
   assert.match(mixedTimeline.connectors[0], /^Cut\d+\.\d{2} s$/);
-  assert.match(mixedTimeline.connectors[1], /^Classic Mosh\d+\.\d{2} s · (restore|continue)$/);
+  assert.match(mixedTimeline.connectors[1], /^m4sh\d+\.\d{2} s · (restore|continue)$/);
   assert.doesNotMatch(mixedTimeline.connectors[1], /original|gentler/);
   assert.deepEqual(mixedTimeline.methods, ['cut', 'classic-mosh']);
   assert.ok(mixedTimeline.mergedSamples > 0);
   assert.equal(mixedTimeline.assembleEnabled, true);
-  console.log(`PASS multi-file import normalized 3 clips to 540x720, exposed two Cut/Classic Mosh boundary dialogs, and merged ${mixedTimeline.mergedSamples} samples`);
+  console.log(`PASS multi-file import normalized 3 clips to 540x720, exposed two Cut/m4sh boundary dialogs, and merged ${mixedTimeline.mergedSamples} samples`);
 
   const originalOrder = multiInitial.cards;
   await client.waitFor("[...document.querySelectorAll('.clip-card')].length === 3 && [...document.querySelectorAll('.clip-card')].every(card => card.draggable)", 10000);
@@ -996,7 +1065,7 @@ try {
   assert.match(multiProbe.stdout, /height=720/);
   assert.match(multiProbe.stdout, new RegExp(`nb_read_frames=${finalReport.merge.expectedDecodedFrames}`));
   command('ffmpeg', ['-v', 'error', '-i', multiTimelineExportPath, '-f', 'null', '-'], 'multi-timeline strict decode');
-  console.log(`PASS full three-clip export decodes ${finalReport.merge.expectedDecodedFrames} frames at 540x720; Cut + Classic Mosh NAL sequence and preview are intact`);
+  console.log(`PASS full three-clip export decodes ${finalReport.merge.expectedDecodedFrames} frames at 540x720; Cut + m4sh NAL sequence and preview are intact`);
 
   await client.send('Page.navigate', {url: `${baseUrl}?nal-effects=1`});
   await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
@@ -1805,6 +1874,143 @@ try {
         try { rmSync(nativeChrome.profile, {recursive: true, force: true, maxRetries: 5, retryDelay: 100}); } catch {}
       }
     }
+
+    const settingsPath = join(downloadDir, 'Roundtrip-Set.m4settings');
+    const mismatchPath = join(downloadDir, 'Roundtrip-Set-mismatch.m4settings');
+    rmSync(settingsPath, {force: true});
+    rmSync(mismatchPath, {force: true});
+    await client.send('Emulation.setEmulatedMedia', {features: []});
+    await client.send('Page.navigate', {url: `${baseUrl}?settings-roundtrip=1`});
+    await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
+    await client.evaluate(`(() => {
+      const input = document.querySelector('#project-name');
+      input.value = 'Roundtrip / Set';
+      input.dispatchEvent(new Event('input', {bubbles: true}));
+      const sound = document.querySelector('#sound-toggle');
+      sound.checked = false;
+      sound.dispatchEvent(new Event('change', {bubbles: true}));
+    })()`);
+    await client.setFiles('#file-input-a', [fixtures.a, fixtures.b]);
+    await client.waitFor("document.querySelectorAll('.clip-card').length === 2", 30000);
+    await client.waitFor("document.querySelector('#status').textContent.includes('samples') || !document.querySelector('#error').hidden", 120000);
+    assert.equal(await client.evaluate("document.querySelector('#save-settings').disabled"), false);
+    await client.evaluate(`(() => {
+      document.querySelector('.connector').click();
+      const seed = document.querySelector('#transition-seed');
+      seed.value = 'FEDCBA9876543210';
+      seed.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true, cancelable: true}));
+      document.querySelector('#transition-apply').click();
+    })()`);
+    await client.waitFor(`(() => {
+      const node = document.querySelector('#report');
+      if (!node.textContent) return false;
+      try {
+        const report = JSON.parse(node.textContent);
+        return report.stage === 'merged' && report.transitions?.[0]?.random_seed === 'fedcba9876543210';
+      } catch { return false; }
+    })()`, 60000);
+    const beforeSettingsSave = await client.evaluate(`(() => {
+      const report = JSON.parse(document.querySelector('#report').textContent);
+      const connector = document.querySelector('.connector');
+      return {
+        transition: report.transitions[0],
+        connectorText: connector.textContent,
+        connectorTitle: connector.title,
+        project: document.querySelector('#project-name').value,
+        sound: document.querySelector('#sound-toggle').checked,
+      };
+    })()`);
+    assert.match(beforeSettingsSave.connectorTitle, /fedcba9876543210/);
+    assert.doesNotMatch(beforeSettingsSave.connectorText, /fedcba9876543210/);
+    assert.equal(beforeSettingsSave.project, 'Roundtrip / Set');
+    assert.equal(beforeSettingsSave.sound, false);
+    await client.evaluate("document.querySelector('#project-menu').open = true");
+    await client.evaluate("document.querySelector('#save-settings').click()");
+    await waitForDownload(settingsPath, 10000);
+    const savedSettingsText = readFileSync(settingsPath, 'utf8');
+    const savedSettings = JSON.parse(savedSettingsText);
+    assert.equal(savedSettings.format, 'm4shlab-settings');
+    assert.equal(savedSettings.version, 1);
+    assert.equal(savedSettings.project, 'Roundtrip / Set');
+    assert.equal(savedSettings.sound, false);
+    assert.equal(savedSettings.clip_count, 2);
+    assert.equal(savedSettings.clips.length, 2);
+    assert.equal(savedSettings.transitions.length, 1);
+    assert.equal(savedSettings.transitions[0].random_seed, 'fedcba9876543210');
+    assert.equal(await client.evaluate("document.querySelector('#status').textContent"), 'Settings saved. Videos are not included.');
+    assert.equal(await client.evaluate("document.querySelector('#project-menu').open"), false);
+    assert.ok(!savedSettingsText.includes('data:'));
+    assert.ok(!savedSettingsText.includes('blob:'));
+
+    await client.send('Page.navigate', {url: `${baseUrl}?settings-reimport=1`});
+    await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
+    assert.equal(await client.evaluate("document.querySelector('#project-name').value"), 'Roundtrip / Set');
+    await client.setFiles('#file-input-a', [fixtures.a, fixtures.b]);
+    await client.waitFor("document.querySelectorAll('.clip-card').length === 2", 30000);
+    await client.waitFor("document.querySelector('#status').textContent.includes('samples') || !document.querySelector('#error').hidden", 120000);
+    await client.evaluate(`(() => {
+      const input = document.querySelector('#project-name');
+      input.value = 'Temporary';
+      input.dispatchEvent(new Event('input', {bubbles: true}));
+      const sound = document.querySelector('#sound-toggle');
+      sound.checked = true;
+      sound.dispatchEvent(new Event('change', {bubbles: true}));
+    })()`);
+    await client.waitFor("document.querySelector('#status').textContent.includes('samples') || !document.querySelector('#error').hidden", 120000);
+    await client.evaluate("document.querySelector('#project-menu').open = true");
+    await client.setFile('#settings-input', settingsPath);
+    await client.waitFor("document.querySelector('#status').textContent === 'Settings loaded for 1 boundaries.'", 120000);
+    const loadedSettings = await client.evaluate(`(() => {
+      const report = JSON.parse(document.querySelector('#report').textContent);
+      return {
+        transition: report.transitions[0],
+        source0: report.sources.clips[0],
+        project: document.querySelector('#project-name').value,
+        sound: document.querySelector('#sound-toggle').checked,
+        menuOpen: document.querySelector('#project-menu').open,
+        bitstreamText: document.querySelector('#bitstream-report-json').textContent,
+        hiddenReport: document.querySelector('#report').textContent,
+      };
+    })()`);
+    assert.equal(loadedSettings.project, 'Roundtrip / Set');
+    assert.equal(loadedSettings.sound, false);
+    assert.equal(loadedSettings.menuOpen, false);
+    assert.equal(loadedSettings.bitstreamText, loadedSettings.hiddenReport);
+    assert.equal(loadedSettings.transition.method, savedSettings.transitions[0].method);
+    assert.equal(loadedSettings.transition.durationFrames, savedSettings.transitions[0].duration_frames);
+    assert.equal(loadedSettings.transition.ending, savedSettings.transitions[0].ending);
+    assert.equal(loadedSettings.transition.repeat, savedSettings.transitions[0].repeat);
+    assert.equal(loadedSettings.transition.loopFrames, savedSettings.transitions[0].loop_frames);
+    assert.equal(loadedSettings.transition.resetInterval, savedSettings.transitions[0].reset_interval);
+    assert.equal(loadedSettings.transition.smooth, savedSettings.transitions[0].smooth);
+    assert.equal(loadedSettings.transition.random_seed, savedSettings.transitions[0].random_seed);
+    assert.equal(loadedSettings.transition.speed, savedSettings.clips[1].speed);
+    assert.equal(loadedSettings.transition.look, savedSettings.clips[1].look);
+    assert.equal(loadedSettings.source0.speed, savedSettings.clips[0].speed);
+    assert.equal(loadedSettings.source0.look, savedSettings.clips[0].look);
+
+    const reportBeforeMismatch = loadedSettings.hiddenReport;
+    writeFileSync(mismatchPath, JSON.stringify({...savedSettings, clip_count: 3}, null, 2));
+    await client.setFile('#settings-input', mismatchPath);
+    await client.waitFor("!document.querySelector('#error').hidden && /Settings are for 3 clips/.test(document.querySelector('#error').textContent)", 5000);
+    const mismatchState = await client.evaluate(`({
+      cards: document.querySelectorAll('.clip-card').length,
+      report: document.querySelector('#report').textContent,
+      error: document.querySelector('#error').textContent,
+      project: document.querySelector('#project-name').value,
+    })`);
+    assert.equal(mismatchState.cards, 2);
+    assert.equal(mismatchState.report, reportBeforeMismatch);
+    assert.match(mismatchState.error, /settings are for 3 clips/i);
+    assert.equal(mismatchState.project, 'Roundtrip / Set');
+
+    await client.evaluate("document.querySelector('#project-menu').open = true");
+    await client.evaluate("document.body.click()");
+    assert.equal(await client.evaluate("document.querySelector('#project-menu').open"), false);
+    await client.evaluate("document.querySelector('#project-menu').open = true");
+    await client.evaluate("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}))");
+    assert.equal(await client.evaluate("document.querySelector('#project-menu').open"), false);
+    console.log('PASS settings save/load round-trips project, sound, seed and boundary values; clip-count mismatch leaves the timeline unchanged');
 
     const skeletonFixtures = ['skeleton-a.mov', 'skeleton-b.mov', 'skeleton-c.mov']
       .map(name => join(downloadDir, name));
