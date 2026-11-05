@@ -1062,6 +1062,8 @@ button:focus-visible,
   .clip-controls button { min-height: 44px; padding: 8px; }
   .clip-speed-heading button { min-height: 44px; padding: 8px; }
   .clip-look select { min-height: 44px; }
+  .dialog-heading button { min-width: 44px; }
+  dialog select { min-height: 44px; }
   .project-name { min-height: 44px; }
   .project-menu summary { min-height: 44px; padding: 15px 8px; }
   .seed-input { min-height: 44px; }

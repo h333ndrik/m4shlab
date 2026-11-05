@@ -153,7 +153,7 @@ async function openTransition(row = 0) {
 }
 
 async function closeTransition() {
-  await client.evaluate("document.querySelector('#transition-dialog').querySelector('button[value=\"cancel\"]').click()");
+  await client.evaluate("document.querySelector('#transition-dialog').close()");
   await client.waitFor("document.querySelector('#transition-dialog').open === false", 5000);
 }
 
@@ -165,7 +165,7 @@ async function openTrim(row = 0) {
 }
 
 async function closeTrim() {
-  await client.evaluate("document.querySelector('#trim-dialog').querySelector('button[value=\"cancel\"]').click()");
+  await client.evaluate("document.querySelector('#trim-dialog').close()");
   await client.waitFor("document.querySelector('#trim-dialog').open === false", 5000);
 }
 
@@ -389,8 +389,8 @@ try {
         return report.stage === 'merged' && report.transitions?.[0]?.method === 'classic-mosh' && report.transitions[0].durationFrames === 12;
       } catch { return false; }
     })()`, 180000);
-    const classicConnector = await client.evaluate("document.querySelector('.connector').textContent");
-    assert.match(classicConnector, /0\.40 s · restore/);
+    const classicConnector = await client.evaluate("document.querySelector('.connector').innerText");
+    assert.match(classicConnector, /m4sh\s+0\.40 s · restore/);
 
     await openTransition(0);
     await client.evaluate(`(() => {
@@ -404,8 +404,8 @@ try {
       try { return JSON.parse(document.querySelector('#report').textContent).transitions?.[0]?.method === 'loop'; }
       catch { return false; }
     })()`, 180000);
-    const loopConnector = await client.evaluate("document.querySelector('.connector').textContent");
-    assert.match(loopConnector, /· 4f/);
+    const loopConnector = await client.evaluate("document.querySelector('.connector').innerText");
+    assert.match(loopConnector, /Loop Release\s+0\.40 s · 4f/);
 
     await openTransition(0);
     await client.evaluate(`(() => {
@@ -421,8 +421,8 @@ try {
       try { return JSON.parse(document.querySelector('#report').textContent).transitions?.[0]?.method === 'reset-pulse'; }
       catch { return false; }
     })()`, 180000);
-    const resetConnector = await client.evaluate("document.querySelector('.connector').textContent");
-    assert.match(resetConnector, /· 6f \/ 2×/);
+    const resetConnector = await client.evaluate("document.querySelector('.connector').innerText");
+    assert.match(resetConnector, /Reset Pulse\s+0\.40 s · 6f \/ 2×/);
     return `speed ${speedState.output}; Melt ${controls.melt.duration}, repeat ${controls.melt.repeat}; Loop ${controls.loop.label}; Reset ${controls.reset.interval}/${controls.reset.repeat}; connectors "${classicConnector}", "${loopConnector}", "${resetConnector}"`;
   });
 
@@ -619,7 +619,9 @@ try {
       const summary = small.map(control => `${control.tag}${control.id ? `#${control.id}` : ''} "${control.label}" ${control.width.toFixed(1)}x${control.height.toFixed(1)}`).join('; ');
       throw new Error(`targets below 44x44: ${summary}`);
     }
-    return `${controls.length} visible enabled controls in timeline and dialogs are >=44x44; smallest ${Math.min(...controls.map(control => Math.min(control.width, control.height))).toFixed(1)}px`;
+    const key = controls.filter(control => control.id === 'transition-method' || /^Close (transition|trim) dialog$/.test(control.label));
+    const keyText = key.map(control => `${control.id || control.label} ${control.width.toFixed(1)}x${control.height.toFixed(1)}`).join('; ');
+    return `${controls.length} visible enabled controls in timeline and dialogs are >=44x44; ${keyText}; smallest ${Math.min(...controls.map(control => Math.min(control.width, control.height))).toFixed(1)}px`;
   });
 
   await check(16, 'mobile-emulation', async () => {
