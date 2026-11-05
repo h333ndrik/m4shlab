@@ -14,6 +14,7 @@
     "test:fixture": "bash testmedia/generate.sh",
     "test:conversion": "node tests/conversion.browser.mjs",
     "test:webcodecs": "node tests/webcodecs.browser.mjs",
-    "test:pwa": "node tests/pwa.browser.mjs"
+    "test:pwa": "node tests/pwa.browser.mjs",
+    "test:header": "node tests/header-contract.mjs"
   }
 }
