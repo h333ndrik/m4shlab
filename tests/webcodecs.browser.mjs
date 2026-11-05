@@ -394,7 +394,8 @@ try {
   assert.equal(emptyState.background, 'rgb(226, 225, 221)');
   assert.equal(emptyState.color, 'rgb(119, 118, 112)');
   assert.equal(emptyState.opacity, '1');
-  assert.equal(emptyState.cursor, 'not-allowed');
+  assert.match(emptyState.cursor, /m4-cursor-interactive\.svg/);
+  assert.doesNotMatch(emptyState.cursor, /not-allowed/);
   console.log('PASS empty state shows the shell order, project name, 00.00 time, and a high-contrast disabled export button');
 
   const projectPersistence = await client.evaluate(`(async () => {

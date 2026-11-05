@@ -15,6 +15,7 @@
     "test:conversion": "node tests/conversion.browser.mjs",
     "test:webcodecs": "node tests/webcodecs.browser.mjs",
     "test:pwa": "node tests/pwa.browser.mjs",
-    "test:header": "node tests/header-contract.mjs"
+    "test:header": "node tests/header-contract.mjs",
+    "test:cursor": "node tests/cursor-contract.mjs"
   }
 }
