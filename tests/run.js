@@ -83,6 +83,27 @@ function pass(message) {
   console.log(`PASS ${message}`);
 }
 
+function readBuildStamp() {
+  const swSource = readFileSync(join(projectRoot, 'sw.js'), 'utf8');
+  const appSource = readFileSync(join(projectRoot, 'app.js'), 'utf8');
+  const indexSource = readFileSync(join(projectRoot, 'index.html'), 'utf8');
+  return {
+    swVersion: /const VERSION = '([^']+)'/.exec(swSource)?.[1] ?? 'missing',
+    appBuild: /const BUILD = '([^']+)'/.exec(appSource)?.[1] ?? 'missing',
+    metaBuild: /<meta name="m4shlab-build" content="([^"]+)"/.exec(indexSource)?.[1] ?? 'missing',
+    dataBuild: /<html[^>]*\sdata-build="([^"]+)"/.exec(indexSource)?.[1] ?? 'missing',
+  };
+}
+
+const buildStamps = readBuildStamp();
+assert.equal(
+  new Set([buildStamps.swVersion, buildStamps.appBuild, buildStamps.metaBuild, buildStamps.dataBuild]).size,
+  1,
+  `Build stamps differ: sw.js VERSION ${buildStamps.swVersion}, app.js BUILD ${buildStamps.appBuild}, index.html meta ${buildStamps.metaBuild}, index.html data-build ${buildStamps.dataBuild}`,
+);
+assert.notEqual(buildStamps.swVersion, 'missing', 'A build stamp is missing from one of the shell files');
+pass(`build stamp ${buildStamps.swVersion} is identical in sw.js VERSION, app.js BUILD, index.html meta and data-build`);
+
 function unescapeRbspPayload(nalData) {
   const input = nalData.subarray(1);
   const output = new Uint8Array(input.byteLength);

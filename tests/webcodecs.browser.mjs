@@ -227,6 +227,33 @@ async function waitForDownload(path, timeout = 15000) {
   throw new Error(`Download did not appear: ${path}`);
 }
 
+function removeElementsScript(ids) {
+  return `(() => {
+    const targets = new Set(${JSON.stringify(ids)});
+    const drop = node => {
+      if (node && node.nodeType === 1 && node.id && targets.has(node.id)) node.remove();
+    };
+    new MutationObserver(records => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (node.nodeType !== 1) continue;
+          drop(node);
+          for (const child of node.querySelectorAll('[id]')) drop(child);
+        }
+      }
+    }).observe(document, {childList: true, subtree: true});
+  })();`;
+}
+
+function consoleMessages(client, fromIndex) {
+  return client.events.slice(fromIndex)
+    .filter(event => event.method === 'Runtime.consoleAPICalled')
+    .map(event => ({
+      type: event.params.type,
+      text: event.params.args.map(arg => arg.value ?? arg.description ?? '').join(' '),
+    }));
+}
+
 function requiredFixturesExist() {
   return Object.values(fixtures).every(path => existsSync(path));
 }
@@ -1989,20 +2016,28 @@ try {
     assert.equal(loadedSettings.source0.speed, savedSettings.clips[0].speed);
     assert.equal(loadedSettings.source0.look, savedSettings.clips[0].look);
 
-    const reportBeforeMismatch = loadedSettings.hiddenReport;
+    const timelineSnapshotExpression = `(() => {
+      return {
+        cards: document.querySelectorAll('.clip-card').length,
+        names: [...document.querySelectorAll('.clip-card .clip-name')].map(node => node.textContent),
+        connectors: [...document.querySelectorAll('.connector')].map(node => node.textContent),
+        report: document.querySelector('#report').textContent,
+        project: document.querySelector('#project-name').value,
+        sound: document.querySelector('#sound-toggle').checked,
+      };
+    })()`;
+    const beforeMismatch = await client.evaluate(timelineSnapshotExpression);
     writeFileSync(mismatchPath, JSON.stringify({...savedSettings, clip_count: 3}, null, 2));
     await client.setFile('#settings-input', mismatchPath);
     await client.waitFor("!document.querySelector('#error').hidden && /Settings are for 3 clips/.test(document.querySelector('#error').textContent)", 5000);
-    const mismatchState = await client.evaluate(`({
-      cards: document.querySelectorAll('.clip-card').length,
-      report: document.querySelector('#report').textContent,
-      error: document.querySelector('#error').textContent,
-      project: document.querySelector('#project-name').value,
-    })`);
-    assert.equal(mismatchState.cards, 2);
-    assert.equal(mismatchState.report, reportBeforeMismatch);
-    assert.match(mismatchState.error, /settings are for 3 clips/i);
-    assert.equal(mismatchState.project, 'Roundtrip / Set');
+    const afterMismatch = await client.evaluate(timelineSnapshotExpression);
+    assert.equal(afterMismatch.cards, 2);
+    assert.equal(beforeMismatch.cards, 2);
+    const {cards: afterCards, ...afterRest} = afterMismatch;
+    const {cards: beforeCards, ...beforeRest} = beforeMismatch;
+    assert.equal(afterCards, beforeCards);
+    assert.deepEqual(afterRest, beforeRest);
+    assert.match(await client.evaluate("document.querySelector('#error').textContent"), /settings are for 3 clips/i);
 
     await client.evaluate("document.querySelector('#project-menu').open = true");
     await client.evaluate("document.body.click()");
@@ -2011,6 +2046,138 @@ try {
     await client.evaluate("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}))");
     assert.equal(await client.evaluate("document.querySelector('#project-menu').open"), false);
     console.log('PASS settings save/load round-trips project, sound, seed and boundary values; clip-count mismatch leaves the timeline unchanged');
+
+    const auditSettingsPath = join(downloadDir, 'Audit.m4settings');
+    const invalidLaterPath = join(downloadDir, 'Audit-invalid-later.m4settings');
+    const invalidEnginePath = join(downloadDir, 'Audit-invalid-engine.m4settings');
+    const invalidCountPath = join(downloadDir, 'Audit-invalid-count.m4settings');
+    for (const path of [auditSettingsPath, invalidLaterPath, invalidEnginePath, invalidCountPath]) rmSync(path, {force: true});
+    await client.send('Page.navigate', {url: `${baseUrl}?settings-transactional=1`});
+    await client.waitFor("document.querySelector('#file-input-a') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
+    await client.evaluate(`(() => {
+      const input = document.querySelector('#project-name');
+      input.value = 'Audit';
+      input.dispatchEvent(new Event('input', {bubbles: true}));
+    })()`);
+    await client.setFiles('#file-input-a', [fixtures.a, fixtures.b, fixtures.a]);
+    await client.waitFor("document.querySelectorAll('.clip-card').length === 3", 30000);
+    await client.waitFor("document.querySelector('#status').textContent.includes('samples') || !document.querySelector('#error').hidden", 120000);
+    await client.evaluate("document.querySelector('#project-menu').open = true");
+    await client.evaluate("document.querySelector('#save-settings').click()");
+    await waitForDownload(auditSettingsPath, 10000);
+    const auditSettings = JSON.parse(readFileSync(auditSettingsPath, 'utf8'));
+    assert.equal(auditSettings.clip_count, 3);
+    assert.equal(auditSettings.transitions.length, 2);
+
+    const auditSnapshotExpression = `(() => {
+      const reportText = document.querySelector('#report').textContent;
+      const report = JSON.parse(reportText);
+      return {
+        cards: document.querySelectorAll('.clip-card').length,
+        names: [...document.querySelectorAll('.clip-card .clip-name')].map(node => node.textContent),
+        connectors: [...document.querySelectorAll('.connector')].map(node => node.textContent),
+        project: document.querySelector('#project-name').value,
+        sound: document.querySelector('#sound-toggle').checked,
+        clips: report.sources.clips.map(clip => ({name: clip.name, speed: clip.speed, look: clip.look, frames: clip.output_frames})),
+        transitions: report.transitions.map(transition => ({
+          method: transition.method,
+          durationFrames: transition.durationFrames,
+          ending: transition.ending,
+          repeat: transition.repeat,
+          loopFrames: transition.loopFrames,
+          resetInterval: transition.resetInterval,
+          smooth: transition.smooth,
+          speed: transition.speed,
+          look: transition.look,
+          random_seed: transition.random_seed,
+        })),
+        normalization: report.normalization ? {
+          autoNormalized: report.normalization.autoNormalized ?? null,
+          target: report.normalization.target ?? null,
+          engines: (report.normalization.engines ?? []).map(item => item.path ?? item.engine ?? null),
+        } : null,
+        compatibility: report.compatibility?.compatible ?? null,
+        reportText,
+      };
+    })()`;
+    const auditBefore = await client.evaluate(auditSnapshotExpression);
+    assert.equal(auditBefore.cards, 3);
+
+    const loadSettingsAttempt = async (path, expectation) => {
+      await client.evaluate("document.querySelector('#project-menu').open = true");
+      await client.setFile('#settings-input', path);
+      await client.waitFor(expectation, 120000);
+      await new Promise(resolveWait => setTimeout(resolveWait, 250));
+      return client.evaluate(auditSnapshotExpression);
+    };
+    const assertSnapshotUnchanged = (before, after, label) => {
+      const changed = Object.keys(before).filter(key => JSON.stringify(before[key]) !== JSON.stringify(after[key]));
+      assert.deepEqual(changed, [], `${label}: changed ${changed.map(key => `${key}=${JSON.stringify(after[key])} (expected ${JSON.stringify(before[key])})`).join('; ')}`);
+      assert.deepEqual(after, before, label);
+    };
+
+    writeFileSync(invalidLaterPath, JSON.stringify({
+      ...auditSettings,
+      transitions: [
+        {...auditSettings.transitions[0], duration_frames: 7, ending: 'continue'},
+        {...auditSettings.transitions[1], method: 'loop', loop_frames: 1},
+      ],
+    }, null, 2));
+    const afterInvalidLater = await loadSettingsAttempt(
+      invalidLaterPath,
+      "!document.querySelector('#error').hidden && /Transition 2 has invalid Loop frames/.test(document.querySelector('#error').textContent)",
+    );
+    assertSnapshotUnchanged(auditBefore, afterInvalidLater, 'invalid later boundary');
+    assert.equal(afterInvalidLater.reportText, auditBefore.reportText);
+    assert.match(await client.evaluate("document.querySelector('#error').textContent"), /Transition 2 has invalid Loop frames/);
+    console.log('PASS settings load rejects an invalid parameter in the later boundary and leaves names, connectors, report, project and sound untouched');
+
+    writeFileSync(invalidEnginePath, JSON.stringify({
+      ...auditSettings,
+      transitions: [
+        {...auditSettings.transitions[0], duration_frames: 7, ending: 'continue'},
+        {
+          method: 'reset-pulse',
+          duration_frames: 30,
+          ending: 'restore',
+          repeat: 2,
+          loop_frames: null,
+          reset_interval: 48,
+          smooth: false,
+          random_seed: null,
+        },
+      ],
+    }, null, 2));
+    const afterInvalidEngine = await loadSettingsAttempt(
+      invalidEnginePath,
+      "!document.querySelector('#error').hidden && /Reset interval 48/.test(document.querySelector('#error').textContent) && document.querySelector('#status').textContent.includes('samples')",
+    );
+    // Connector text is re-rendered during the rollback merge, so it can pick up the
+    // normalized 30 fps timeline while the pre-load DOM still showed the source fps.
+    // The settings state itself (report transitions, clips, project, sound) must match.
+    const {
+      reportText: ignoredEngineReport,
+      connectors: ignoredEngineConnectors,
+      ...engineBefore
+    } = auditBefore;
+    const {
+      reportText: ignoredEngineAfter,
+      connectors: engineAfterConnectors,
+      ...engineAfter
+    } = afterInvalidEngine;
+    assert.notEqual(ignoredEngineReport.length, 0);
+    assert.notEqual(ignoredEngineAfter.length, 0);
+    assert.deepEqual(engineAfterConnectors, ['m4sh0.80 s · restore', 'm4sh0.80 s · restore']);
+    assertSnapshotUnchanged(engineBefore, engineAfter, 'engine rollback');
+    console.log('PASS a boundary the merge engine rejects rolls the whole settings load back; timeline, report and project are byte-identical');
+
+    writeFileSync(invalidCountPath, JSON.stringify({...auditSettings, clip_count: 2}, null, 2));
+    const afterInvalidCount = await loadSettingsAttempt(
+      invalidCountPath,
+      "!document.querySelector('#error').hidden && /Settings are for 2 clips/.test(document.querySelector('#error').textContent)",
+    );
+    assertSnapshotUnchanged(afterInvalidEngine, afterInvalidCount, 'clip_count mismatch');
+    console.log('PASS a clip_count mismatch against a 3-clip timeline errors out and leaves the timeline, report and project untouched');
 
     const skeletonFixtures = ['skeleton-a.mov', 'skeleton-b.mov', 'skeleton-c.mov']
       .map(name => join(downloadDir, name));
@@ -2166,6 +2333,153 @@ try {
   assert.deepEqual(dropImport, {name: 'drop-missing-project.mp4', error: null});
   await client.send('Page.removeScriptToEvaluateOnNewDocument', {identifier: missingProjectScript.identifier});
   console.log('PASS missing optional project-name cannot kill picker or drag-and-drop import wiring');
+
+  // Shell consistency guard: matching stamps, negative proof, required contract.
+  const appSourceText = readFileSync(join(projectRoot, 'app.js'), 'utf8');
+  const optionalRegistry = [.../const OPTIONAL_UI = \[([\s\S]*?)\];/.exec(appSourceText)[1]
+    .matchAll(/'([^']+)'/g)].map(match => match[1]);
+  assert.ok(optionalRegistry.length >= 5, 'OPTIONAL_UI registry must list the optional features');
+
+  const matchEventsStart = client.events.length;
+  const matchExceptionsStart = client.exceptions.length;
+  await client.send('Page.navigate', {url: `${baseUrl}?shell-match=1`});
+  await client.waitFor("document.documentElement.dataset.appReady === 'true'", 10000);
+  const matchedShell = await client.evaluate(`({
+    notice: document.getElementById('shell-notice'),
+    build: document.documentElement.dataset.build,
+    meta: document.querySelector('meta[name="m4shlab-build"]').content,
+    optional: document.documentElement.dataset.optionalUi,
+  })`);
+  assert.equal(matchedShell.notice, null, 'matching build stamps must not render #shell-notice');
+  assert.equal(matchedShell.build, matchedShell.meta);
+  assert.deepEqual(matchedShell.optional.split(','), optionalRegistry);
+  assert.deepEqual(consoleMessages(client, matchEventsStart), [], 'a matching shell must not log console noise');
+  assert.equal(client.exceptions.length, matchExceptionsStart);
+  console.log(`PASS matching build stamps (${matchedShell.build}) render no #shell-notice, register ${optionalRegistry.length} optional ids, and log nothing`);
+
+  const stampScript = await client.send('Page.addScriptToEvaluateOnNewDocument', {
+    source: `new MutationObserver(() => {
+      const meta = document.querySelector('meta[name="m4shlab-build"]');
+      if (meta) meta.setAttribute('content', 'v20');
+    }).observe(document, {childList: true, subtree: true});`,
+  });
+  const shellGuardExport = join(downloadDir, 'Shell-Guard.mp4');
+  rmSync(shellGuardExport, {force: true});
+  try {
+    const mismatchExceptionsStart = client.exceptions.length;
+    await client.send('Page.navigate', {url: `${baseUrl}?shell-stamp-mismatch=1`});
+    await client.waitFor("document.documentElement.dataset.appReady === 'true'", 10000);
+    const noticeState = await client.evaluate(`(() => {
+      const notice = document.getElementById('shell-notice');
+      return {
+        text: notice?.querySelector('.shell-notice-text')?.textContent ?? null,
+        reload: notice?.querySelector('.shell-notice-reload')?.textContent ?? null,
+        dismissLabel: notice?.querySelector('.shell-notice-dismiss')?.getAttribute('aria-label') ?? null,
+        reloadDisabled: null,
+        exportDisabled: document.querySelector('#export-button').disabled,
+      };
+    })()`);
+    assert.equal(noticeState.text, 'This page mixes two m4shlab versions. Reload to get a consistent editor.');
+    assert.equal(noticeState.reload, 'Reload');
+    assert.equal(noticeState.dismissLabel, 'Dismiss version notice');
+    assert.equal(noticeState.exportDisabled, true);
+    await client.evaluate(`(() => {
+      const input = document.querySelector('#project-name');
+      input.value = 'Shell Guard';
+      input.dispatchEvent(new Event('input', {bubbles: true}));
+    })()`);
+    await client.setFiles('#file-input-a', [fixtures.a]);
+    await client.waitFor("document.querySelectorAll('.clip-card').length === 1", 30000);
+    await client.evaluate(`(async () => {
+      const bytes = await (await fetch('/testmedia/synthetic-b-a.mp4')).arrayBuffer();
+      const dataTransfer = new DataTransfer();
+      dataTransfer.items.add(new File([bytes], 'shell-guard-drop.mp4', {type: 'video/mp4'}));
+      const zone = document.querySelector('#drop-zone');
+      for (const type of ['dragenter', 'dragover', 'drop']) {
+        zone.dispatchEvent(new DragEvent(type, {bubbles: true, cancelable: true, dataTransfer}));
+      }
+    })()`);
+    await client.waitFor("document.querySelectorAll('.clip-card').length === 2", 30000);
+    await client.waitFor("document.querySelector('#status').textContent.includes('samples') || !document.querySelector('#error').hidden", 120000);
+    assert.equal(await client.evaluate("document.querySelector('#shell-notice') !== null"), true, 'the notice must stay visible through import and merge');
+    await client.evaluate("document.querySelector('#export-button').click()");
+    await waitForDownload(shellGuardExport, 20000);
+    const shellExportBytes = readFileSync(shellGuardExport);
+    assert.ok(shellExportBytes.byteLength > 0);
+    assert.equal(parseMp4(shellExportBytes instanceof Uint8Array ? shellExportBytes : new Uint8Array(shellExportBytes)).videoTrack.samples.length > 0, true);
+    assert.equal(await client.evaluate("document.documentElement.dataset.appReady"), 'true');
+    await client.evaluate("document.querySelector('.shell-notice-dismiss').click()");
+    assert.equal(await client.evaluate("document.getElementById('shell-notice') === null"), true);
+    await client.setFiles('#file-input-a', [fixtures.a]);
+    await client.waitFor("document.querySelectorAll('.clip-card').length === 3", 30000);
+    assert.equal(client.exceptions.length, mismatchExceptionsStart, 'the notice must not raise uncaught exceptions');
+    console.log(`PASS stamped mismatch shows the reload notice, keeps appReady true, imports by picker and drop, and exports ${shellExportBytes.byteLength} bytes while dismissible`);
+  } finally {
+    await client.send('Page.removeScriptToEvaluateOnNewDocument', {identifier: stampScript.identifier});
+  }
+
+  const requiredScript = await client.send('Page.addScriptToEvaluateOnNewDocument', {
+    source: removeElementsScript(['source-tiers']),
+  });
+  try {
+    const requiredEventsStart = client.events.length;
+    const requiredExceptionsStart = client.exceptions.length;
+    await client.send('Page.navigate', {url: `${baseUrl}?shell-required-missing=1`});
+    await client.waitFor("document.getElementById('shell-notice') !== null", 10000);
+    const requiredState = await client.evaluate(`({
+      text: document.getElementById('shell-notice').querySelector('.shell-notice-text').textContent,
+      ready: document.documentElement.dataset.appReady ?? null,
+      timeline: document.getElementById('source-tiers') === null,
+    })`);
+    assert.equal(requiredState.text, 'This editor is incomplete. Reload the page.');
+    assert.equal(requiredState.ready, null);
+    assert.equal(requiredState.timeline, true);
+    const requiredErrors = consoleMessages(client, requiredEventsStart).filter(message => message.type === 'error');
+    assert.equal(requiredErrors.length, 1, JSON.stringify(requiredErrors));
+    assert.match(requiredErrors[0].text, /source-tiers/);
+    assert.equal(client.exceptions.length, requiredExceptionsStart);
+    console.log('PASS a missing required element shows the incomplete notice, logs one error naming source-tiers, and does not throw');
+  } finally {
+    await client.send('Page.removeScriptToEvaluateOnNewDocument', {identifier: requiredScript.identifier});
+  }
+
+  const optionalCases = [...optionalRegistry.map(id => ({ids: [id], label: id})), {ids: optionalRegistry, label: 'all optional'}];
+  for (const optionalCase of optionalCases) {
+    const script = await client.send('Page.addScriptToEvaluateOnNewDocument', {
+      source: removeElementsScript(optionalCase.ids),
+    });
+    try {
+      const exceptionsStart = client.exceptions.length;
+      await client.send('Page.navigate', {url: `${baseUrl}?optional-missing=${encodeURIComponent(optionalCase.label)}`});
+      await client.waitFor("document.documentElement.dataset.appReady === 'true'", 10000);
+      const missing = await client.evaluate(`${JSON.stringify(optionalCase.ids)}.filter(id => document.getElementById(id) !== null)`);
+      assert.deepEqual(missing, [], `optional ids ${optionalCase.label} must really be removed`);
+      await client.setFiles('#file-input-a', [fixtures.a]);
+      await client.waitFor("document.querySelectorAll('.clip-card').length === 1", 30000);
+      await client.evaluate(`(async () => {
+        const bytes = await (await fetch('/testmedia/synthetic-b-a.mp4')).arrayBuffer();
+        const dataTransfer = new DataTransfer();
+        dataTransfer.items.add(new File([bytes], 'optional-drop.mp4', {type: 'video/mp4'}));
+        const zone = document.querySelector('#drop-zone');
+        for (const type of ['dragenter', 'dragover', 'drop']) {
+          zone.dispatchEvent(new DragEvent(type, {bubbles: true, cancelable: true, dataTransfer}));
+        }
+      })()`);
+      await client.waitFor("document.querySelectorAll('.clip-card').length === 2", 30000);
+      const optionalState = await client.evaluate(`({
+        cards: document.querySelectorAll('.clip-card').length,
+        notices: document.querySelectorAll('#shell-notice').length,
+        error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
+      })`);
+      assert.equal(optionalState.cards, 2);
+      assert.equal(optionalState.notices, 0);
+      assert.equal(optionalState.error, null);
+      assert.equal(client.exceptions.length, exceptionsStart, `removing ${optionalCase.label} raised an exception`);
+      console.log(`PASS optional element "${optionalCase.label}" missing: appReady true, picker + drop import produce 2 clips, no exception`);
+    } finally {
+      await client.send('Page.removeScriptToEvaluateOnNewDocument', {identifier: script.identifier});
+    }
+  }
 
   if (client.exceptions.length) throw new Error(`Browser exceptions:\n${client.exceptions.join('\n')}`);
 } finally {

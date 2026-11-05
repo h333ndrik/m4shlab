@@ -140,6 +140,43 @@ button:focus-visible,
   outline-offset: 3px;
 }
 
+.shell-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 18px;
+  padding: 8px 12px;
+  border: 1px solid #e0c98a;
+  border-radius: 4px;
+  background: #fff8e1;
+  color: #242424;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.shell-notice-text { flex: 1 1 auto; }
+
+.shell-notice button {
+  padding: 2px 8px;
+  border: 1px solid #d2c79a;
+  border-radius: 4px;
+  background: #fffdf6;
+  color: #242424;
+  font: inherit;
+  cursor: pointer;
+}
+
+.shell-notice-dismiss {
+  padding: 2px 6px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.shell-notice button:focus-visible {
+  outline: 2px solid #64647a;
+  outline-offset: 2px;
+}
+
 .viewer {
   position: relative;
   display: grid;
@@ -935,6 +972,7 @@ button:focus-visible,
   .seed-input { min-height: 44px; }
   .sound-toggle { min-height: 44px; }
   .sound-toggle input { width: 20px; height: 20px; }
+  .shell-notice button { min-height: 44px; }
   .clip-speed input[type="range"] { min-height: 44px; }
   .connector { min-height: 44px; }
   .transition-dialog fieldset label { min-height: 44px; }

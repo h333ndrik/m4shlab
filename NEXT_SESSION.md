@@ -2,7 +2,7 @@
 
 ## Status
 
-m4shlab v1.1 is the current complete browser release candidate. The v1.0 tag remains immutable at `2aa8ee5`; v1.1 adds per-clip looks, the persistent sound/export toggle, and live preview time and labels. Automated verification is **80 Node / 40 WebCodecs / 6 PWA** checks passing. Physical-device acceptance remains pending.
+m4shlab v1.1 is the current complete browser release candidate. The v1.0 tag remains immutable at `2aa8ee5`; v1.1 adds per-clip looks, the persistent sound/export toggle, and live preview time and labels. Automated verification is **81 Node / 58 WebCodecs / 6 PWA** checks passing (the shell guard and settings transactionality block added 1 Node and 18 WebCodecs checks). Physical-device acceptance remains pending.
 
 Do not move or delete either release tag. Record device findings first, reproduce them against a fixture where possible, and propose a scoped fix before changing the release state.
 
