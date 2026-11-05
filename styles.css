@@ -17,11 +17,11 @@
      exists for a future tagline and never follows the wordmark. Changing
      --header-pad-block adds equal space above and below the header row, and
      --header-gap is the space between the wordmark and the import control. */
-  --header-wordmark-size: 15px;
+  --header-wordmark-size: clamp(18px, 1.45vw, 21px);
   --header-wordmark-line: 1.15;
-  --header-tagline-size: 12px;
-  --header-pad-block: 0px;
-  --header-gap: 16px;
+  --header-tagline-size: clamp(12px, 1.1vw, 13px);
+  --header-pad-block: clamp(4px, 0.8vw, 10px);
+  --header-gap: clamp(12px, 1vw, 16px);
   --header-margin-block: 30px;
 }
 
@@ -1091,6 +1091,7 @@ button:focus-visible,
   .classic-mosh-options input[type="range"],
   .classic-mosh-options select { min-height: 44px; }
   main {
+    padding-top: max(24px, env(safe-area-inset-top));
     padding-left: max(16px, env(safe-area-inset-left));
     padding-right: max(16px, env(safe-area-inset-right));
     padding-bottom: max(24px, env(safe-area-inset-bottom));
