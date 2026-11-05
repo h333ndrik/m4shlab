@@ -23,6 +23,11 @@ const shellPaths = [
   '/assets/cursor/m4-cursor-interactive.svg', '/assets/cursor/m4-cursor-interactive.png',
   '/assets/cursor/m4-cursor-pressed.svg', '/assets/cursor/m4-cursor-pressed.png',
 ];
+const swSource = readFileSync(join(projectRoot, 'sw.js'), 'utf8');
+const swVersion = /const VERSION = '([^']+)'/.exec(swSource)?.[1];
+assert.ok(swVersion, 'sw.js VERSION literal is missing');
+const shellCacheName = `m4shlab-${swVersion}`;
+const runtimeCacheName = `m4shlab-runtime-${swVersion}`;
 const chromeCandidates = [
   process.env.CHROME_BIN,
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -240,7 +245,7 @@ try {
 
   const pwaState = await client.evaluate(`(async () => {
     const registration = await navigator.serviceWorker.ready;
-    const cache = await caches.open('m4shlab-v28');
+    const cache = await caches.open('${shellCacheName}');
     return {
       manifestHref: document.querySelector('link[rel="manifest"]')?.getAttribute('href'),
       themeColor: document.querySelector('meta[name="theme-color"]')?.content,
@@ -250,6 +255,7 @@ try {
       workerState: registration.active?.state,
       controllerState: navigator.serviceWorker.controller?.state,
       cacheKeys: (await cache.keys()).map(request => new URL(request.url).pathname),
+      allCacheNames: await caches.keys(),
       installPromptAvailable: window.__installPromptAvailable,
     };
   })()`);
@@ -259,6 +265,8 @@ try {
   assert.equal(pwaState.appleIcon, 'icon-180.png');
   assert.equal(pwaState.workerState, 'activated');
   assert.equal(pwaState.controllerState, 'activated');
+  assert.ok(pwaState.allCacheNames.includes(shellCacheName), `derived shell cache ${shellCacheName} missing; actual caches: ${JSON.stringify(pwaState.allCacheNames)}`);
+  console.log(`INFO derived cache names from sw.js VERSION ${swVersion}: ${shellCacheName}, ${runtimeCacheName}`);
   for (const path of shellPaths) assert.ok(pwaState.cacheKeys.includes(path), `missing precached shell asset ${path}`);
   assert.ok(!pwaState.cacheKeys.includes('/converter-worker.js'), 'conversion worker must not be precached');
   assert.ok(!pwaState.cacheKeys.some(path => path.includes('/@ffmpeg/core@')), 'ffmpeg core must not be precached');
@@ -330,7 +338,7 @@ try {
   await client.waitFor("document.documentElement.dataset.appReady === 'true'", 15000);
   await client.waitFor("navigator.serviceWorker?.controller?.state === 'activated'", 20000);
   const cacheNames = await client.evaluate('caches.keys()');
-  assert.ok(cacheNames.includes('m4shlab-v28'));
+  assert.ok(cacheNames.includes(shellCacheName), `derived shell cache ${shellCacheName} missing after activate; actual caches: ${JSON.stringify(cacheNames)}`);
   assert.ok(!cacheNames.includes('m4shlab-v10'), 'old shell cache must be deleted on activate');
   assert.ok(!cacheNames.includes('m4shlab-runtime-v10'), 'old runtime cache must be deleted on activate');
   console.log('PASS activate cleanup removed the old versioned cache and re-registered the current shell');
@@ -348,10 +356,12 @@ try {
   }))()`);
   assert.equal(onlineConversion.error, null, onlineConversion.error);
   assert.ok(onlineConversion.report.merge.mergedSamples > 0);
-  const runtimeKeys = await client.evaluate(`(async () => {
-    const cache = await caches.open('m4shlab-runtime-v28');
-    return (await cache.keys()).map(request => request.url);
+  const runtimeCacheState = await client.evaluate(`(async () => {
+    const cache = await caches.open('${runtimeCacheName}');
+    return {keys: (await cache.keys()).map(request => request.url), allCacheNames: await caches.keys()};
   })()`);
+  assert.ok(runtimeCacheState.allCacheNames.includes(runtimeCacheName), `derived runtime cache ${runtimeCacheName} missing; actual caches: ${JSON.stringify(runtimeCacheState.allCacheNames)}`);
+  const runtimeKeys = runtimeCacheState.keys;
   assert.ok(runtimeKeys.some(url => url.endsWith('/converter-worker.js')), 'conversion worker was not runtime-cached');
   assert.ok(runtimeKeys.some(url => url.endsWith('/ffmpeg-core.js')), 'ffmpeg core module was not runtime-cached');
   assert.ok(runtimeKeys.some(url => url.endsWith('/ffmpeg-core.wasm')), 'ffmpeg wasm binary was not runtime-cached');
