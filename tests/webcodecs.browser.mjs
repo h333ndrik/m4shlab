@@ -2481,6 +2481,222 @@ try {
     }
   }
 
+  // Reload race guard: the notice must not reload into the same stale shell.
+  const reloadScenario = body => client.evaluate(`(async () => {
+    const container = navigator.serviceWorker;
+    const savedController = Object.getOwnPropertyDescriptor(container, 'controller');
+    const setController = value => Object.defineProperty(container, 'controller', {value, configurable: true});
+    try {
+      ${body}
+    } finally {
+      if (savedController) Object.defineProperty(container, 'controller', savedController);
+      else delete container.controller;
+    }
+  })()`);
+
+  const hookScript = await client.send('Page.addScriptToEvaluateOnNewDocument', {
+    source: `new MutationObserver(() => {
+      document.documentElement.dataset.testHooks = 'true';
+    }).observe(document, {childList: true, subtree: true});`,
+  });
+  const reloadExceptionsStart = client.exceptions.length;
+  try {
+    await client.send('Page.navigate', {url: `${baseUrl}?reload-guard-hooks=1`});
+    await client.waitFor("document.documentElement.dataset.appReady === 'true'", 10000);
+    assert.equal(await client.evaluate("typeof window.m4shlabTest?.reloadAfterControllerChange"), 'function');
+
+    const controllerChangeCase = await reloadScenario(`
+      setController({});
+      let reloads = 0;
+      const registration = new EventTarget();
+      registration.update = async () => {};
+      registration.installing = null;
+      const cleanup = window.m4shlabTest.reloadAfterControllerChange({
+        registration,
+        onReload: () => { reloads += 1; },
+        timeoutMs: 2000,
+      });
+      const before = reloads;
+      container.dispatchEvent(new Event('controllerchange'));
+      const after = reloads;
+      await new Promise(resolve => setTimeout(resolve, 100));
+      cleanup();
+      return {before, after, final: reloads};
+    `);
+    assert.equal(controllerChangeCase.before, 0, 'the helper must wait for the controller change');
+    assert.equal(controllerChangeCase.after, 1);
+    assert.equal(controllerChangeCase.final, 1);
+    console.log('PASS reloadAfterControllerChange reloads exactly once on controllerchange and never before the event');
+
+    const timeoutCase = await reloadScenario(`
+      setController({});
+      let reloads = 0;
+      const registration = new EventTarget();
+      registration.update = async () => {};
+      registration.installing = null;
+      window.m4shlabTest.reloadAfterControllerChange({
+        registration,
+        onReload: () => { reloads += 1; },
+        timeoutMs: 50,
+      });
+      await new Promise(resolve => setTimeout(resolve, 200));
+      return {reloads};
+    `);
+    assert.equal(timeoutCase.reloads, 1);
+    console.log('PASS reloadAfterControllerChange falls back to the 50 ms timeout and reloads exactly once');
+
+    const doubleTriggerCase = await reloadScenario(`
+      setController({});
+      let reloads = 0;
+      const registration = new EventTarget();
+      registration.update = async () => {};
+      registration.installing = null;
+      window.m4shlabTest.reloadAfterControllerChange({
+        registration,
+        onReload: () => { reloads += 1; },
+        timeoutMs: 50,
+      });
+      container.dispatchEvent(new Event('controllerchange'));
+      await new Promise(resolve => setTimeout(resolve, 200));
+      return {reloads};
+    `);
+    assert.equal(doubleTriggerCase.reloads, 1);
+    console.log('PASS a controllerchange followed by the expiry of the timeout still reloads exactly once');
+
+    const activatedCase = await reloadScenario(`
+      setController({});
+      let reloads = 0;
+      const registration = new EventTarget();
+      registration.update = async () => {};
+      registration.installing = null;
+      const cleanup = window.m4shlabTest.reloadAfterControllerChange({
+        registration,
+        onReload: () => { reloads += 1; },
+        timeoutMs: 2000,
+      });
+      const installing = new EventTarget();
+      installing.state = 'installing';
+      registration.installing = installing;
+      registration.dispatchEvent(new Event('updatefound'));
+      const afterUpdateFound = reloads;
+      installing.state = 'activated';
+      installing.dispatchEvent(new Event('statechange'));
+      const afterActivated = reloads;
+      await new Promise(resolve => setTimeout(resolve, 100));
+      cleanup();
+      return {afterUpdateFound, afterActivated, final: reloads};
+    `);
+    assert.equal(activatedCase.afterUpdateFound, 0);
+    assert.equal(activatedCase.afterActivated, 1);
+    assert.equal(activatedCase.final, 1);
+    console.log('PASS updatefound plus installing statechange "activated" reloads exactly once and never on installing');
+
+    const noControllerCase = await reloadScenario(`
+      setController(null);
+      let reloads = 0;
+      const registration = new EventTarget();
+      registration.update = async () => { throw new Error('update must not run without a controller'); };
+      const cleanup = window.m4shlabTest.reloadAfterControllerChange({
+        registration,
+        onReload: () => { reloads += 1; },
+        timeoutMs: 50,
+      });
+      const immediate = reloads;
+      await new Promise(resolve => setTimeout(resolve, 150));
+      cleanup();
+      return {immediate, final: reloads};
+    `);
+    assert.equal(noControllerCase.immediate, 1, 'without a controller the reload must be immediate');
+    assert.equal(noControllerCase.final, 1, 'no timeout may be left behind');
+    console.log('PASS no service worker controller reloads immediately and leaves no timer behind');
+
+    const rejectedUpdateCase = await reloadScenario(`
+      setController({});
+      let reloads = 0;
+      let unhandled = 0;
+      const onUnhandled = () => { unhandled += 1; };
+      window.addEventListener('unhandledrejection', onUnhandled);
+      const registration = new EventTarget();
+      registration.update = async () => { throw new Error('registry unavailable'); };
+      registration.installing = null;
+      window.m4shlabTest.reloadAfterControllerChange({
+        registration,
+        onReload: () => { reloads += 1; },
+        timeoutMs: 50,
+      });
+      await new Promise(resolve => setTimeout(resolve, 200));
+      window.removeEventListener('unhandledrejection', onUnhandled);
+      return {reloads, unhandled};
+    `);
+    assert.equal(rejectedUpdateCase.reloads, 1);
+    assert.equal(rejectedUpdateCase.unhandled, 0);
+    assert.equal(client.exceptions.length, reloadExceptionsStart);
+    console.log('PASS a rejecting registration.update() still reloads exactly once without an unhandled rejection');
+  } finally {
+    await client.send('Page.removeScriptToEvaluateOnNewDocument', {identifier: hookScript.identifier});
+  }
+
+  await client.send('Page.navigate', {url: `${baseUrl}?reload-guard-no-hooks=1`});
+  await client.waitFor("document.documentElement.dataset.appReady === 'true'", 10000);
+  assert.equal(await client.evaluate("typeof window.m4shlabTest"), 'undefined');
+  assert.equal(await client.evaluate("document.documentElement.dataset.testHooks ?? null"), null);
+  console.log('PASS window.m4shlabTest stays undefined without the data-test-hooks opt-in');
+
+  const integrationHook = await client.send('Page.addScriptToEvaluateOnNewDocument', {
+    source: `new MutationObserver(() => {
+      document.documentElement.dataset.testHooks = 'true';
+    }).observe(document, {childList: true, subtree: true});`,
+  });
+  const integrationStamp = await client.send('Page.addScriptToEvaluateOnNewDocument', {
+    source: `new MutationObserver(() => {
+      const meta = document.querySelector('meta[name="m4shlab-build"]');
+      if (meta) meta.setAttribute('content', 'v21');
+    }).observe(document, {childList: true, subtree: true});`,
+  });
+  try {
+    await client.send('Page.navigate', {url: `${baseUrl}?reload-guard-button=1`});
+    await client.waitFor("document.getElementById('shell-notice') !== null && document.documentElement.dataset.appReady === 'true'", 10000);
+    await client.waitFor("navigator.serviceWorker?.controller !== null && navigator.serviceWorker?.controller !== undefined", 15000);
+    const reloadButtonState = await client.evaluate(`(() => {
+      const button = document.querySelector('.shell-notice-reload');
+      return {disabledBefore: button.disabled, labelBefore: button.textContent};
+    })()`);
+    assert.deepEqual(reloadButtonState, {disabledBefore: false, labelBefore: 'Reload'});
+    await client.evaluate("document.querySelector('.shell-notice-reload').click()");
+    const busyState = await client.evaluate(`(() => {
+      const button = document.querySelector('.shell-notice-reload');
+      return {
+        disabled: button.disabled,
+        busy: button.getAttribute('aria-busy'),
+        label: button.textContent,
+        noticeStillVisible: document.getElementById('shell-notice') !== null,
+        appReady: document.documentElement.dataset.appReady,
+        hooks: typeof window.m4shlabTest?.reloadAfterControllerChange,
+      };
+    })()`);
+    assert.equal(busyState.disabled, true);
+    assert.equal(busyState.busy, 'true');
+    assert.equal(busyState.label, 'Reloading…');
+    assert.equal(busyState.noticeStillVisible, true);
+    assert.equal(busyState.appReady, 'true');
+    assert.equal(busyState.hooks, 'function');
+    await client.evaluate("document.querySelector('.shell-notice-reload').click()");
+    await client.setFiles('#file-input-a', [fixtures.a]);
+    await client.waitFor("document.querySelectorAll('.clip-card').length === 1", 20000);
+    const responsiveState = await client.evaluate(`({
+      cards: document.querySelectorAll('.clip-card').length,
+      error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
+      label: document.querySelector('.shell-notice-reload')?.textContent ?? null,
+    })`);
+    assert.equal(responsiveState.cards, 1);
+    assert.equal(responsiveState.error, null);
+    assert.equal(responsiveState.label, 'Reloading…');
+    console.log('PASS the Reload button disables itself with aria-busy and "Reloading…" while the page still imports a clip');
+  } finally {
+    await client.send('Page.removeScriptToEvaluateOnNewDocument', {identifier: integrationHook.identifier});
+    await client.send('Page.removeScriptToEvaluateOnNewDocument', {identifier: integrationStamp.identifier});
+  }
+
   if (client.exceptions.length) throw new Error(`Browser exceptions:\n${client.exceptions.join('\n')}`);
 } finally {
   client?.close();

@@ -177,6 +177,11 @@ button:focus-visible,
   outline-offset: 2px;
 }
 
+.shell-notice button[aria-busy="true"] {
+  opacity: 0.7;
+  cursor: progress;
+}
+
 .viewer {
   position: relative;
   display: grid;

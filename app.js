@@ -37,7 +37,7 @@ import {
 } from './audio.js';
 
 const MAX_CLIPS = 12;
-const BUILD = 'v21';
+const BUILD = 'v22';
 const SHELL_NOTICE_MIXED = 'This page mixes two m4shlab versions. Reload to get a consistent editor.';
 const SHELL_NOTICE_INCOMPLETE = 'This editor is incomplete. Reload the page.';
 const REQUIRED_UI = [
@@ -183,6 +183,58 @@ let refreshInFlight = 0;
 let soundEnabled = readSoundPreference();
 let projectNameSaveTimer = null;
 
+function reloadAfterControllerChange({registration, onReload = () => location.reload(), timeoutMs = 3000} = {}) {
+  const container = navigator.serviceWorker;
+  if (!container || !registration || !container.controller) {
+    onReload();
+    return () => {};
+  }
+  let done = false;
+  let timer = null;
+  let watchedWorker = null;
+
+  const cleanup = () => {
+    if (done) return;
+    done = true;
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    container.removeEventListener?.('controllerchange', fire);
+    registration.removeEventListener?.('updatefound', onUpdateFound);
+    if (watchedWorker) watchedWorker.removeEventListener?.('statechange', onInstallingStateChange);
+    watchedWorker = null;
+  };
+
+  const fire = () => {
+    if (done) return;
+    cleanup();
+    onReload();
+  };
+
+  const onInstallingStateChange = () => {
+    if (watchedWorker?.state === 'activated') fire();
+  };
+
+  const onUpdateFound = () => {
+    const installing = registration.installing;
+    if (!installing || typeof installing.addEventListener !== 'function') return;
+    if (watchedWorker) watchedWorker.removeEventListener?.('statechange', onInstallingStateChange);
+    watchedWorker = installing;
+    watchedWorker.addEventListener('statechange', onInstallingStateChange);
+    if (installing.state === 'activated') fire();
+  };
+
+  container.addEventListener('controllerchange', fire);
+  registration.addEventListener?.('updatefound', onUpdateFound);
+  if (registration.installing) onUpdateFound();
+  timer = setTimeout(fire, timeoutMs);
+  Promise.resolve()
+    .then(() => registration.update?.())
+    .catch(() => {});
+  return cleanup;
+}
+
 function showShellNotice(message) {
   const main = document.querySelector('main');
   if (!main) return null;
@@ -199,13 +251,15 @@ function showShellNotice(message) {
     reload.className = 'shell-notice-reload';
     reload.textContent = 'Reload';
     reload.addEventListener('click', async () => {
-      if (navigator.serviceWorker?.controller) {
-        try {
-          const registration = await navigator.serviceWorker.getRegistration();
-          await registration?.update?.();
-        } catch {}
-      }
-      location.reload();
+      if (reload.disabled) return;
+      reload.disabled = true;
+      reload.setAttribute('aria-busy', 'true');
+      reload.textContent = 'Reloading…';
+      let registration = null;
+      try {
+        registration = await navigator.serviceWorker?.getRegistration?.() ?? null;
+      } catch {}
+      reloadAfterControllerChange({registration});
     });
     const dismiss = document.createElement('button');
     dismiss.type = 'button';
@@ -230,6 +284,10 @@ function checkShellBuild() {
 }
 
 checkShellBuild();
+
+if (document.documentElement.dataset.testHooks === 'true') {
+  window.m4shlabTest = {reloadAfterControllerChange};
+}
 
 function readSoundPreference() {
   try {
