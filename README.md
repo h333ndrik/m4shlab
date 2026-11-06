@@ -42,15 +42,15 @@ Service workers require HTTPS or `localhost`; GitHub Pages provides HTTPS automa
 - **Android Chrome:** use the install banner when offered, or open the browser menu → **Install app** / **Add to Home screen**.
 - **Desktop Chrome/Edge:** use the install icon in the address bar, or the browser menu → **Install m4shlab**.
 
-The first load must reach the network so the manifest and versioned app shell can be cached. After that the UI starts offline. Import, Classic Mosh, preview, and export are local operations and continue to work without a network. New-format conversion needs the ffmpeg.wasm core; the first conversion downloads it, then `converter-worker.js`, `ffmpeg-core.js`, and `ffmpeg-core.wasm` stay in the runtime cache. The OS may evict that cache under storage pressure, in which case conversion needs network again.
+The first load must reach the network so the manifest and versioned app shell can be cached. After that the UI starts offline. Import, m4sh, preview, and export are local operations and continue to work without a network. New-format conversion needs the ffmpeg.wasm core; the first conversion downloads it, then `converter-worker.js`, `ffmpeg-core.js`, and `ffmpeg-core.wasm` stay in the runtime cache. The OS may evict that cache under storage pressure, in which case conversion needs network again.
 
-The current cache version is `v20` (`m4shlab-v20` plus `m4shlab-runtime-v20`). Bump `VERSION` in `sw.js` whenever app-shell or conversion-worker files change. Activation deletes older versioned caches, including the old runtime cache, so the worker cannot run stale code.
+The current cache version is the `VERSION` in `sw.js` (`m4shlab-<VERSION>` plus `m4shlab-runtime-<VERSION>`). Bump `VERSION` in `sw.js` whenever app-shell or conversion-worker files change. Activation deletes older versioned caches, including the old runtime cache, so the worker cannot run stale code.
 
 ## Shell consistency and element contract
 
 `index.html`, `app.js`, and `sw.js` are cached as separate files, so they can drift apart. The build stamp is therefore stored four times and checked twice:
 
-- `sw.js` `VERSION`, `app.js` `BUILD`, `<meta name="m4shlab-build">`, and `<html data-build>` carry the same literal (`v21`).
+- `sw.js` `VERSION`, `app.js` `BUILD`, &lt;meta name="m4shlab-build"&gt;, and &lt;html data-build&gt; carry the same literal (the `VERSION` in `sw.js`).
 - `npm test` reads all four and fails if they differ, so a half-finished version bump cannot ship.
 - At startup `app.js` compares the meta content and `data-build` against `BUILD`. On a mismatch it prepends a dismissible `#shell-notice` ("This page mixes two m4shlab versions…") with a Reload button; the editor keeps initializing, imports and exports keep working, and the notice never sets `appReady` to false.
 
@@ -310,23 +310,23 @@ The three-clip POC0 chain uses 25 + 75 + 32 source samples. Two Classic Mosh bou
 
 The real `IMG_1993.MOV` + `IMG_3339.MOV` verification converted both HEVC originals with ffmpeg.wasm decode plus WebCodecs encode to 540×720. Conversion took 5.7 s and 5.8 s versus 19.8 s and 33.6 s for the earlier full-resolution WASM run. The 112 + 177 source samples merged to 288/288 decoded frames. All later B IDRs were retained, the first B GOP required 32 slice patches across 16 samples, and strict decode exited 0.
 
-`npm run test:webcodecs` uses Chrome's DevTools Protocol directly and has no Node package dependency. It always ends with a `SUMMARY ... passed N / skipped M` line; a run that skipped anything reports `INCOMPLETE` in that last line and exits with status 2 unless `M4SHLAB_ALLOW_SKIPS=1` is set. The committed run produced:
+`npm run test:webcodecs` uses Chrome's DevTools Protocol directly and has no Node package dependency. It always ends with a `SUMMARY ... passed N / skipped M` line; a run that skipped anything reports `INCOMPLETE` in that last line and exits with status 2 unless `M4SHLAB_ALLOW_SKIPS=1` is set. Excerpt from a run on 2026-11-06:
 
 ```text
 PASS WebCodecs decoded and normalized both clips with one leading IDR each; 53018 B / 52775 B
 PASS a 75-frame normalized clip emits 1 IDR (samples 1; the old cadence emitted 3 at samples 1, 31, 61) and the merged chain decodes 149/149 frames
 PASS a 60-frame Melt window (merged samples 75-134) carries 0 IDRs and decodes 194/194 frames
 PASS Safari-style POC type 0 multi-GOP pair merges in the browser and clears stale errors
-PASS mobile layout stacks under 600px and keeps 44px touch targets on the scrolling timeline
+PASS mobile layout keeps the reference header/meta/sequence rows, an in-viewport project panel, and side-by-side footer actions with 44px touch targets
 PASS blocking merge errors stay short and do not render a compatibility panel
 PASS large native mismatch auto-normalized to 540x720; the compact normalizing line disappeared and merge produced 49 samples
 PASS transition dialog exposes Classic/Reset duration, Melt/Loop, and Reset Pulse interval/repeat controls
-PASS multi-file import normalized 3 clips to 540x720, exposed two Cut/Classic Mosh boundary dialogs, and merged 74 samples
+PASS multi-file import normalized 3 clips to 540x720, exposed two Cut/m4sh boundary dialogs, and merged 74 samples
 PASS clip drag-and-drop reorders in both directions, shows CSS feedback, self-drop is inert, and undo restores order
 PASS touch cards stay non-draggable while arrow reorder works; desktop drag returns after pointer reset
 PASS clip-card and Assemble preview selection replace the removed A cut/merged toggle; time readout and sound defaults remain
 PASS timeline reorder, remove, and full undo restores the three-clip order and merged preview
-PASS full three-clip export decodes 74 frames at 540x720; Cut + Classic Mosh NAL sequence and preview are intact
+PASS full three-clip export decodes 74 frames at 540x720; Cut + m4sh NAL sequence and preview are intact
 PASS browser Gentler Loop bridges to the release tail with <=2 donor advances and decodes 99 samples
 PASS browser Melt, Gentler Melt, Loop Release, and Reset Pulse produce 105-, 99-, 99-, and 99-sample decodable sequences
 PASS selecting Melt on native B-frame clips auto-normalizes both sources before applying the NAL effect
@@ -335,7 +335,7 @@ PASS AudioEncoder unavailable: PCM encoded in ffmpeg.wasm and merged audio repor
 PASS Randomize creates a 16-hex seed, manual edits clear it, and random_seed persists in the boundary report
 PASS HEVC import ran ffmpeg.wasm decode plus WebCodecs H.264 encode at 320x240; the compact conversion status completed and export decoded
 PASS native HEVC decoded via WebCodecs and merged 49 samples through the unchanged H.264 path
-PASS WebCodecs unavailable: HEVC import names the ffmpeg.wasm decode fallback and produces a playable converted clip
+PASS WebCodecs unavailable: HEVC import uses ffmpeg.wasm and reports it only in JSON
 PASS 2× + 0.5× clips merge to 150/150 frames and 240000 exact audio samples at 30 fps
 PASS fractional 1.7× produces 35 decodable frames with a 35-frame audio timeline
 PASS per-clip Reset restores 1.0× with 60 input and 60 output frames
@@ -350,14 +350,14 @@ PASS WebCodecs stubbed unavailable: ffmpeg.wasm fallback ran and the report iden
 ```text
 PASS manifest is valid with standalone display, light theme, resolving SVG/192/512-maskable icons, and favicon plus 180px Apple links
 INFO wordmark geometry: favicon 30.3×25.0 inside 32×32; maskable corner 196.7px <= 204.8px safe radius
-PASS service worker registered, controlled the page, precached 27 shell assets, and Chrome reports no manifest/installability errors; beforeinstallprompt observed=true
+PASS service worker registered, controlled the page, precached 33 shell assets, and Chrome reports no manifest/installability errors; beforeinstallprompt observed=true
 PASS activate cleanup removed the old versioned cache and re-registered the current shell
 PASS first online conversion runtime-cached converter-worker.js, ffmpeg-core.js, and ffmpeg-core.wasm (3 runtime entries)
 PASS offline reload served the complete app shell from Cache Storage with no network
 PASS previously cached ffmpeg.wasm converted two HEVC clips fully offline; merge preview and 120718-byte export decoded 59 frames, SHA-256 47a7fcc6972956e34b9147fead68159350bf16d5f339098436dc5cd8dd25c7b9
 ```
 
-The same test asserts the normalized A/B streams parse via `parser/nal.js` with exactly one leading IDR each, the B frame-number alignment patches 24 delta samples, the merged `stsz` sum equals mdat content, all 49 frames decode, the non-audio fixture remains video-only, and `has_b_frames=0`. The separate audio fixture run verifies the AAC stream, 48 kHz stereo rate, 1.960 s runtime match, and strict decode. With `VideoDecoder`/`VideoEncoder` stubbed unavailable, the report switches to `normalized via ffmpeg.wasm`.
+The same test asserts the normalized A/B streams parse via `parser/nal.js` with exactly one leading IDR each, the B frame-number alignment reports `frameAlignment.applied` (the 24 patched samples in this pair are a measurement, not an asserted value), the merged `stsz` sum equals mdat content, all 49 frames decode, the non-audio fixture remains video-only, and `has_b_frames=0`. The separate audio fixture run verifies the AAC stream, 48 kHz stereo rate, 1.960 s runtime match, and strict decode. With `VideoDecoder`/`VideoEncoder` stubbed unavailable, the report switches to `normalized via ffmpeg.wasm`.
 
 `npm run test:conversion` remains the optional Playwright test for the HEVC ffmpeg.wasm path. It exits with a clear skip when Playwright or the CDN is unavailable.
 
@@ -400,7 +400,7 @@ The release has these explicit limits:
 
 WebCodecs availability does not guarantee hardware acceleration, a particular profile, or support at every resolution; the browser chooses the implementation. If an H.264 or HEVC decoder/encoder configuration is unsupported, the app falls back to ffmpeg.wasm. Conventional HEVC MOV/MP4 files have a dedicated `hvcC` demux path; fragmented or otherwise unsupported containers still require conversion.
 
-The 720-pixel long-side cap is intentional and lossy for larger sources. It substantially reduces encode time and memory, and does not reduce the visible mosh effect because bitstream reference loss is resolution-independent. WebCodecs encoders may inject extra IDRs beyond the requested 30-frame cadence; B therefore recovers at its first encoder-provided IDR, which can shorten the affected first GOP.
+The 720-pixel long-side cap is intentional and lossy for larger sources. It substantially reduces encode time and memory, and does not reduce the visible mosh effect because bitstream reference loss is resolution-independent. WebCodecs encoders may inject recovery IDRs beyond a single requested keyframe at frame 0; B therefore recovers at its first encoder-provided IDR, which can shorten the affected first GOP.
 
 The ffmpeg.wasm fallback depends on downloading the pinned core from jsDelivr. Parallel sequence conversion deliberately starts up to two WASM workers, so peak memory is higher than a single-worker run even though each target is capped. It may still exhaust memory or fail on iOS Safari with large inputs. The 100 MB limit is a soft product limit for both paths, not a guarantee that a file below it will fit available device memory. No conversion is attempted for encrypted media.
 

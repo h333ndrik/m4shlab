@@ -39,6 +39,7 @@ Scope: read-only. Only this file was added; no source, style, shell or stamp fil
 | README.md:31 | `http://127.0.0.1:4173` | `scripts/serve.mjs:8 process.env.PORT || 4173` | MATCH |
 | README.md:31 | export downloads `m4shlab-merge.mp4` | `app.js:143 DEFAULT_EXPORT_FILENAME` | MATCH (default name; a project name prefixes it) |
 | README.md:33 | Phase A single-clip transfer "remains available through `mosh.js`" | `mosh.js:29 export function moshH264`; no UI module imports it | MATCH |
+| README.md:45 | "Import, **Classic Mosh**, preview, and export are local operations" | `index.html:102` labels the method `m4sh` | **DRIFT** (D11) |
 | README.md:47 | "current cache version is `v20` (`m4shlab-v20`…`m4shlab-runtime-v20`)" | `sw.js:1 VERSION = 'v32'`; live PWA log `derived cache names … m4shlab-v32, m4shlab-runtime-v32` | **DRIFT** |
 | README.md:53 | the four stamp places "carry the same literal (`v21`)" | `sw.js:1`, `app.js:40`, `index.html:2,7` all `v32` | **DRIFT** |
 | README.md:68 | one requested keyframe at frame 0, fallback uses the same cadence | `looks.js:6 NORMALIZATION_KEYFRAME_INTERVAL = 0`, `webcodecs.js:423`, `converter-worker.js:73` | MATCH |
@@ -124,20 +125,26 @@ Scope: read-only. Only this file was added; no source, style, shell or stamp fil
 
 ## 3. DRIFT — exact text, correct fact, minimal replacement
 
-| # | file:line | current text | correct fact | minimal replacement |
-| --- | --- | --- | --- | --- |
-| D1 | README.md:47 | "The current cache version is `v20` (`m4shlab-v20` plus `m4shlab-runtime-v20`)." | `sw.js` VERSION is `v32`; the PWA test derives `m4shlab-v32` / `m4shlab-runtime-v32` | "The current cache version is `v32` (`m4shlab-v32` plus `m4shlab-runtime-v32`)." |
-| D2 | README.md:53 | "…carry the same literal (`v21`)." | all four places carry `v32` | "…carry the same literal (`v32`)." |
-| D3 | README.md:320 | "PASS mobile layout stacks under 600px and keeps 44px touch targets on the scrolling timeline" | current suite line: "PASS mobile layout keeps the reference header/meta/sequence rows, an in-viewport project panel, and side-by-side footer actions with 44px touch targets" | replace the line with the current suite text |
-| D4 | README.md:324 | "…exposed two Cut/Classic Mosh boundary dialogs…" | current suite line says "two Cut/m4sh boundary dialogs" | replace `Cut/Classic Mosh` with `Cut/m4sh` in that quoted line |
-| D5 | README.md:329 | "…Cut + Classic Mosh NAL sequence and preview are intact" | current suite line says "Cut + m4sh NAL sequence and preview are intact" | replace `Classic Mosh` with `m4sh` in that quoted line |
-| D6 | README.md:338 | "PASS WebCodecs unavailable: HEVC import names the ffmpeg.wasm decode fallback and produces a playable converted clip" | current suite line: "PASS WebCodecs unavailable: HEVC import uses ffmpeg.wasm and reports it only in JSON" | replace the line with the current suite text |
-| D7 | README.md:353 | "PASS service worker registered, controlled the page, precached 27 shell assets, …" | the run prints `precached 33 shell assets` | change `27` to `33` |
-| D8 | README.md:360 | "…the B frame-number alignment patches 24 delta samples…" (attributed to what "the same test asserts") | the number is right (re-measured `patchedSamples: 24`, `patchedNals: 24`), but the suite asserts only `frameAlignment.applied === true` | "…the B frame-number alignment rewrites 24 delta samples in this pair (the suite asserts that alignment ran, not the exact count)…" |
-| D9 | README.md:403 | "WebCodecs encoders may inject extra IDRs beyond the requested 30-frame cadence; B therefore recovers at its first encoder-provided IDR, which can shorten the affected first GOP." | there is no requested 30-frame cadence; the request is one keyframe at frame 0 | "WebCodecs encoders may inject recovery IDRs beyond the single requested keyframe at frame 0; B therefore recovers at its first encoder-provided IDR, which can shorten the affected first GOP." |
-| D10 | M4SHLAB_STATE.md:101 | "one build stamp (`v21`) lives in `sw.js` VERSION, …" | stamp is `v32` | "one build stamp (`v32`) lives in `sw.js` VERSION, …" |
+Every finding below was applied in the commit `docs: apply the claim-audit fixes`; the Status column records that.
 
-DRIFT count: **10** (9 in `README.md`, 1 in `M4SHLAB_STATE.md`). Three of them (D1, D2, D10) share one root cause: a literal that was copied into prose and never updated with the stamp.
+| # | file:line | current text | correct fact | minimal replacement | Status |
+| --- | --- | --- | --- | --- | --- |
+| D1 | README.md:47 | "The current cache version is `v20` (`m4shlab-v20` plus `m4shlab-runtime-v20`)." | `sw.js` VERSION is `v32`, but the cache name should not be restated in prose at all | "The current cache version is the `VERSION` in `sw.js` (`m4shlab-<VERSION>` plus `m4shlab-runtime-<VERSION>`)." | FIXED in `docs: apply the claim-audit fixes` |
+| D2 | README.md:53 | "…carry the same literal (`v21`)." plus raw tags on the same line | all four places carry `v32`; the tags must be entities so an HTML pass cannot eat them | "…`sw.js` `VERSION`, `app.js` `BUILD`, &lt;meta name="m4shlab-build"&gt;, and &lt;html data-build&gt; carry the same literal (the `VERSION` in `sw.js`)." | FIXED in `docs: apply the claim-audit fixes` |
+| D3 | README.md:320 | "PASS mobile layout stacks under 600px and keeps 44px touch targets on the scrolling timeline" | the current suite prints "PASS mobile layout keeps the reference header/meta/sequence rows, an in-viewport project panel, and side-by-side footer actions with 44px touch targets" | replace the quoted line verbatim; the block header now reads "Excerpt from a run on 2026-11-06:" | FIXED in `docs: apply the claim-audit fixes` |
+| D4 | README.md:324 | "…exposed two Cut/Classic Mosh boundary dialogs…" | the current suite prints "two Cut/m4sh boundary dialogs" | replace `Cut/Classic Mosh` with `Cut/m4sh` in that quoted line | FIXED in `docs: apply the claim-audit fixes` |
+| D5 | README.md:329 | "…Cut + Classic Mosh NAL sequence and preview are intact" | the current suite prints "Cut + m4sh NAL sequence…" | replace `Classic Mosh` with `m4sh` in that quoted line | FIXED in `docs: apply the claim-audit fixes` |
+| D6 | README.md:338 | "PASS WebCodecs unavailable: HEVC import names the ffmpeg.wasm decode fallback and produces a playable converted clip" | the current suite prints "PASS WebCodecs unavailable: HEVC import uses ffmpeg.wasm and reports it only in JSON" | replace the quoted line verbatim | FIXED in `docs: apply the claim-audit fixes` |
+| D7 | README.md:353 | "PASS service worker registered, controlled the page, precached 27 shell assets, …" | `APP_SHELL` in `sw.js` has 33 entries and the PWA run prints `precached 33 shell assets` | change `27` to `33` | FIXED in `docs: apply the claim-audit fixes` |
+| D8 | README.md:360 | "…the B frame-number alignment patches 24 delta samples…" presented as what the test asserts | 24 is correct as a measurement (`patchedSamples: 24` re-measured), but the suite asserts only `frameAlignment.applied` (`tests/webcodecs.browser.mjs:589`) | "…the B frame-number alignment reports `frameAlignment.applied` (the 24 patched samples in this pair are a measurement, not an asserted value),…" | FIXED in `docs: apply the claim-audit fixes` |
+| D9 | README.md:403 | "WebCodecs encoders may inject extra IDRs beyond the requested 30-frame cadence;…" | there is no requested 30-frame cadence; the request is one keyframe at frame 0 | "WebCodecs encoders may inject recovery IDRs beyond a single requested keyframe at frame 0;…" | FIXED in `docs: apply the claim-audit fixes` |
+| D10 | M4SHLAB_STATE.md:101 | "one build stamp (`v21`) lives in `sw.js` VERSION, …" | stamp is `v32`; the value should be referenced, not restated | "one build stamp (the `VERSION` in `sw.js`) lives in `sw.js` VERSION, …" | FIXED in `docs: apply the claim-audit fixes` |
+| D11 | README.md:45 | "Import, **Classic Mosh**, preview, and export are local operations" | the editor's method label is `m4sh` (`index.html:102` renders `<option value="classic-mosh">m4sh</option>`); `Classic Mosh` is only the internal key | "Import, **m4sh**, preview, and export are local operations and continue to work without a network." | FIXED in `docs: apply the claim-audit fixes` |
+| D12 | M4SHLAB_STATE.md:132 | plain-text `&lt;html data-build&gt;` in the sw.js paragraph (found while applying D2/D10) | same defect class as D2: a raw tag in prose is eaten by an HTML pass | replace it with the entity `&lt;html data-build&gt;` | FIXED in `docs: apply the claim-audit fixes` |
+
+DRIFT count: **12** (10 in `README.md`, 2 in `M4SHLAB_STATE.md`). Four of them (D1, D2, D10, D12) share one root cause: a literal that was copied into prose and never updated or escaped.
+
+All twelve were applied in the commit `docs: apply the claim-audit fixes`; that commit changed only `README.md`, `M4SHLAB_STATE.md` and this report.
 
 ## 4. Could not verify here
 
@@ -165,7 +172,8 @@ Unverifiable count: **6** (two are one-off observations that should carry a date
 
 ## 6. Result
 
-- 71 entries recorded in §2: 60 MATCH, 7 rows carrying drift (10 findings, because one row covers a 30-line quoted block with four stale lines), 4 rows deferred to §4.
-- 10 DRIFT findings: `README.md` 9 (D1-D9), `M4SHLAB_STATE.md` 1 (D10). `NEXT_SESSION.md`, `docs/release/v1.2-notes.md` and `docs/release/v1.2-checklist.md` are clean.
+- 72 entries recorded in §2: 60 MATCH, 8 rows carrying drift, 4 rows deferred to §4. The drift rows expand to 12 findings because one row covers a 30-line quoted block with four stale lines; D12 is recorded in §3 only.
+- 12 DRIFT findings: `README.md` 10 (D1-D9, D11), `M4SHLAB_STATE.md` 2 (D10, D12). `NEXT_SESSION.md`, `docs/release/v1.2-notes.md` and `docs/release/v1.2-checklist.md` are clean.
+- All 12 are FIXED in `docs: apply the claim-audit fixes`. While applying them, two plain-text `&lt;html data-build&gt;` occurrences in `M4SHLAB_STATE.md` were converted to entities: one inside the D10 sentence, one on line 132 (recorded here as D12).
 - 6 claims could not be verified here (§4): two private-media runs, one historical tree, one deployment-history note, one hardware behaviour, one pre-fix measurement.
-- No file other than this report was modified. No tag was created or moved.
+- Remaining follow-up, not changed here: `Classic Mosh` still appears as the method name in the boundary table and several prose/tests lines (`README.md:79,115,170,196,207,252,255,277,281,284,285,307,309,407`, `M4SHLAB_STATE.md:38,46,49,73,109,115,163,164,167,181,184,221,223`). The UI label is `m4sh`; renaming the documentation is an editorial change beyond the D-list and is listed for a later pass.
