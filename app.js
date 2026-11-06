@@ -37,7 +37,7 @@ import {
 } from './audio.js';
 
 const MAX_CLIPS = 12;
-const BUILD = 'v32';
+const BUILD = 'v33';
 const SHELL_NOTICE_MIXED = 'This page mixes two m4shlab versions. Reload to get a consistent editor.';
 const SHELL_NOTICE_INCOMPLETE = 'This editor is incomplete. Reload the page.';
 const REQUIRED_UI = [
@@ -2175,7 +2175,8 @@ function wireTransitionDialogEvents() {
     if (selected) refreshSequence();
   });
 
-  transitionDialog.addEventListener('close', () => {
+  transitionDialog.addEventListener('close', event => {
+    if (event.target !== transitionDialog || transitionDialog.open) return;
     activeBoundary = null;
     activeRandomSeed = null;
     updateTransitionSeedDisplay();
@@ -3284,7 +3285,8 @@ function wireOptionalUi() {
       updateTrimReadout();
     });
     trimApply.addEventListener('click', applyTrimRange);
-    trimDialog.addEventListener('close', () => {
+    trimDialog.addEventListener('close', event => {
+      if (event.target !== trimDialog || trimDialog.open) return;
       trimClipIndex = null;
       setTrimError('');
     });

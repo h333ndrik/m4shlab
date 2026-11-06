@@ -3567,6 +3567,58 @@ try {
   assert.equal(client.exceptions.length, hardeningExceptionsStart);
   console.log('PASS the card thumbnail jumps to the trim in-point, differs from the untrimmed card and returns to frame 0 after Reset');
 
+  // Regression for the dialog-close contract: close() and the reopen happen in
+  // one task turn, so the queued `close` event lands after the dialog is open
+  // again. That must not null the active index. A human cannot produce this
+  // timing; a shortcut or a chained action can.
+  const trimReopen = await client.evaluate(`(() => {
+    const button = () => document.querySelectorAll('.clip-card')[0].querySelector('.clip-trim-button');
+    button().click();
+    const start = document.querySelector('#trim-start');
+    start.value = '10';
+    start.dispatchEvent(new Event('input', {bubbles: true}));
+    document.querySelector('#trim-apply').click();
+    button().click();
+    return {open: document.querySelector('#trim-dialog').open, readout: document.querySelector('#trim-readout').textContent};
+  })()`);
+  assert.equal(trimReopen.open, true, 'the trim dialog did not reopen in the same task turn');
+  await client.evaluate('new Promise(resolve => setTimeout(resolve, 100))');
+  const trimInteractive = await client.evaluate(`(() => {
+    const before = document.querySelector('#trim-readout').textContent;
+    document.querySelector('#trim-reset').click();
+    const after = document.querySelector('#trim-readout').textContent;
+    document.querySelector('#trim-apply').click();
+    return {before, after, closed: document.querySelector('#trim-dialog').open === false};
+  })()`);
+  assert.equal(trimInteractive.closed, true, 'Apply was ignored after the trim dialog was reopened in the same task turn (a stale close event nulled trimClipIndex)');
+  assert.notEqual(trimInteractive.after, trimInteractive.before, `Reset did not update the readout after reopening (still "${trimInteractive.before}")`);
+  await client.waitFor(`(() => { try { return JSON.parse(document.querySelector('#report').textContent).sources?.clips?.[0]?.start_frame === 0; } catch { return false; } })()`, 120000);
+
+  const transitionReopen = await client.evaluate(`(() => {
+    const connector = () => document.querySelectorAll('.connector')[0];
+    connector().click();
+    const method = document.querySelector('#transition-method');
+    method.value = 'melt';
+    method.dispatchEvent(new Event('change', {bubbles: true}));
+    document.querySelector('#transition-apply').click();
+    connector().click();
+    return {open: document.querySelector('#transition-dialog').open};
+  })()`);
+  assert.equal(transitionReopen.open, true, 'the transition dialog did not reopen in the same task turn');
+  await client.evaluate('new Promise(resolve => setTimeout(resolve, 100))');
+  const transitionInteractive = await client.evaluate(`(() => {
+    const method = document.querySelector('#transition-method');
+    method.value = 'loop';
+    method.dispatchEvent(new Event('change', {bubbles: true}));
+    const effectVisible = document.querySelector('#nal-effect-options').hidden === false;
+    document.querySelector('#transition-apply').click();
+    return {effectVisible, closed: document.querySelector('#transition-dialog').open === false};
+  })()`);
+  assert.equal(transitionInteractive.effectVisible, true, 'the reopened transition dialog did not switch to the Loop controls');
+  assert.equal(transitionInteractive.closed, true, 'Apply was ignored after the transition dialog was reopened in the same task turn (a stale close event nulled activeBoundary)');
+  await client.waitFor(`(() => { try { return JSON.parse(document.querySelector('#report').textContent).transitions?.[0]?.method === 'loop'; } catch { return false; } })()`, 120000);
+  console.log('PASS reopening the trim and transition dialogs in the same task turn keeps them interactive (Apply, Reset and readout still work)');
+
   // Task C: the look must land on the trimmed pixels, not on frame 0.
   const pixelsExportPath = join(downloadDir, 'Trim-Pixels.mp4');
   rmSync(pixelsExportPath, {force: true});

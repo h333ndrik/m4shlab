@@ -117,18 +117,43 @@ export async function launchChrome(profilePrefix = 'm4shlab-cdp-') {
   return {process, profile, endpoint};
 }
 
+export class Unverifiable extends Error {}
+
+let dialogCloseSequence = 0;
+
 export async function closeDialog(client, selector) {
-  await client.evaluate(`(() => {
+  const key = JSON.stringify(`dialog-close-${++dialogCloseSequence}-${Date.now()}`);
+  const missing = await client.evaluate(`(() => {
     const dialog = document.querySelector(${JSON.stringify(selector)});
-    window.__dialogClosed = false;
+    if (!dialog) return true;
+    window.__dialogCloseHooks = window.__dialogCloseHooks || {};
+    const hook = {closed: false, handler: null};
+    window.__dialogCloseHooks[${key}] = hook;
     if (!dialog.open) {
-      window.__dialogClosed = true;
-      return;
+      hook.closed = true;
+      return false;
     }
-    dialog.addEventListener('close', () => { window.__dialogClosed = true; }, {once: true});
+    hook.handler = () => { hook.closed = true; };
+    dialog.addEventListener('close', hook.handler, {once: true});
     dialog.close();
+    return false;
   })()`);
-  await client.waitFor('window.__dialogClosed === true', 5000);
+  if (missing) throw new Unverifiable(`the page has no ${selector}, so the row cannot be checked`);
+  try {
+    await client.waitFor(`window.__dialogCloseHooks?.[${key}]?.closed === true`, 5000);
+  } catch (error) {
+    await client.evaluate(`(() => {
+      const hooks = window.__dialogCloseHooks || {};
+      const hook = hooks[${key}];
+      if (hook?.handler) {
+        for (const dialog of document.querySelectorAll('dialog')) dialog.removeEventListener('close', hook.handler);
+      }
+      delete hooks[${key}];
+      return true;
+    })()`).catch(() => {});
+    throw error;
+  }
+  await client.evaluate(`(() => { delete (window.__dialogCloseHooks || {})[${key}]; return true; })()`).catch(() => {});
 }
 
 export async function pageTarget(endpoint) {

@@ -4,7 +4,7 @@ import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {spawn, spawnSync} from 'node:child_process';
-import {CdpClient, closeDialog, launchChrome, pageTarget} from './helpers/cdp-harness.mjs';
+import {CdpClient, Unverifiable, closeDialog, launchChrome, pageTarget} from './helpers/cdp-harness.mjs';
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const port = Number(process.env.ACCEPTANCE_TEST_PORT || 4187);
@@ -32,8 +32,6 @@ function parseChecklist() {
   assert.deepEqual(rows.map(row => row.number), Array.from({length: 22}, (_, index) => index + 1));
   return rows;
 }
-
-class Unverifiable extends Error {}
 
 function command(program, args, label) {
   if (!hasFfprobe || !hasFfmpeg) throw new Unverifiable(`${program} is missing; export verification cannot run`);
