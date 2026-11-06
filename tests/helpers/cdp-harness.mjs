@@ -117,6 +117,20 @@ export async function launchChrome(profilePrefix = 'm4shlab-cdp-') {
   return {process, profile, endpoint};
 }
 
+export async function closeDialog(client, selector) {
+  await client.evaluate(`(() => {
+    const dialog = document.querySelector(${JSON.stringify(selector)});
+    window.__dialogClosed = false;
+    if (!dialog.open) {
+      window.__dialogClosed = true;
+      return;
+    }
+    dialog.addEventListener('close', () => { window.__dialogClosed = true; }, {once: true});
+    dialog.close();
+  })()`);
+  await client.waitFor('window.__dialogClosed === true', 5000);
+}
+
 export async function pageTarget(endpoint) {
   const debugUrl = new URL(endpoint);
   const targets = await (await fetch(`http://${debugUrl.host}/json/list`)).json();

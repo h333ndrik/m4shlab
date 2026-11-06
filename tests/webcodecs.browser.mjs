@@ -6,6 +6,7 @@ import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {spawn, spawnSync} from 'node:child_process';
 import {parseMp4} from '../parser/mp4.js';
+import {closeDialog as closeDialogShared} from './helpers/cdp-harness.mjs';
 import {extractNals} from '../parser/nal.js';
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -86,19 +87,7 @@ function skip(message) {
   process.exit(skipExitCode());
 }
 
-async function closeDialog(selector) {
-  await client.evaluate(`(() => {
-    const dialog = document.querySelector(${JSON.stringify(selector)});
-    window.__dialogClosed = false;
-    if (!dialog.open) {
-      window.__dialogClosed = true;
-      return;
-    }
-    dialog.addEventListener('close', () => { window.__dialogClosed = true; }, {once: true});
-    dialog.close();
-  })()`);
-  await client.waitFor('window.__dialogClosed === true', 5000);
-}
+const closeDialog = selector => closeDialogShared(client, selector);
 
 function command(program, args, label) {
   const result = spawnSync(program, args, {cwd: projectRoot, encoding: 'utf8'});

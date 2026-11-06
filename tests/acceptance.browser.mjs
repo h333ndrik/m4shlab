@@ -4,7 +4,7 @@ import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {spawn, spawnSync} from 'node:child_process';
-import {CdpClient, launchChrome, pageTarget} from './helpers/cdp-harness.mjs';
+import {CdpClient, closeDialog, launchChrome, pageTarget} from './helpers/cdp-harness.mjs';
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const port = Number(process.env.ACCEPTANCE_TEST_PORT || 4187);
@@ -153,8 +153,7 @@ async function openTransition(row = 0) {
 }
 
 async function closeTransition() {
-  await client.evaluate("document.querySelector('#transition-dialog').close()");
-  await client.waitFor("document.querySelector('#transition-dialog').open === false", 5000);
+  await closeDialog(client, '#transition-dialog');
 }
 
 async function openTrim(row = 0) {
@@ -165,8 +164,7 @@ async function openTrim(row = 0) {
 }
 
 async function closeTrim() {
-  await client.evaluate("document.querySelector('#trim-dialog').close()");
-  await client.waitFor("document.querySelector('#trim-dialog').open === false", 5000);
+  await closeDialog(client, '#trim-dialog');
 }
 
 async function waitForMerged() {
@@ -711,6 +709,7 @@ try {
     '',
     `Generated ${new Date().toISOString()} by \`npm run test:acceptance\` in headless Chromium.`,
     `Summary: **PASS ${counts.PASS} / FAIL ${counts.FAIL} / UNVERIFIABLE ${counts.UNVERIFIABLE} of 22**.`,
+    'This summary describes that single run on the generation timestamp above, not a property of the tree. A red row must be reproduced before it is treated as an app defect.',
     '',
     '| Row | Check | Mode | Result | Evidence |',
     '| ---: | --- | --- | --- | --- |',
