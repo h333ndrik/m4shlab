@@ -136,7 +136,11 @@ button:disabled {
   opacity: 0.4;
 }
 
-.button { display: inline-block; }
+.button {
+  display: inline-block;
+  position: relative;
+  overflow: hidden;
+}
 .button.primary,
 button.primary {
   border-color: #252525;
@@ -152,10 +156,14 @@ button.primary:hover:not(:disabled) {
 
 .button input {
   position: absolute;
-  width: 1px;
-  height: 1px;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
   opacity: 0;
-  overflow: hidden;
+  cursor: pointer;
 }
 
 button:focus-visible,
@@ -390,6 +398,25 @@ button:focus-visible,
   color: var(--muted);
   font-size: 11px;
 }
+
+/* Disclosure markers are drawn from borders, not taken from the native
+   <summary> marker: WebKit (iOS Safari and messaging in-app views) can render
+   that marker as a coloured emoji triangle instead of a plain glyph. The rule
+   applies to every summary in the document, so a new <details> needs no class. */
+summary { list-style: none; }
+summary::-webkit-details-marker { display: none; }
+summary::before {
+  content: '';
+  display: inline-block;
+  width: 0;
+  height: 0;
+  margin-right: 6px;
+  border-style: solid;
+  border-width: 4px 0 4px 5.5px;
+  border-color: transparent transparent transparent currentColor;
+  vertical-align: middle;
+}
+details[open] > summary::before { transform: rotate(90deg); }
 
 .project-menu summary {
   padding: 8px;

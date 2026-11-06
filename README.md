@@ -42,6 +42,8 @@ Service workers require HTTPS or `localhost`; GitHub Pages provides HTTPS automa
 - **Android Chrome:** use the install banner when offered, or open the browser menu → **Install app** / **Add to Home screen**.
 - **Desktop Chrome/Edge:** use the install icon in the address bar, or the browser menu → **Install m4shlab**.
 
+Import expects a standard browser: restricted in-app browsers, such as the embedded views inside messaging apps, may refuse to open the file picker, so open m4shlab directly in Safari or Chrome.
+
 The first load must reach the network so the manifest and versioned app shell can be cached. After that the UI starts offline. Import, m4sh, preview, and export are local operations and continue to work without a network. New-format conversion needs the ffmpeg.wasm core; the first conversion downloads it, then `converter-worker.js`, `ffmpeg-core.js`, and `ffmpeg-core.wasm` stay in the runtime cache. The OS may evict that cache under storage pressure, in which case conversion needs network again.
 
 The current cache version is the `VERSION` in `sw.js` (`m4shlab-<VERSION>` plus `m4shlab-runtime-<VERSION>`). Bump `VERSION` in `sw.js` whenever app-shell or conversion-worker files change. Activation deletes older versioned caches, including the old runtime cache, so the worker cannot run stale code.

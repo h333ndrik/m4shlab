@@ -37,7 +37,7 @@ import {
 } from './audio.js';
 
 const MAX_CLIPS = 12;
-const BUILD = 'v33';
+const BUILD = 'v34';
 const SHELL_NOTICE_MIXED = 'This page mixes two m4shlab versions. Reload to get a consistent editor.';
 const SHELL_NOTICE_INCOMPLETE = 'This editor is incomplete. Reload the page.';
 const REQUIRED_UI = [
@@ -2458,6 +2458,24 @@ async function importFiles(fileList) {
   }
 }
 
+function importFailureText(files, detail) {
+  const names = files.map(file => file.name).join(', ') || 'The selected file';
+  if (detail) return `${names}: ${detail}`;
+  return `${names} could not be imported: no clip was decoded. The codec may be unsupported, the container unreadable, or this browser may offer no decoder for it.`;
+}
+
+async function importFilesOrReport(fileList) {
+  const files = [...fileList];
+  const loadedBefore = clips.length;
+  try {
+    await importFiles(files);
+  } catch (cause) {
+    setError(importFailureText(files, cause instanceof Error ? cause.message : String(cause)));
+    return;
+  }
+  if (clips.length === loadedBefore && error.hidden) setError(importFailureText(files, ''));
+}
+
 async function importFilesInternal(fileList) {
   const candidates = [...fileList].filter(looksLikeVideo);
   if (candidates.length === 0) {
@@ -2528,7 +2546,7 @@ async function importFilesInternal(fileList) {
 async function loadClipLegacy(slot, file) {
   const label = `Clip ${slot.toUpperCase()}`;
   status.textContent = `Reading ${file.name} as ${label}…`;
-  await importFiles([file]);
+  await importFilesOrReport([file]);
 }
 
 function compatibleChecks(checks) {
@@ -3155,7 +3173,7 @@ function wireCoreUi() {
   inputA.addEventListener('change', () => {
     const files = [...inputA.files];
     inputA.value = '';
-    if (files.length) importFiles(files);
+    if (files.length) void importFilesOrReport(files);
   });
   inputB.addEventListener('change', () => {
     const [file] = inputB.files;
@@ -3176,7 +3194,7 @@ function wireCoreUi() {
     if (isClipReorderTransfer(event.dataTransfer)) return;
     event.preventDefault();
     dropZone.classList.remove('is-dragging');
-    if (event.dataTransfer.files.length) importFiles(event.dataTransfer.files);
+    if (event.dataTransfer.files.length) void importFilesOrReport(event.dataTransfer.files);
   });
   window.addEventListener('dragover', event => event.preventDefault());
   window.addEventListener('drop', event => event.preventDefault());
