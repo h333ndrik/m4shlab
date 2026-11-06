@@ -28,8 +28,8 @@ function parseChecklist() {
   const source = readFileSync(checklistPath, 'utf8');
   const rows = [...source.matchAll(/^\|\s*(\d+)\s*\|\s*([^|]+?)\s*\|/gm)]
     .map(match => ({number: Number(match[1]), title: match[2].trim()}));
-  assert.equal(rows.length, 21, `expected 21 checklist rows, parsed ${rows.length}`);
-  assert.deepEqual(rows.map(row => row.number), Array.from({length: 21}, (_, index) => index + 1));
+  assert.equal(rows.length, 22, `expected 22 checklist rows, parsed ${rows.length}`);
+  assert.deepEqual(rows.map(row => row.number), Array.from({length: 22}, (_, index) => index + 1));
   return rows;
 }
 
@@ -645,7 +645,7 @@ try {
     return `thumbnail ${before.match(/#t=[0-9.]+/)?.[0] ?? 'untagged'} -> ${trimmed.match(/#t=[0-9.]+/)?.[0]}; Reset -> ${reset.match(/#t=[0-9.]+/)?.[0]}`;
   });
 
-  await check(20, 'mobile-emulation', async () => {
+  await check(21, 'mobile-emulation', async () => {
     const states = [];
     const measure = async label => {
       const state = await client.evaluate(`({
@@ -670,11 +670,12 @@ try {
   });
 
   unverifiable(15, 'manual-only', 'numeric keypad with decimal point is an OS keyboard surface and cannot be checked in headless Chromium');
-  unverifiable(17, 'manual-only', 'opening a downloaded video from the iOS Files app is an iOS surface and cannot be checked in headless Chromium');
-  unverifiable(18, 'manual-only', 'the row requires a full app close and iOS storage persistence; a page reload is not equivalent and this half cannot be automated (page-reload settings round-trip is covered by test:webcodecs)');
-  unverifiable(19, 'manual-only', '3–4 minutes of thermal behaviour on a physical device cannot be reproduced in headless Chromium');
+  unverifiable(17, 'manual-only', 'a brief stale frame while scrubbing a 30 s+ clip needs a human eye on real decoder hardware; headless timing cannot judge it');
+  unverifiable(18, 'manual-only', 'opening a downloaded video from the iOS Files app is an iOS surface and cannot be checked in headless Chromium');
+  unverifiable(19, 'manual-only', 'the row requires a full app close and iOS storage persistence; a page reload is not equivalent and this half cannot be automated (page-reload settings round-trip is covered by test:webcodecs)');
+  unverifiable(20, 'manual-only', '3–4 minutes of thermal behaviour on a physical device cannot be reproduced in headless Chromium');
 
-  await check(21, 'mobile-emulation', async () => {
+  await check(22, 'mobile-emulation', async () => {
     const notice = await client.evaluate("document.querySelector('#shell-notice') === null");
     assert.equal(notice, true, '#shell-notice is present');
     assert.deepEqual(client.exceptions, [], `browser exceptions: ${client.exceptions.join(' | ')}`);
@@ -697,28 +698,29 @@ try {
   for (const row of ordered) {
     console.log(`[row ${row.number}] ${row.result} — ${row.title} — ${row.evidence}`);
   }
-  console.log(`PASS ${counts.PASS} / FAIL ${counts.FAIL} / UNVERIFIABLE ${counts.UNVERIFIABLE} of 21`);
+  console.log(`PASS ${counts.PASS} / FAIL ${counts.FAIL} / UNVERIFIABLE ${counts.UNVERIFIABLE} of 22`);
   for (const row of ordered.filter(item => item.result === 'UNVERIFIABLE')) {
     console.log(`UNVERIFIABLE [row ${row.number}] ${row.title}: ${row.evidence}`);
   }
-  console.log(`Manual rows remaining: ${manualCount} of 21.`);
+  console.log(`Manual rows remaining: ${manualCount} of 22.`);
 
   const escape = value => String(value).replaceAll('|', '\\|').replaceAll('\n', ' ');
+  const modeLabel = {desktop: 'automated', 'mobile-emulation': 'emulated', 'manual-only': 'manual'};
   const markdown = [
     '# m4shlab v1.2 — automated acceptance',
     '',
     `Generated ${new Date().toISOString()} by \`npm run test:acceptance\` in headless Chromium.`,
-    `Summary: **PASS ${counts.PASS} / FAIL ${counts.FAIL} / UNVERIFIABLE ${counts.UNVERIFIABLE} of 21**.`,
+    `Summary: **PASS ${counts.PASS} / FAIL ${counts.FAIL} / UNVERIFIABLE ${counts.UNVERIFIABLE} of 22**.`,
     '',
     '| Row | Check | Mode | Result | Evidence |',
     '| ---: | --- | --- | --- | --- |',
-    ...ordered.map(row => `| ${row.number} | ${escape(row.title)} | ${row.mode} | ${row.result} | ${escape(row.evidence)} |`),
+    ...ordered.map(row => `| ${row.number} | ${escape(row.title)} | ${modeLabel[row.mode] ?? row.mode} | ${row.result} | ${escape(row.evidence)} |`),
     '',
-    `Manual rows remaining: ${manualCount} of 21.`,
+    `Manual rows remaining: ${manualCount} of 22.`,
     '',
     'Manual-only rows require the maintainer on a physical device. UNVERIFIABLE is not PASS.',
     '',
-    'Mapping note: the brief names manual rows by older numbers. In the current checklist, numeric keypad = row 15, mobile Files-app export = row 17, settings close-app half = row 18, thermal = row 19. Row 11 is also left to a human because native video controls and open select popups are browser/OS surfaces; the computed host cursors are reported in its evidence.',
+    'Mode column: `automated` = checked by this runner on desktop, `emulated` = checked in mobile emulation, `manual` = needs a physical device or a human eye. Manual rows are 11 (native video/select surfaces), 15 (OS keypad), 17 (seeking on a long clip), 18 (iOS Files app), 19 (settings after a full app close) and 20 (thermal behaviour); their Pass/Fail cells stay with the maintainer.',
     '',
   ].join('\n');
   writeFileSync(evidencePath, markdown);
