@@ -383,7 +383,7 @@ try {
       projectMaxLength: document.querySelector('#project-name')?.maxLength,
       projectAria: document.querySelector('#project-name')?.getAttribute('aria-label'),
       exportLabel: button.textContent.trim(),
-      previewOrder: [...document.querySelector('.preview-options').children].map(node => node.id === 'preview-time' ? 'time' : node.classList.contains('sound-toggle') ? 'sound' : node.id),
+      previewOrder: [...document.querySelector('.preview-options').children].map(node => node.id === 'preview-time' ? 'time' : node.classList.contains('sound-toggle') ? 'sound' : node.classList.contains('software-toggle') ? 'software' : node.id),
       sequenceOrder: [...document.querySelectorAll('.section-tools > *, .section-tools .history-tools > *')].map(node => node.id).filter(Boolean),
       footerActionOrder: [...document.querySelectorAll('.limits .actions button')].map(node => node.id),
       footer: document.querySelector('.limits p').textContent,
@@ -409,7 +409,7 @@ try {
   assert.equal(emptyState.projectMaxLength, 60);
   assert.equal(emptyState.projectAria, 'Project name');
   assert.equal(emptyState.exportLabel, 'Export MP4 ↗');
-  assert.deepEqual(emptyState.previewOrder, ['sound', 'time']);
+  assert.deepEqual(emptyState.previewOrder, ['sound', 'time', 'software']);
   assert.deepEqual(emptyState.sequenceOrder, ['undo-button', 'redo-button', 'project-menu', 'sequence-label']);
   assert.deepEqual(emptyState.footerActionOrder, ['assemble-preview', 'export-button']);
   assert.equal(emptyState.footer, 'Real H.264 bitstream editing · max 720px · 30 fps · originals untouched');
@@ -3687,6 +3687,95 @@ try {
   assert.ok(madFrameZero >= 18, `the negative half must fail: frame 0 vs source frame 0 is only ${madFrameZero.toFixed(2)}`);
   assert.ok(madFrameZero > madInPoint + 4, `frame 0 vs source frame 0 (${madFrameZero.toFixed(2)}) must be clearly worse than vs the in-point (${madInPoint.toFixed(2)})`);
   console.log(`PASS black & white lands on the trimmed pixels: exported frame 0 matches source frame 10 best (MAD ${madInPoint.toFixed(2)} <= 16, chroma ${chromaSpread.toFixed(2)}) and misses source frame 0 (MAD ${madFrameZero.toFixed(2)} >= 18)`);
+
+  // ── Software preview and ?debug=1 diagnostics ────────────────────────────
+  await client.send('Page.navigate', {url: `${baseUrl}?software-preview-check=1`});
+  await client.waitFor("document.documentElement.dataset.appReady === 'true'", 15000);
+  const previewDefaults = await client.evaluate(`(() => {
+    const order = [...document.querySelector('.preview-options').children].map(node => node.id || node.className);
+    const toggle = document.querySelector('#software-preview');
+    return {
+      order,
+      checked: toggle.checked,
+      tooltip: toggle.closest('label')?.title ?? '',
+      canvasHidden: document.querySelector('#preview-canvas').hidden,
+      stored: localStorage.getItem('m4shlab-software-preview'),
+    };
+  })()`);
+  assert.deepEqual(previewDefaults.order, ['sound-toggle', 'preview-time', 'software-toggle'], `preview row order is ${JSON.stringify(previewDefaults.order)}`);
+  assert.equal(previewDefaults.checked, false, 'software preview must default to off');
+  assert.equal(previewDefaults.canvasHidden, true, 'the preview canvas must stay hidden while software preview is off');
+  assert.equal(previewDefaults.stored, null, 'a fresh profile must not carry a stored software-preview preference');
+  assert.match(previewDefaults.tooltip, /Audio is not played in software preview/, 'the software preview tooltip must state that audio is not played');
+  console.log('PASS software preview defaults to off, sits next to the time readout and states the audio limit in its tooltip');
+
+  await client.setFiles('#file-input-a', [fixtures.effectA, fixtures.effectB]);
+  await client.waitFor("document.querySelectorAll('.clip-card').length === 2", 60000);
+  await client.waitFor("!document.querySelector('#assemble-preview').disabled", 180000);
+  await client.evaluate("document.querySelector('#assemble-preview').click()");
+  await new Promise(resolve => setTimeout(resolve, 400));
+  await client.evaluate(`(() => {
+    const toggle = document.querySelector('#software-preview');
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event('change', {bubbles: true}));
+  })()`);
+  await client.waitFor("document.querySelector('#preview-canvas').hidden === false", 20000);
+  await new Promise(resolve => setTimeout(resolve, 700));
+  const softwareFirst = await client.evaluate(`(() => {
+    const canvas = document.querySelector('#preview-canvas');
+    const data = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+    let ink = 0;
+    for (let index = 0; index < data.length; index += 4) if (data[index] + data[index + 1] + data[index + 2] > 40) ink += 1;
+    return {
+      width: canvas.width,
+      height: canvas.height,
+      ink,
+      time: document.querySelector('#preview-time').textContent,
+      videoHidden: document.querySelector('#preview-video').hidden,
+      canvasHidden: canvas.hidden,
+      stored: localStorage.getItem('m4shlab-software-preview'),
+      error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
+      label: document.querySelector('#preview-label').textContent,
+    };
+  })()`);
+  assert.equal(softwareFirst.error, null, softwareFirst.error || 'software preview reported an error');
+  assert.equal(softwareFirst.videoHidden, true, 'the <video> element must step aside while software preview runs');
+  assert.equal(softwareFirst.canvasHidden, false);
+  assert.ok(softwareFirst.ink > 1000, `software preview canvas holds only ${softwareFirst.ink} lit pixels`);
+  assert.ok(softwareFirst.width <= 720 && softwareFirst.height <= 720, `software preview canvas is ${softwareFirst.width}x${softwareFirst.height}, above the 720px cap`);
+  assert.equal(softwareFirst.stored, 'true', 'the software preview preference must persist');
+  assert.match(softwareFirst.label, /Assembled preview/, `preview label is ${softwareFirst.label}`);
+  const softwareTimeStart = Number.parseFloat(softwareFirst.time);
+  assert.ok(softwareTimeStart > 0, `software preview did not advance its clock (${softwareFirst.time})`);
+  await new Promise(resolve => setTimeout(resolve, 800));
+  const softwareTime = await client.evaluate("document.querySelector('#preview-time').textContent");
+  assert.ok(Number.parseFloat(softwareTime) > softwareTimeStart, `software preview clock did not advance past ${softwareFirst.time} (now ${softwareTime})`);
+  console.log(`PASS software preview decodes the assembled stream into the ${softwareFirst.width}x${softwareFirst.height} canvas (${softwareFirst.ink} lit pixels), advances ${softwareFirst.time} -> ${softwareTime}, hides the <video> and persists its preference`);
+
+  await client.evaluate("window.VideoDecoder = class { constructor() { throw new Error('probe decoder failure'); } }; true");
+  await client.evaluate(`(() => {
+    const toggle = document.querySelector('#software-preview');
+    toggle.checked = false;
+    toggle.dispatchEvent(new Event('change', {bubbles: true}));
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event('change', {bubbles: true}));
+  })()`);
+  await new Promise(resolve => setTimeout(resolve, 600));
+  const softwareFallback = await client.evaluate(`(() => ({
+    checked: document.querySelector('#software-preview').checked,
+    videoHidden: document.querySelector('#preview-video').hidden,
+    canvasHidden: document.querySelector('#preview-canvas').hidden,
+    error: document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent,
+    stored: localStorage.getItem('m4shlab-software-preview'),
+  }))()`);
+  assert.equal(softwareFallback.error === null, false, 'a failing software decode must not stay silent');
+  assert.match(softwareFallback.error, /Software preview could not decode this stream/, `fallback message is ${softwareFallback.error}`);
+  assert.match(softwareFallback.error, /video element instead/, 'the fallback message must name the fallback path');
+  assert.equal(softwareFallback.checked, false, 'a failing software decode must switch the toggle off');
+  assert.equal(softwareFallback.stored, 'false', 'the switched-off preference must persist');
+  assert.equal(softwareFallback.canvasHidden, true, 'the canvas must hide on fallback');
+  assert.equal(softwareFallback.videoHidden, false, 'the <video> element must come back on fallback');
+  console.log('PASS a failing software decode reports the reason, reverts to the <video> element and persists the switched-off state');
 
   if (client.exceptions.length) throw new Error(`Browser exceptions:\n${client.exceptions.join('\n')}`);
 } finally {

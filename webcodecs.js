@@ -548,7 +548,11 @@ export async function normalizeWithWebCodecs(inputBytes, options = {}) {
   }
 }
 
-export { MAX_NORMALIZATION_BYTES };
+export {
+  MAX_NORMALIZATION_BYTES,
+  selectDecoderConfig as decoderConfigForTrack,
+  sourceChunks as decodeChunksForTrack,
+};
 
 function extractNalsFromData(bytes, lengthSize) {
   const sample = {index: 0, offset: 0, size: bytes.byteLength};

@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="en" data-build="v34">
+<html lang="en" data-build="v35">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Client-side H.264 bitstream moshing.">
-  <meta name="m4shlab-build" content="v34">
+  <meta name="m4shlab-build" content="v35">
   <meta name="theme-color" content="#f5f5f3">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="m4shlab">
@@ -29,6 +29,7 @@
     <section class="viewer" aria-labelledby="preview-heading">
       <h2 id="preview-heading" class="visually-hidden">preview</h2>
       <video id="preview-video" controls playsinline muted></video>
+      <canvas id="preview-canvas" class="preview-canvas" aria-label="Software preview" hidden></canvas>
       <div id="empty-preview" class="empty-preview">import clips to begin</div>
     </section>
 
@@ -37,6 +38,7 @@
       <div class="preview-options">
         <label class="sound-toggle"><input id="sound-toggle" type="checkbox" checked> <span>Sound on</span></label>
         <span id="preview-time" aria-label="Preview time">0.00 / 0.00 s</span>
+        <label class="software-toggle" title="Decodes the edited stream with WebCodecs instead of the browser's video element. Audio is not played in software preview."><input id="software-preview" type="checkbox"> <span>Software preview</span></label>
       </div>
     </div>
 
@@ -72,6 +74,7 @@
     <p id="status" class="status" role="status">No videos loaded.</p>
     <p id="error" class="error" role="alert" hidden></p>
     <pre id="report" hidden></pre>
+
 
     <details id="bitstream-report" class="bitstream-report">
       <summary>BITSTREAM REPORT</summary>

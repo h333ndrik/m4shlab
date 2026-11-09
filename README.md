@@ -154,6 +154,10 @@ The preview-meta row has a **Sound on** checkbox, checked by default. Its state 
 
 A `0.00 / 0.00 s` readout follows `timeupdate`, `durationchange`, and metadata events for whichever preview is active. Clicking a clip card selects it and labels the preview `Clip preview · <filename>`. **Assemble preview** switches to the chained result and labels it `Assembled preview · all clips and transitions`; clicking a card returns to that clip.
 
+### Software preview
+
+The **Software preview** checkbox sits next to the time readout, is off by default, and is remembered under the localStorage key `m4shlab-software-preview`. With it on, the preview no longer plays the blob through a `<video>` element: the edited stream is decoded with `VideoDecoder` and painted into a canvas in the same well, one frame at a time (decode → draw → `frame.close()`, about 1.5 s of lookahead, canvas capped at 720 px on the long side). This is the same decode path an export reviewer uses, so it shows the reference-loss artefacts even on hardware decoders that quietly repeat the last picture instead of showing them. Playback is click-to-play/pause; seeking restarts from frame 0. Audio is not played in software preview — the toggle's tooltip says so, and export audio is unaffected. If the decode of the edited stream throws, the app names the reason, switches the toggle off and returns to `<video>` playback instead of leaving a blank canvas.
+
 ### Phase C: WebCodecs normalization
 
 1. Feature-detect `VideoDecoder`, `VideoEncoder`, and `VideoFrame`; select an H.264 encoder configuration supported by the current browser.
@@ -388,6 +392,8 @@ Multi-GOP type 0/1 alignment is accepted only when there are no B-slices and no 
 Phase A, Phase B, and the multi-clip chain edit H.264 NAL units without blending frames. Phase C decodes and re-encodes pixels only to normalize incompatible sequence members; it does not add crossfades or hold frames as a visual effect. Observable moshing is produced by the device decoder reacting to missing references.
 
 The effect depends on the source GOP structure. Decode behavior is device-dependent: some sources may refuse to play after IDR removal, show black frames, or hold the last decodable frame, especially when seeking directly into a modified GOP. Different browsers and hardware decoders can show different results. This is expected behavior, not a bug.
+
+Mobile hardware decoders are the most tolerant case: several of them repair or conceal a removed IDR by repeating the last reference picture, so a phone's `<video>` can play a mosh sequence cleanly while the same bytes show the effect on desktop. The bytes are not different — the decoder path is. `Software preview` slides along that path in the editor; the exported file is unchanged either way.
 
 Phase A handles a single H.264 video track in a conventional (non-fragmented) MP4. Interleaved audio sample offsets are adjusted when present. On multi-GOP sources, removing later IDRs can make the decoder discard dependent pictures, so the decoded frame count can be lower than the MP4 sample/packet count; that is the intended mosh behavior, not a parse failure.
 

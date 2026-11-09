@@ -1,6 +1,18 @@
 # m4shlab state
 
-Updated: 2026-11-06
+Updated: 2026-11-09
+
+## Mobile playback: diagnostics and software preview (build stamp v35)
+
+**State: shipped on `main`, automated suites green, device acceptance pending.** The build stamp `v35` is again only the shell-consistency counter, not a release version.
+
+The report that drove this block: on desktop the manipulated blobs show the mosh in `<video>`, on phones the effect is missing or playback misbehaves. The hypothesis is that hardware decoders conceal a removed IDR by repeating the last reference picture, so the playback path — not the bytes — differs per device.
+
+- **Software preview** (next to the time readout, default off, `m4shlab-software-preview`) decodes the edited stream with `VideoDecoder` into a canvas in the preview well: sequential decode → draw → `frame.close()`, ~1.5 s lookahead, 720 px canvas cap, click to play/pause, seeking restarts from frame 0, no audio. A failed decode names the reason, switches the toggle off and returns to `<video>`.
+
+Suites at this block: 84 Node, 106 WebCodecs (103 + 3 software-preview checks), 10 cursor, 6 PWA (33 precache assets, caches `m4shlab-v35`), acceptance `PASS 16 / FAIL 0 / UNVERIFIABLE 6 of 22`.
+
+Known limits of software preview: it restarts at frame 0 when the source or settings change, it does not play or sync audio, it needs a WebCodecs `VideoDecoder` for the stream's own configuration, and it decodes sequentially from the first keyframe (normalized clips carry a single keyframe at frame 0).
 
 ## Release v1.2
 

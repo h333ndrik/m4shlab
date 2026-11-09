@@ -17,7 +17,7 @@ import {
   muxPcmWithFfmpeg,
   speedAudioPcmWithFfmpeg,
 } from './converter.js';
-import { isWebCodecsAvailable, normalizeWithWebCodecs } from './webcodecs.js';
+import { decoderConfigForTrack, decodeChunksForTrack, isWebCodecsAvailable, normalizeWithWebCodecs } from './webcodecs.js';
 import { chooseNormalizationTarget } from './webcodecs-muxer.js';
 import { frameRateForTrack, maxMoshFrames } from './classic-mosh.js';
 import { atempoChain, normalizeSpeed, speedOutputFrameCount, SPEED_MAX, SPEED_MIN, SPEED_STEP } from './speed.js';
@@ -37,7 +37,7 @@ import {
 } from './audio.js';
 
 const MAX_CLIPS = 12;
-const BUILD = 'v34';
+const BUILD = 'v35';
 const SHELL_NOTICE_MIXED = 'This page mixes two m4shlab versions. Reload to get a consistent editor.';
 const SHELL_NOTICE_INCOMPLETE = 'This editor is incomplete. Reload the page.';
 const REQUIRED_UI = [
@@ -55,7 +55,9 @@ const REQUIRED_UI = [
   'export-button',
   'preview-label',
   'preview-time',
+  'preview-canvas',
   'sound-toggle',
+  'software-preview',
   'report',
   'undo-button',
   'redo-button',
@@ -129,12 +131,15 @@ const exportButton = document.querySelector('#export-button');
 const previewLabel = document.querySelector('#preview-label');
 const previewTime = document.querySelector('#preview-time');
 const soundToggle = document.querySelector('#sound-toggle');
+const previewCanvas = document.querySelector('#preview-canvas');
+const softwarePreviewToggle = document.querySelector('#software-preview');
 const projectName = document.querySelector('#project-name');
 const projectMenu = document.querySelector('#project-menu');
 const saveSettingsButton = document.querySelector('#save-settings');
 const loadSettingsButton = document.querySelector('#load-settings');
 const settingsInput = document.querySelector('#settings-input');
 const AUDIO_PREFERENCE_KEY = 'm4shlab-audio';
+const SOFTWARE_PREVIEW_KEY = 'm4shlab-software-preview';
 const PROJECT_NAME_KEY = 'm4shlab-project';
 const SETTINGS_FORMAT = 'm4shlab-settings';
 const SETTINGS_VERSION = 1;
@@ -212,6 +217,8 @@ let undoStack = [];
 let redoStack = [];
 let refreshInFlight = 0;
 let soundEnabled = readSoundPreference();
+let softwarePreviewEnabled = readSoftwarePreviewPreference();
+let previewBytes = null;
 let projectNameSaveTimer = null;
 
 function reloadAfterControllerChange({registration, onReload = () => location.reload(), timeoutMs = 3000} = {}) {
@@ -353,6 +360,20 @@ function writeSoundPreference() {
 function applySoundPreference() {
   soundToggle.checked = soundEnabled;
   video.muted = !soundEnabled;
+}
+
+function readSoftwarePreviewPreference() {
+  try {
+    return localStorage.getItem(SOFTWARE_PREVIEW_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function writeSoftwarePreviewPreference() {
+  try {
+    localStorage.setItem(SOFTWARE_PREVIEW_KEY, String(softwarePreviewEnabled));
+  } catch {}
 }
 
 function readProjectName() {
@@ -1580,12 +1601,25 @@ function wirePreviewEvents() {
 
   video.addEventListener('error', () => {
     if (!video.getAttribute('src')) return;
+    if (softwarePreviewPlayer?.active) return;
     setError(`Preview failed: ${videoErrorText()}`);
     status.textContent = 'The selected preview did not decode in this browser.';
   });
 
   video.addEventListener('loadeddata', () => {
     emptyPreview.hidden = true;
+  });
+
+  softwarePreviewToggle?.addEventListener('change', () => {
+    softwarePreviewEnabled = softwarePreviewToggle.checked;
+    writeSoftwarePreviewPreference();
+    setError('');
+    refreshSoftwarePreview();
+  });
+  previewCanvas?.addEventListener('click', () => {
+    if (!softwarePreviewPlayer?.active) return;
+    if (softwarePreviewPlayer.playing) softwarePreviewPlayer.pause();
+    else softwarePreviewPlayer.play();
   });
 }
 
@@ -1609,10 +1643,281 @@ function resetMerged() {
   exportButton.onclick = null;
 }
 
-function setPreview(url, label) {
+/* ── Software preview ──────────────────────────────────────────────────────
+   A <video> element plays whatever the platform's media pipeline makes of our
+   bytes, and some hardware decoders hide a removed IDR by repeating the last
+   reference picture. This path decodes the edited stream ourselves with
+   WebCodecs and paints the frames into a canvas, so the preview shows exactly
+   what the export contains. Audio is not played here; the export's audio is
+   untouched. Seeking restarts from frame 0. */
+
+const SOFTWARE_PREVIEW_LOOKAHEAD = 45;
+const SOFTWARE_PREVIEW_MAX_EDGE = 720;
+
+class SoftwarePreview {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.context = canvas.getContext('2d', {alpha: false});
+    this.token = 0;
+    this.decoder = null;
+    this.chunks = [];
+    this.queue = [];
+    this.nextChunk = 0;
+    this.playing = false;
+    this.raf = 0;
+    this.duration = 0;
+    this.mediaTime = 0;
+    this.startWall = 0;
+    this.startMedia = 0;
+    this.flushed = false;
+    this.failure = null;
+    this.painted = 0;
+    this.onTime = () => {};
+    this.onEnded = () => {};
+    this.onError = () => {};
+    this.tick = this.tick.bind(this);
+  }
+
+  get active() {
+    return this.decoder !== null;
+  }
+
+  async load(bytes) {
+    this.stop();
+    const token = this.token;
+    const parsed = parseMp4(bytes);
+    const track = parsed.videoTrack;
+    const selection = await decoderConfigForTrack(bytes, track);
+    if (token !== this.token) return null;
+    const chunks = decodeChunksForTrack(bytes, track);
+    if (chunks.length === 0) throw new Error('the stream has no video samples');
+    const sourceWidth = track.width || track.codedWidth || 0;
+    const sourceHeight = track.height || track.codedHeight || 0;
+    const scale = Math.min(1, SOFTWARE_PREVIEW_MAX_EDGE / Math.max(sourceWidth || 1, sourceHeight || 1));
+    this.canvas.width = Math.max(2, Math.round(sourceWidth * scale));
+    this.canvas.height = Math.max(2, Math.round(sourceHeight * scale));
+    this.chunks = chunks;
+    const last = chunks[chunks.length - 1];
+    this.duration = (last.timestamp + (last.duration || 0)) / 1_000_000;
+    this.mediaTime = 0;
+    this.nextChunk = 0;
+    this.painted = 0;
+    this.flushed = false;
+    this.failure = null;
+    this.decoder = new VideoDecoder({
+      output: frame => this.receive(frame, token),
+      error: error => this.fail(error, token),
+    });
+    this.decoder.configure(selection.config);
+    return {codec: selection.codec, chunks: chunks.length, width: this.canvas.width, height: this.canvas.height};
+  }
+
+  receive(frame, token) {
+    if (token !== this.token || this.failure) {
+      frame.close();
+      return;
+    }
+    this.queue.push(frame);
+    if (this.playing) this.pump();
+  }
+
+  pump() {
+    if (!this.decoder || this.failure) return;
+    while (this.nextChunk < this.chunks.length
+      && this.queue.length < SOFTWARE_PREVIEW_LOOKAHEAD
+      && this.decoder.decodeQueueSize < SOFTWARE_PREVIEW_LOOKAHEAD) {
+      try {
+        this.decoder.decode(new EncodedVideoChunk(this.chunks[this.nextChunk]));
+      } catch (error) {
+        this.fail(error, this.token);
+        return;
+      }
+      this.nextChunk += 1;
+    }
+    if (this.nextChunk >= this.chunks.length && !this.flushed) {
+      this.flushed = true;
+      this.decoder.flush().catch(error => this.fail(error, this.token));
+    }
+  }
+
+  play() {
+    if (!this.decoder || this.playing) return;
+    if (this.mediaTime >= this.duration) this.restart();
+    this.playing = true;
+    this.startWall = performance.now();
+    this.startMedia = this.mediaTime;
+    this.pump();
+    this.raf = requestAnimationFrame(this.tick);
+  }
+
+  pause() {
+    if (!this.playing) return;
+    this.playing = false;
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
+    this.onTime(this.mediaTime, this.duration);
+  }
+
+  tick() {
+    if (!this.playing) return;
+    const media = this.startMedia + (performance.now() - this.startWall) / 1000;
+    this.mediaTime = Math.min(media, this.duration);
+    this.drawUpTo(this.mediaTime);
+    this.onTime(this.mediaTime, this.duration);
+    if (media >= this.duration) {
+      this.playing = false;
+      this.raf = 0;
+      this.onEnded();
+      return;
+    }
+    this.pump();
+    this.raf = requestAnimationFrame(this.tick);
+  }
+
+  drawUpTo(media) {
+    const limit = media * 1_000_000;
+    while (this.queue.length > 0 && this.queue[0].timestamp <= limit) {
+      const frame = this.queue.shift();
+      try {
+        this.paint(frame);
+        this.painted += 1;
+      } finally {
+        frame.close();
+      }
+    }
+  }
+
+  paint(frame) {
+    const width = this.canvas.width;
+    const height = this.canvas.height;
+    const sourceWidth = frame.displayWidth || frame.codedWidth || width;
+    const sourceHeight = frame.displayHeight || frame.codedHeight || height;
+    const scale = Math.min(width / sourceWidth, height / sourceHeight);
+    const drawWidth = Math.max(1, Math.round(sourceWidth * scale));
+    const drawHeight = Math.max(1, Math.round(sourceHeight * scale));
+    this.context.fillStyle = '#000';
+    this.context.fillRect(0, 0, width, height);
+    this.context.drawImage(frame, Math.floor((width - drawWidth) / 2), Math.floor((height - drawHeight) / 2), drawWidth, drawHeight);
+  }
+
+  restart() {
+    this.mediaTime = 0;
+    this.nextChunk = 0;
+    this.flushed = false;
+    this.clearQueue();
+    if (this.decoder && this.decoder.state !== 'closed') this.decoder.reset();
+  }
+
+  stop() {
+    this.token += 1;
+    this.playing = false;
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
+    this.clearQueue();
+    if (this.decoder) {
+      try {
+        this.decoder.close();
+      } catch {}
+      this.decoder = null;
+    }
+    this.chunks = [];
+    this.nextChunk = 0;
+    this.mediaTime = 0;
+    this.duration = 0;
+    this.flushed = false;
+    this.failure = null;
+  }
+
+  clearQueue() {
+    for (const frame of this.queue) frame.close();
+    this.queue = [];
+  }
+
+  fail(error, token) {
+    if (token !== this.token || this.failure) return;
+    const failure = error instanceof Error ? error : new Error(String(error));
+    this.failure = failure;
+    this.stop();
+    this.onError(failure.message);
+  }
+}
+
+let softwarePreviewPlayer = null;
+let softwarePreviewInfo = null;
+
+function softwarePreviewDecodable() {
+  return typeof VideoDecoder === 'function' && typeof VideoFrame === 'function';
+}
+
+function previewClipIndex() {
+  return clips.findIndex(clip => clip.id === previewedClipId);
+}
+
+function softwarePreviewSource() {
+  if (previewAssembled) return merged ? {bytes: merged.result.output, label: assembledPreviewLabel()} : null;
+  const index = previewClipIndex();
+  if (index < 0) return null;
+  return {bytes: clips[index].bytes, label: clipPreviewLabel(index)};
+}
+
+function stopSoftwarePreview() {
+  if (softwarePreviewPlayer) softwarePreviewPlayer.stop();
+  if (previewCanvas) previewCanvas.hidden = true;
+  video.hidden = false;
+}
+
+function disableSoftwarePreview(message = '') {
+  stopSoftwarePreview();
+  softwarePreviewEnabled = false;
+  if (softwarePreviewToggle) softwarePreviewToggle.checked = false;
+  writeSoftwarePreviewPreference();
+  if (message) setError(message);
+}
+
+async function startSoftwarePreview() {
+  if (!softwarePreviewEnabled || !previewBytes || !previewCanvas) return;
+  if (!softwarePreviewDecodable()) {
+    disableSoftwarePreview('This browser has no WebCodecs VideoDecoder, so software preview is not available here.');
+    return;
+  }
+  video.pause();
+  video.hidden = true;
+  previewCanvas.hidden = false;
+  softwarePreviewPlayer ??= new SoftwarePreview(previewCanvas);
+  softwarePreviewPlayer.onTime = (current, duration) => {
+    previewTime.textContent = `${formatPreviewTime(current)} / ${formatPreviewTime(duration)} s`;
+  };
+  softwarePreviewPlayer.onEnded = () => {};
+  softwarePreviewPlayer.onError = message => {
+    disableSoftwarePreview(`Software preview could not decode this stream (${message}). Showing the browser's video element instead.`);
+  };
+  try {
+    softwarePreviewInfo = await softwarePreviewPlayer.load(previewBytes);
+    if (!softwarePreviewInfo) return;
+    softwarePreviewPlayer.play();
+  } catch (error) {
+    softwarePreviewInfo = null;
+    disableSoftwarePreview(`Software preview could not decode this stream (${error instanceof Error ? error.message : String(error)}). Showing the browser's video element instead.`);
+  }
+}
+
+function refreshSoftwarePreview() {
+  stopSoftwarePreview();
+  if (softwarePreviewEnabled) void startSoftwarePreview();
+}
+
+function applySoftwarePreviewPreference() {
+  if (softwarePreviewToggle) softwarePreviewToggle.checked = softwarePreviewEnabled;
+  refreshSoftwarePreview();
+}
+
+function setPreview(url, label, options = {}) {
   previewTime.textContent = '0.00 / 0.00 s';
   video.muted = !soundEnabled;
+  stopSoftwarePreview();
+  previewBytes = options.bytes ?? null;
   if (!url) {
+    previewBytes = null;
     video.removeAttribute('src');
     video.load();
     previewLabel.textContent = '—';
@@ -1620,6 +1925,7 @@ function setPreview(url, label) {
   }
   video.src = url;
   previewLabel.textContent = label;
+  if (softwarePreviewEnabled) void startSoftwarePreview();
 }
 
 function clipPreviewLabel(index = 0) {
@@ -1637,7 +1943,7 @@ function previewClip(index) {
   setError('');
   previewedClipId = clip.id;
   previewAssembled = false;
-  setPreview(clip.url, clipPreviewLabel(index));
+  setPreview(clip.url, clipPreviewLabel(index), {bytes: clip.bytes});
   updatePreviewSelection();
 }
 
@@ -1645,7 +1951,7 @@ function previewAssembledSequence() {
   if (!merged) return;
   setError('');
   previewAssembled = true;
-  setPreview(merged.mergedUrl, assembledPreviewLabel());
+  setPreview(merged.mergedUrl, assembledPreviewLabel(), {bytes: merged.result.output});
   updatePreviewSelection();
 }
 
@@ -3331,6 +3637,7 @@ function startApp() {
   wireCoreUi();
   wireOptionalUi();
   applySoundPreference();
+  applySoftwarePreviewPreference();
   if (projectName) {
     projectName.value = readProjectName();
     autoSizeProjectName();
