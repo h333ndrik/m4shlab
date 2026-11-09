@@ -6,11 +6,12 @@ Updated: 2026-11-09
 
 **State: shipped on `main`, automated suites green, device acceptance pending.** The build stamp `v35` is again only the shell-consistency counter, not a release version.
 
-The report that drove this block: on desktop the manipulated blobs show the mosh in `<video>`, on phones the effect is missing or playback misbehaves. The hypothesis is that hardware decoders conceal a removed IDR by repeating the last reference picture, so the playback path — not the bytes — differs per device.
+The report that drove this block: on desktop the manipulated blobs show the mosh in `<video>`, on phones the effect is missing or playback misbehaves. The hypothesis is that the device side conceals a removed IDR (repeating the last reference picture, dropping the damaged range, or refusing to seek into it), so the playback path — not the bytes — differs per device. This is not confirmed yet; the device run of the frame strip decides it.
 
 - `?debug=1` opens a diagnostics panel: page build stamp, fetched `sw.js` VERSION, user agent, `deviceMemory`/`hardwareConcurrency`/dpr, WebCodecs availability, `VideoDecoder.isConfigSupported` for the previewed clip's own configuration, per-clip codec/conversion path/conversion duration/frame count, live `<video>` state plus counters for `stalled`, `error`, `ended`, `loadeddata` and `emptied`.
 - The panel's **Render frame strip** buttons decode twelve frames of the merged output (centred on the mosh boundary) and of the untouched Cut control with WebCodecs, paint a labelled 6×2 canvas and offer it as a PNG with a SHA-256 of the image. The strip is the ground truth: artefacts there mean the bytes are correct.
 - **Software preview** (next to the time readout, default off, `m4shlab-software-preview`) decodes the edited stream with `VideoDecoder` into a canvas in the preview well: sequential decode → draw → `frame.close()`, ~1.5 s lookahead, 720 px canvas cap, click to play/pause, seeking restarts from frame 0, no audio. A failed decode names the reason, switches the toggle off and returns to `<video>`.
+- Scope of the claim: software preview leaves the `<video>` element's parser, error concealment and seeking behind, but `VideoDecoder` may still be hardware-backed (VideoToolbox on iOS). If a device conceals the missing reference inside the decoder, software preview can look as clean as `<video>`; the frame strip is what distinguishes a decoder that conceals from a `<video>` pipeline that does.
 
 Suites at this block: 84 Node, 116 WebCodecs (103 + 9 optional-element checks for the new optional ids + 4 new feature checks), 10 cursor, 6 PWA (33 precache assets, caches `m4shlab-v35`), acceptance `PASS 16 / FAIL 0 / UNVERIFIABLE 6 of 22`.
 
