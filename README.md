@@ -112,6 +112,10 @@ The page follows the h4moshlab visual language: a light radial-gradient backgrou
 
 Every import runs under a watchdog. If a conversion has not answered within 60 seconds — no status, progress or log message from the ffmpeg.wasm worker — the import is abandoned with "Conversion did not respond. Reload the page and try a shorter clip." The same message covers the case where the file picker succeeds but the pipeline never starts (the read never returns). In both cases the busy state is released, the skeleton cards disappear and the next import starts normally, so the editor cannot be left in the "nothing happens" state.
 
+Software preview closes every decoded `VideoFrame` on every release path — painted, decode error, source switch, `pagehide`, and a hidden document — and a released preview rebuilds its decoder from the stored configuration, so coming back to the tab replays from frame 0. The `?debug=1` panel reports the live frame count, the converter workers (alive/busy/dead, queued, failures, last watchdog) and the current heap.
+
+The known iOS pattern behind those guards: a heavy session — several wasm conversions plus a long preview — can wedge later imports until the page is reloaded. The watchdog turns that into an error instead of a silent hang, and after 20 conversions in one session (or when the JS heap passes 80 % of its limit) the status area shows one line: "Many conversions this session — if imports stop responding, reload the page." Reloading is the remedy on iOS; the app says so rather than hiding it.
+
 Converter workers are disposable. An `error` or `messageerror` from a worker disposes it, and the next conversion spawns a fresh one. Worker failures reach `#error` — including a crash while no request is in flight — instead of stopping at the console. A failed ffmpeg.wasm core fetch reports "Conversion engine could not be loaded — check the connection once; it is cached afterwards."
 
 ### HEVC decode path

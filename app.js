@@ -39,7 +39,7 @@ import {
 } from './audio.js';
 
 const MAX_CLIPS = 12;
-const BUILD = 'v36';
+const BUILD = 'v37';
 const SHELL_NOTICE_MIXED = 'This page mixes two m4shlab versions. Reload to get a consistent editor.';
 const SHELL_NOTICE_INCOMPLETE = 'This editor is incomplete. Reload the page.';
 const REQUIRED_UI = [
@@ -115,6 +115,7 @@ const OPTIONAL_UI = [
   'trim-preview-out',
   'trim-reset',
   'trim-apply',
+  'session-hint',
   'debug-panel',
   'debug-info',
   'debug-video-state',
@@ -135,6 +136,7 @@ const sourceTiers = document.querySelector('#source-tiers');
 const sequenceLabel = document.querySelector('#sequence-label');
 const dropZone = document.querySelector('#drop-zone');
 const error = document.querySelector('#error');
+const sessionHint = document.querySelector('#session-hint');
 const conversionProgress = document.querySelector('#conversion-progress');
 const conversionStatus = document.querySelector('#conversion-status');
 const assemblePreviewButton = document.querySelector('#assemble-preview');
@@ -239,6 +241,11 @@ let refreshInFlight = 0;
 let soundEnabled = readSoundPreference();
 let softwarePreviewEnabled = readSoftwarePreviewPreference();
 let previewBytes = null;
+let sessionConversions = 0;
+let sessionHintShown = false;
+
+const SESSION_CONVERSION_HINT_AT = 20;
+const SESSION_HINT_TEXT = 'Many conversions this session — if imports stop responding, reload the page.';
 let projectNameSaveTimer = null;
 
 function reloadAfterControllerChange({registration, onReload = () => location.reload(), timeoutMs = 3000} = {}) {
@@ -1636,8 +1643,12 @@ function wirePreviewEvents() {
     setError('');
     refreshSoftwarePreview();
   });
+  window.addEventListener('pagehide', releasePreviewResources);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') releasePreviewResources();
+  });
   previewCanvas?.addEventListener('click', () => {
-    if (!softwarePreviewPlayer?.active) return;
+    if (!softwarePreviewPlayer || !softwarePreviewEnabled) return;
     if (softwarePreviewPlayer.playing) softwarePreviewPlayer.pause();
     else softwarePreviewPlayer.play();
   });
@@ -1692,6 +1703,10 @@ class SoftwarePreview {
     this.flushed = false;
     this.failure = null;
     this.painted = 0;
+    this.liveFrames = 0;
+    this.needsRewind = false;
+    this.needsReload = false;
+    this.config = null;
     this.onTime = () => {};
     this.onEnded = () => {};
     this.onError = () => {};
@@ -1724,28 +1739,41 @@ class SoftwarePreview {
     this.painted = 0;
     this.flushed = false;
     this.failure = null;
+    this.config = selection.config;
     this.decoder = new VideoDecoder({
       output: frame => this.receive(frame, token),
       error: error => this.fail(error, token),
     });
-    this.decoder.configure(selection.config);
+    this.decoder.configure(this.config);
     return {codec: selection.codec, chunks: chunks.length, width: this.canvas.width, height: this.canvas.height};
   }
 
   receive(frame, token) {
     if (token !== this.token || this.failure) {
-      frame.close();
+      try {
+        frame.close();
+      } catch {}
       return;
     }
+    this.liveFrames += 1;
     this.queue.push(frame);
     if (this.playing) this.pump();
+  }
+
+  /* Only frames that were counted in receive() go through here. */
+  closeFrame(frame) {
+    if (!frame) return;
+    this.liveFrames = Math.max(0, this.liveFrames - 1);
+    try {
+      frame.close();
+    } catch {}
   }
 
   pump() {
     if (!this.decoder || this.failure) return;
     while (this.nextChunk < this.chunks.length
       && this.queue.length < SOFTWARE_PREVIEW_LOOKAHEAD
-      && this.decoder.decodeQueueSize < SOFTWARE_PREVIEW_LOOKAHEAD) {
+      && this.decoder.decodeQueueSize < 8) {
       try {
         this.decoder.decode(new EncodedVideoChunk(this.chunks[this.nextChunk]));
       } catch (error) {
@@ -1760,9 +1788,39 @@ class SoftwarePreview {
     }
   }
 
+  /* A released preview rebuilds its decoder from the stored configuration, so
+     a page that comes back replays from frame 0 with a clean decode queue. */
+  recreateDecoder() {
+    if (this.decoder) {
+      try {
+        this.decoder.close();
+      } catch {}
+      this.decoder = null;
+    }
+    this.clearQueue();
+    this.nextChunk = 0;
+    this.flushed = false;
+    this.mediaTime = 0;
+    this.failure = null;
+    if (!this.config) return;
+    const token = this.token;
+    this.decoder = new VideoDecoder({
+      output: frame => this.receive(frame, token),
+      error: error => this.fail(error, token),
+    });
+    this.decoder.configure(this.config);
+  }
+
   play() {
+    if (this.needsReload) {
+      this.needsReload = false;
+      this.recreateDecoder();
+    }
     if (!this.decoder || this.playing) return;
-    if (this.mediaTime >= this.duration) this.restart();
+    if (this.needsRewind || this.mediaTime >= this.duration) {
+      this.needsRewind = false;
+      this.restart();
+    }
     this.playing = true;
     this.startWall = performance.now();
     this.startMedia = this.mediaTime;
@@ -1802,7 +1860,7 @@ class SoftwarePreview {
         this.paint(frame);
         this.painted += 1;
       } finally {
-        frame.close();
+        this.closeFrame(frame);
       }
     }
   }
@@ -1846,11 +1904,30 @@ class SoftwarePreview {
     this.duration = 0;
     this.flushed = false;
     this.failure = null;
+    this.needsReload = false;
+    this.needsRewind = false;
   }
 
   clearQueue() {
-    for (const frame of this.queue) frame.close();
+    for (const frame of this.queue) this.closeFrame(frame);
     this.queue = [];
+  }
+
+  /* Releases every decoded frame and stops the decode loop without tearing the
+     decoder down, so a page that comes back can replay from frame 0. */
+  releaseFrames() {
+    this.pause();
+    this.clearQueue();
+    if (this.decoder) {
+      try {
+        this.decoder.close();
+      } catch {}
+      this.decoder = null;
+    }
+    this.nextChunk = 0;
+    this.flushed = false;
+    this.mediaTime = 0;
+    this.needsReload = true;
   }
 
   fail(error, token) {
@@ -1878,6 +1955,11 @@ function softwarePreviewSource() {
   const index = previewClipIndex();
   if (index < 0) return null;
   return {bytes: clips[index].bytes, label: clipPreviewLabel(index)};
+}
+
+function releasePreviewResources() {
+  video.pause();
+  softwarePreviewPlayer?.releaseFrames();
 }
 
 function stopSoftwarePreview() {
@@ -2602,6 +2684,26 @@ async function copySeedToClipboard() {
 }
 
 
+function noteSessionConversion() {
+  sessionConversions += 1;
+  return sessionConversions;
+}
+
+function sessionMemoryPressure() {
+  const memory = performance.memory;
+  if (!memory || !Number.isFinite(memory.jsHeapSizeLimit) || memory.jsHeapSizeLimit <= 0) return 0;
+  return memory.usedJSHeapSize / memory.jsHeapSizeLimit;
+}
+
+function maybeShowSessionHint() {
+  if (sessionHintShown) return;
+  if (sessionConversions < SESSION_CONVERSION_HINT_AT && sessionMemoryPressure() < 0.8) return;
+  sessionHintShown = true;
+  if (!sessionHint) return;
+  sessionHint.textContent = SESSION_HINT_TEXT;
+  sessionHint.hidden = false;
+}
+
 async function convertClipSource(index, label, sourceBytes, options, parseError = null) {
   const slot = progressSlot(index);
   const reportStatus = options.onImportStatus ?? (() => {});
@@ -2619,6 +2721,7 @@ async function convertClipSource(index, label, sourceBytes, options, parseError 
       reportStatus(percent === null ? 'converting…' : `converting… ${percent} %`);
     },
   });
+  noteSessionConversion();
   if (!options.isCurrent()) return null;
   const mp4 = parseMp4(converted.bytes);
   const target = converted.target ?? {width: mp4.videoTrack.width, height: mp4.videoTrack.height};
@@ -2680,6 +2783,7 @@ async function readClipFile(file, index, token, onImportStatus = () => {}) {
           },
         });
         if (token !== importToken) return null;
+        noteSessionConversion();
         bytes = result.bytes;
         mp4 = parseMp4(bytes);
         conversion = {
@@ -2895,6 +2999,7 @@ async function importFilesInternal(fileList) {
     const existing = error.hidden ? '' : error.textContent;
     setError([existing, ...messages].filter(Boolean).join(' '));
   }
+  maybeShowSessionHint();
 }
 
 async function loadClipLegacy(slot, file) {
@@ -3017,6 +3122,7 @@ async function normalizeAllClips(token, target) {
             showConversion(label, 'working', `Normalizing with WebCodecs · ${percent}%`, progress, progressSlot(index));
           },
         });
+        noteSessionConversion();
         const trimmedAudio = trimClipAudio(clip.baseAudio ?? clip.audio, trim, sourceFps);
         const audio = await applySpeedToClipAudio(trimmedAudio, result.outputFrames, speed, label);
         advanceConversionProgress();
@@ -3766,6 +3872,31 @@ function debugVideoLines() {
   ];
 }
 
+function debugWorkerLines() {
+  const status = converterWorkerStatus();
+  const workers = status.workers.length === 0
+    ? 'none spawned'
+    : status.workers.map(slot => (slot.dead ? 'dead' : slot.busy ? 'alive/busy' : 'alive/idle')).join(', ');
+  const watchdog = status.lastWatchdogAt
+    ? `${Math.round((Date.now() - status.lastWatchdogAt) / 1000)} s ago`
+    : 'never';
+  const lastFailure = status.lastFailure ? ` · last failure "${status.lastFailure.message}"` : '';
+  return [
+    `converter    workers ${workers} · queued ${status.queued} · failures ${status.failures} · last watchdog ${watchdog}${lastFailure}`,
+  ];
+}
+
+function debugMemoryLines() {
+  const frames = softwarePreviewPlayer?.liveFrames ?? 0;
+  const memory = performance.memory;
+  const heap = memory
+    ? `${Math.round(memory.usedJSHeapSize / 1048576)} / ${Math.round(memory.jsHeapSizeLimit / 1048576)} MB`
+    : 'not exposed';
+  return [
+    `memory       live VideoFrames ${frames} · conversions this session ${sessionConversions} · heap ${heap}`,
+  ];
+}
+
 function updateDebugInfo() {
   if (!DEBUG_MODE || !debugInfo) return;
   const key = `${clips.map(clip => `${clip.id}:${clip.bytes.byteLength}`).join('|')}#${previewedClipId ?? ''}#${previewAssembled}`;
@@ -3780,6 +3911,8 @@ function updateDebugInfo() {
     debugSupport.text,
     ...debugClipLines(),
     ...debugVideoLines(),
+    ...debugWorkerLines(),
+    ...debugMemoryLines(),
   ];
   debugInfo.textContent = lines.join('\n');
   if (debugVideoState && !debugVideoState.textContent) debugVideoState.textContent = 'frame strip   not rendered yet';

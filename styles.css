@@ -172,6 +172,13 @@ button:focus-visible,
   outline-offset: 3px;
 }
 
+.session-hint {
+  margin: 0;
+  padding: 8px 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .debug-panel {
   margin: 20px 0 0;
   padding: 12px;

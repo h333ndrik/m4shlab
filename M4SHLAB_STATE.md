@@ -2,6 +2,20 @@
 
 Updated: 2026-11-09
 
+## Memory guard for repeated sessions (build stamp v37)
+
+**State: shipped on `main`, automated suites green, device acceptance pending.**
+
+- Software preview accounts for every decoded `VideoFrame`: frames are counted when the decoder delivers them and released through one `closeFrame()` path (painted, error, source switch, `pagehide`, hidden document). `releaseFrames()` closes the frames, closes the decoder and marks the preview for a rebuild, so coming back to the tab replays from frame 0 with a clean decode queue.
+- The decode pump now also bounds the decoder's internal queue (8) on top of the 45-frame draw queue, so a burst cannot double the live frame count.
+- `pagehide` and `visibilitychange` → hidden pause the preview and release frames; a click on the canvas replays.
+- After 20 conversions in a session, or when `performance.memory` reports the heap above 80 % of its limit, one line appears under the status: "Many conversions this session — if imports stop responding, reload the page."
+- `?debug=1` now shows converter worker health (alive/busy/dead, queued, failures, last watchdog age and last failure message) and the memory line (live VideoFrames, conversions this session, heap).
+
+Measured: four source switches keep the live frame count at 15/46/5/50 (peak 50, cap 60); `pagehide` drops 50 live frames to 0 and pauses the clock; the next click returns to 0.89 s and resumes.
+
+Suites at this commit: 84 Node, 122 WebCodecs (119 + 2 memory-guard checks + 1 optional-element check for `session-hint`), 10 cursor, 6 PWA (33 precache assets, caches `m4shlab-v37`), acceptance `PASS 16 / FAIL 0 / UNVERIFIABLE 6 of 22`.
+
 ## Import resilience (build stamp v36)
 
 **State: shipped on `main`, automated suites green, device acceptance pending.** `v36` is the shell-consistency counter, not a release version.

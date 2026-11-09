@@ -3925,6 +3925,64 @@ try {
   await client.waitFor("document.querySelectorAll('.clip-card').length === 1", 180000);
   console.log(`PASS an import whose pipeline never starts is abandoned after the stall window (${Math.round(elapsed)} ms in the test), reports the same actionable message and stays usable`);
 
+  // ── Memory guard: frame lifecycle across source switches and pagehide ────
+  const readPreviewDebug = () => client.evaluate(`(() => {
+    const text = document.querySelector('#debug-info').textContent;
+    const frames = /live VideoFrames ([0-9]+)/.exec(text);
+    const conversions = /conversions this session ([0-9]+)/.exec(text);
+    return {
+      text,
+      frames: frames ? Number(frames[1]) : -1,
+      conversions: conversions ? Number(conversions[1]) : -1,
+      time: Number.parseFloat(document.querySelector('#preview-time').textContent),
+    };
+  })()`);
+  await client.send('Page.navigate', {url: `${baseUrl}?debug=1&memory=1`});
+  await client.waitFor("document.documentElement.dataset.appReady === 'true'", 15000);
+  await client.setFiles('#file-input-a', [fixtures.effectA, fixtures.effectB]);
+  await client.waitFor("document.querySelectorAll('.clip-card').length === 2", 60000);
+  await client.waitFor("!document.querySelector('#assemble-preview').disabled", 180000);
+  await client.evaluate("document.querySelector('#assemble-preview').click()");
+  await client.evaluate(`(() => {
+    const toggle = document.querySelector('#software-preview');
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event('change', {bubbles: true}));
+  })()`);
+  await client.waitFor("document.querySelector('#preview-canvas').hidden === false", 20000);
+  await new Promise(resolve => setTimeout(resolve, 900));
+  const playing = await readPreviewDebug();
+  assert.ok(playing.frames > 0, `software preview reported ${playing.frames} live VideoFrames while playing`);
+  assert.match(playing.text, /converter\s+workers none spawned|converter\s+workers alive/, 'the diagnostics panel must show the converter workers');
+  assert.match(playing.text, /memory\s+live VideoFrames \d+ · conversions this session \d+ · heap /, 'the diagnostics panel must show the memory line');
+  assert.ok(playing.conversions >= 0, `conversion counter is ${playing.conversions}`);
+
+  const peaks = [];
+  for (let round = 0; round < 4; round += 1) {
+    await client.evaluate(`document.querySelectorAll('.clip-card')[${round % 2}].click()`);
+    await new Promise(resolve => setTimeout(resolve, 800));
+    peaks.push((await readPreviewDebug()).frames);
+  }
+  const peak = Math.max(...peaks);
+  assert.ok(peaks.every(count => count >= 0), `live frame readings were ${JSON.stringify(peaks)}`);
+  assert.ok(peak <= 60, `live VideoFrames peaked at ${peak} across four source switches (${JSON.stringify(peaks)}), which means frames from the previous source leak`);
+  console.log(`PASS software preview closes the previous source's frames on every switch: live VideoFrames per switch ${JSON.stringify(peaks)}, peak ${peak} <= 60 (lookahead cap 45)`);
+
+  const beforeHide = await readPreviewDebug();
+  await client.evaluate("window.dispatchEvent(new PageTransitionEvent('pagehide')); true");
+  await new Promise(resolve => setTimeout(resolve, 700));
+  const afterHide = await readPreviewDebug();
+  assert.equal(afterHide.frames, 0, `pagehide left ${afterHide.frames} decoded frames alive`);
+  assert.ok(Math.abs(afterHide.time - beforeHide.time) < 1.2, `playback kept running after pagehide (${beforeHide.time} -> ${afterHide.time})`);
+  await new Promise(resolve => setTimeout(resolve, 700));
+  const stillHidden = await readPreviewDebug();
+  assert.ok(Math.abs(stillHidden.time - afterHide.time) < 0.2, `the clock advanced after pagehide (${afterHide.time} -> ${stillHidden.time})`);
+  await client.evaluate("document.querySelector('#preview-canvas').click()");
+  await new Promise(resolve => setTimeout(resolve, 900));
+  const resumed = await readPreviewDebug();
+  assert.ok(resumed.frames > 0, 'the software preview did not resume after pagehide');
+  assert.ok(resumed.time < afterHide.time + 1.5 && resumed.time > 0, `the resumed preview did not restart from frame 0 (${afterHide.time} -> ${resumed.time})`);
+  console.log(`PASS pagehide releases all ${beforeHide.frames} decoded frames, pauses the clock and the next click replays from frame 0 (${resumed.time.toFixed(2)} s)`);
+
   if (client.exceptions.length) throw new Error(`Browser exceptions:\n${client.exceptions.join('\n')}`);
 } finally {
   printSummary();
