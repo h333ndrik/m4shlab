@@ -75,6 +75,21 @@
     <p id="error" class="error" role="alert" hidden></p>
     <pre id="report" hidden></pre>
 
+    <section id="debug-panel" class="debug-panel" aria-label="Diagnostics" hidden>
+      <div class="debug-heading">
+        <h2>Diagnostics</h2>
+        <span id="debug-strip-status" class="status"></span>
+        <button id="debug-close" type="button">Hide</button>
+      </div>
+      <pre id="debug-info"></pre>
+      <div class="debug-actions">
+        <button id="debug-strip-modified" type="button">Render frame strip</button>
+        <button id="debug-strip-cut" type="button">Render frame strip (Cut control)</button>
+        <a id="debug-strip-download" class="button" download="m4shlab-frame-strip.png" hidden>Download PNG</a>
+      </div>
+      <canvas id="debug-strip-canvas" class="debug-strip-canvas" width="1440" height="300" hidden></canvas>
+      <pre id="debug-video-state"></pre>
+    </section>
 
     <details id="bitstream-report" class="bitstream-report">
       <summary>BITSTREAM REPORT</summary>

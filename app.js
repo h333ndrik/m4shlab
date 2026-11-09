@@ -113,6 +113,15 @@ const OPTIONAL_UI = [
   'trim-preview-out',
   'trim-reset',
   'trim-apply',
+  'debug-panel',
+  'debug-info',
+  'debug-video-state',
+  'debug-close',
+  'debug-strip-modified',
+  'debug-strip-cut',
+  'debug-strip-status',
+  'debug-strip-canvas',
+  'debug-strip-download',
 ];
 const missingRequiredUi = REQUIRED_UI.filter(id => !document.getElementById(id));
 const inputA = document.querySelector('#file-input-a');
@@ -133,6 +142,15 @@ const previewTime = document.querySelector('#preview-time');
 const soundToggle = document.querySelector('#sound-toggle');
 const previewCanvas = document.querySelector('#preview-canvas');
 const softwarePreviewToggle = document.querySelector('#software-preview');
+const debugPanel = document.querySelector('#debug-panel');
+const debugInfo = document.querySelector('#debug-info');
+const debugVideoState = document.querySelector('#debug-video-state');
+const debugClose = document.querySelector('#debug-close');
+const debugStripModified = document.querySelector('#debug-strip-modified');
+const debugStripCut = document.querySelector('#debug-strip-cut');
+const debugStripStatus = document.querySelector('#debug-strip-status');
+const debugStripCanvas = document.querySelector('#debug-strip-canvas');
+const debugStripDownload = document.querySelector('#debug-strip-download');
 const projectName = document.querySelector('#project-name');
 const projectMenu = document.querySelector('#project-menu');
 const saveSettingsButton = document.querySelector('#save-settings');
@@ -3625,6 +3643,279 @@ function wireOptionalUi() {
   }
 }
 
+/* ── Diagnostics (?debug=1) ────────────────────────────────────────────────
+   Read-only instrumentation for the mobile playback reports: it names the
+   build and the running shell, logs the WebCodecs verdict for the clip's own
+   decoder configuration, lists the conversion path per clip and samples the
+   <video> element's state. The frame strip is the ground truth — it decodes
+   the merged bytes with WebCodecs and paints twelve frames across the mosh
+   boundary, so a strip that shows the effect proves the bytes are correct and
+   only the playback path hides it. */
+
+const DEBUG_MODE = new URLSearchParams(location.search).get('debug') === '1';
+const STRIP_COLUMNS = 6;
+const STRIP_ROWS = 2;
+const STRIP_FRAMES = STRIP_COLUMNS * STRIP_ROWS;
+const debugEvents = {stalled: 0, error: 0, ended: 0, loadeddata: 0, loadedmetadata: 0, emptied: 0};
+const debugSupport = {key: '', text: 'WebCodecs: not checked yet', token: 0};
+let debugTimer = 0;
+let debugSwVersion = null;
+let debugStripUrl = null;
+
+function setDebugStripStatus(message) {
+  if (debugStripStatus) debugStripStatus.textContent = message;
+}
+
+async function readServiceWorkerVersion() {
+  try {
+    const response = await fetch('./sw.js', {cache: 'no-store'});
+    const text = await response.text();
+    return /VERSION\s*=\s*'([^']+)'/.exec(text)?.[1] ?? 'unreadable';
+  } catch {
+    return 'unavailable';
+  }
+}
+
+function debugCodecName(track) {
+  return track?.codecFamily === 'hevc' ? 'HEVC' : 'H.264';
+}
+
+async function refreshDebugSupport() {
+  const token = ++debugSupport.token;
+  const clip = clips.find(item => item.id === previewedClipId) ?? clips[0];
+  if (!clip) {
+    debugSupport.text = 'WebCodecs: no clip loaded';
+    return;
+  }
+  const lines = [
+    `WebCodecs    VideoDecoder ${typeof VideoDecoder === 'function' ? 'yes' : 'no'} · VideoEncoder ${typeof VideoEncoder === 'function' ? 'yes' : 'no'} · VideoFrame ${typeof VideoFrame === 'function' ? 'yes' : 'no'}`,
+  ];
+  if (typeof VideoDecoder === 'function') {
+    try {
+      const parsed = parseMp4(clip.bytes);
+      const selection = await decoderConfigForTrack(clip.bytes, parsed.videoTrack);
+      if (token !== debugSupport.token) return;
+      const support = await VideoDecoder.isConfigSupported(selection.config);
+      if (token !== debugSupport.token) return;
+      const acceleration = support.config?.hardwareAcceleration ?? 'n/a';
+      lines.push(`decoder cfg  ${selection.codec} · isConfigSupported => supported=${support.supported}${support.supported ? ` · hardwareAcceleration=${acceleration}` : ''}`);
+    } catch (error) {
+      if (token !== debugSupport.token) return;
+      lines.push(`decoder cfg  unsupported: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  debugSupport.text = lines.join('\n');
+  updateDebugInfo();
+}
+
+function debugClipLines() {
+  if (clips.length === 0) return ['clips        none'];
+  const activeIndex = previewClipIndex();
+  return clips.map((clip, index) => {
+    const track = clip.mp4.videoTrack;
+    const conversion = clip.conversion;
+    const elapsed = conversion?.elapsedMs ?? conversion?.origin?.elapsedMs ?? null;
+    const marker = index === activeIndex && !previewAssembled ? '*' : ' ';
+    return `${marker}clip ${index + 1}     ${clip.file.name} · ${debugCodecName(track)} ${track.width}×${track.height} · ${conversionPath(clip)} · ${elapsed == null ? 'no conversion' : `${Math.round(elapsed)} ms`} · ${track.samples.length} frames`;
+  });
+}
+
+function debugVideoLines() {
+  const errorState = video.error
+    ? `error.code=${video.error.code} (${video.error.message || 'no message'})`
+    : 'error=null';
+  const software = softwarePreviewEnabled
+    ? `on${softwarePreviewInfo ? ` · ${softwarePreviewInfo.codec} · ${softwarePreviewInfo.chunks} chunks · ${softwarePreviewInfo.width}×${softwarePreviewInfo.height}` : ''}${softwarePreviewPlayer?.active ? ` · painted ${softwarePreviewPlayer.painted}` : ''}`
+    : 'off';
+  return [
+    `video        ${errorState} · readyState=${video.readyState} · networkState=${video.networkState}`,
+    `             time=${formatPreviewTime(video.currentTime)} / ${formatPreviewTime(video.duration)} s · paused=${video.paused} · muted=${video.muted} · hidden=${video.hidden}`,
+    `             currentSrc=${video.currentSrc || 'none'}`,
+    `events       stalled=${debugEvents.stalled} error=${debugEvents.error} ended=${debugEvents.ended} loadeddata=${debugEvents.loadeddata} emptied=${debugEvents.emptied}`,
+    `software     ${software}`,
+  ];
+}
+
+function updateDebugInfo() {
+  if (!DEBUG_MODE || !debugInfo) return;
+  const key = `${clips.map(clip => `${clip.id}:${clip.bytes.byteLength}`).join('|')}#${previewedClipId ?? ''}#${previewAssembled}`;
+  if (key !== debugSupport.key) {
+    debugSupport.key = key;
+    void refreshDebugSupport();
+  }
+  const lines = [
+    `build        ${BUILD} (page stamp) · sw.js VERSION ${debugSwVersion ?? '…'} · worker ${navigator.serviceWorker?.controller ? 'controlling' : 'not controlling'}`,
+    `user agent   ${navigator.userAgent}`,
+    `device       deviceMemory=${navigator.deviceMemory ?? 'not exposed'} · hardwareConcurrency=${navigator.hardwareConcurrency ?? 'not exposed'} · dpr=${window.devicePixelRatio}`,
+    debugSupport.text,
+    ...debugClipLines(),
+    ...debugVideoLines(),
+  ];
+  debugInfo.textContent = lines.join('\n');
+  if (debugVideoState && !debugVideoState.textContent) debugVideoState.textContent = 'frame strip   not rendered yet';
+}
+
+async function sha256Hex(buffer) {
+  try {
+    const digest = await crypto.subtle.digest('SHA-256', buffer);
+    return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+  } catch {
+    return 'unavailable';
+  }
+}
+
+function mergedBoundarySample(totalSamples) {
+  const report = merged?.result?.report;
+  if (!report) return null;
+  const boundary = report.boundaries?.[0]?.mergedSamples ?? report.aSamples ?? null;
+  if (!Number.isFinite(boundary) || boundary <= 0 || boundary >= totalSamples) return null;
+  return boundary;
+}
+
+function stripSampleIndices(totalSamples, center) {
+  const count = Math.min(STRIP_FRAMES, totalSamples);
+  if (!Number.isFinite(center)) {
+    return Array.from({length: count}, (_, index) => Math.min(totalSamples - 1, Math.round((index + 0.5) * totalSamples / count)));
+  }
+  const start = Math.max(0, Math.min(totalSamples - count, Math.round(center) - Math.floor(count / 2) + 1));
+  return Array.from({length: count}, (_, index) => Math.min(totalSamples - 1, start + index));
+}
+
+async function decodeStripFrames(bytes, indices) {
+  const parsed = parseMp4(bytes);
+  const selection = await decoderConfigForTrack(bytes, parsed.videoTrack);
+  const chunks = decodeChunksForTrack(bytes, parsed.videoTrack);
+  const wanted = new Set(indices);
+  const lastIndex = Math.min(indices[indices.length - 1], chunks.length - 1);
+  let start = 0;
+  for (let index = Math.min(indices[0], chunks.length - 1); index >= 0; index -= 1) {
+    if (chunks[index]?.type === 'key') {
+      start = index;
+      break;
+    }
+  }
+  const frames = new Map();
+  let produced = 0;
+  let failure = null;
+  const decoder = new VideoDecoder({
+    output: frame => {
+      const sampleIndex = start + produced;
+      produced += 1;
+      if (wanted.has(sampleIndex)) frames.set(sampleIndex, frame);
+      else frame.close();
+    },
+    error: error => {
+      failure = error;
+    },
+  });
+  decoder.configure(selection.config);
+  try {
+    for (let index = start; index <= lastIndex; index += 1) {
+      if (failure) throw failure;
+      decoder.decode(new EncodedVideoChunk(chunks[index]));
+      while (decoder.decodeQueueSize > 8) await new Promise(resolve => setTimeout(resolve, 2));
+    }
+    await decoder.flush();
+    if (failure) throw failure;
+  } finally {
+    try {
+      decoder.close();
+    } catch {}
+  }
+  return {frames, chunks};
+}
+
+function paintFrameStrip(canvas, samples) {
+  const first = samples.find(sample => sample.frame);
+  if (!first) throw new Error('no frame could be decoded');
+  const sourceWidth = first.frame.displayWidth || first.frame.codedWidth;
+  const sourceHeight = first.frame.displayHeight || first.frame.codedHeight;
+  const scale = Math.min(1, 240 / Math.max(sourceWidth, sourceHeight, 1));
+  const tileWidth = Math.max(40, Math.round(sourceWidth * scale));
+  const tileHeight = Math.max(24, Math.round(sourceHeight * scale));
+  const caption = 16;
+  canvas.width = STRIP_COLUMNS * tileWidth;
+  canvas.height = STRIP_ROWS * (tileHeight + caption);
+  const context = canvas.getContext('2d');
+  context.fillStyle = '#111111';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.font = '11px ui-monospace, Menlo, monospace';
+  context.textBaseline = 'top';
+  samples.forEach((sample, index) => {
+    if (!sample.frame) return;
+    const column = index % STRIP_COLUMNS;
+    const row = Math.floor(index / STRIP_COLUMNS);
+    const x = column * tileWidth;
+    const y = row * (tileHeight + caption);
+    context.drawImage(sample.frame, x, y, tileWidth, tileHeight);
+    context.fillStyle = '#eaeaea';
+    context.fillText(`#${sample.index} · ${(sample.timestamp / 1_000_000).toFixed(2)}s`, x + 3, y + tileHeight + 2);
+  });
+}
+
+async function renderDebugStrip(kind) {
+  if (!DEBUG_MODE) return;
+  if (!merged) {
+    setDebugStripStatus('build a merged sequence first — the strip decodes merged bytes');
+    return;
+  }
+  const source = kind === 'cut'
+    ? {bytes: merged.result.cut, label: 'cut control'}
+    : {bytes: merged.result.output, label: 'modified stream'};
+  const totalSamples = parseMp4(source.bytes).videoTrack.samples.length;
+  const center = kind === 'cut' ? null : mergedBoundarySample(totalSamples);
+  const indices = stripSampleIndices(totalSamples, center);
+  setDebugStripStatus(`decoding ${indices.length} frames of the ${source.label}…`);
+  try {
+    const {frames, chunks} = await decodeStripFrames(source.bytes, indices);
+    const samples = indices.map(index => ({
+      index,
+      timestamp: chunks[index]?.timestamp ?? 0,
+      frame: frames.get(index) ?? null,
+    }));
+    paintFrameStrip(debugStripCanvas, samples);
+    for (const frame of frames.values()) frame.close();
+    debugStripCanvas.hidden = false;
+    const drawn = samples.filter(sample => sample.frame).length;
+    const blob = await new Promise(resolve => debugStripCanvas.toBlob(resolve, 'image/png'));
+    if (blob && debugStripDownload) {
+      if (debugStripUrl) URL.revokeObjectURL(debugStripUrl);
+      debugStripUrl = URL.createObjectURL(blob);
+      debugStripDownload.href = debugStripUrl;
+      debugStripDownload.hidden = false;
+    }
+    const hash = blob ? await sha256Hex(await blob.arrayBuffer()) : 'unavailable';
+    setDebugStripStatus(`${drawn}/${indices.length} frames · ${source.label}${center == null ? '' : ` · boundary sample ${center}`} · ${debugStripCanvas.width}×${debugStripCanvas.height}`);
+    if (debugVideoState) debugVideoState.textContent = `frame strip   ${drawn}/${indices.length} frames · ${source.label} · ${totalSamples} samples · sha256 ${hash.slice(0, 32)}`;
+    updateDebugInfo();
+  } catch (error) {
+    setDebugStripStatus(`frame strip failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function initDebugMode() {
+  if (!DEBUG_MODE || !debugPanel) return;
+  debugPanel.hidden = false;
+  for (const name of Object.keys(debugEvents)) {
+    video.addEventListener(name, () => {
+      debugEvents[name] += 1;
+    });
+  }
+  debugStripModified?.addEventListener('click', () => void renderDebugStrip('modified'));
+  debugStripCut?.addEventListener('click', () => void renderDebugStrip('cut'));
+  debugClose?.addEventListener('click', () => {
+    if (debugPanel) debugPanel.hidden = true;
+    if (debugTimer) clearInterval(debugTimer);
+    debugTimer = 0;
+  });
+  updateDebugInfo();
+  void readServiceWorkerVersion().then(version => {
+    debugSwVersion = version;
+    updateDebugInfo();
+  });
+  debugTimer = setInterval(updateDebugInfo, 500);
+}
+
 function startApp() {
   document.documentElement.dataset.optionalUi = OPTIONAL_UI.join(',');
   if (missingRequiredUi.length > 0) {
@@ -3638,6 +3929,7 @@ function startApp() {
   wireOptionalUi();
   applySoundPreference();
   applySoftwarePreviewPreference();
+  initDebugMode();
   if (projectName) {
     projectName.value = readProjectName();
     autoSizeProjectName();

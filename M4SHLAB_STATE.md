@@ -8,9 +8,11 @@ Updated: 2026-11-09
 
 The report that drove this block: on desktop the manipulated blobs show the mosh in `<video>`, on phones the effect is missing or playback misbehaves. The hypothesis is that hardware decoders conceal a removed IDR by repeating the last reference picture, so the playback path — not the bytes — differs per device.
 
+- `?debug=1` opens a diagnostics panel: page build stamp, fetched `sw.js` VERSION, user agent, `deviceMemory`/`hardwareConcurrency`/dpr, WebCodecs availability, `VideoDecoder.isConfigSupported` for the previewed clip's own configuration, per-clip codec/conversion path/conversion duration/frame count, live `<video>` state plus counters for `stalled`, `error`, `ended`, `loadeddata` and `emptied`.
+- The panel's **Render frame strip** buttons decode twelve frames of the merged output (centred on the mosh boundary) and of the untouched Cut control with WebCodecs, paint a labelled 6×2 canvas and offer it as a PNG with a SHA-256 of the image. The strip is the ground truth: artefacts there mean the bytes are correct.
 - **Software preview** (next to the time readout, default off, `m4shlab-software-preview`) decodes the edited stream with `VideoDecoder` into a canvas in the preview well: sequential decode → draw → `frame.close()`, ~1.5 s lookahead, 720 px canvas cap, click to play/pause, seeking restarts from frame 0, no audio. A failed decode names the reason, switches the toggle off and returns to `<video>`.
 
-Suites at this block: 84 Node, 106 WebCodecs (103 + 3 software-preview checks), 10 cursor, 6 PWA (33 precache assets, caches `m4shlab-v35`), acceptance `PASS 16 / FAIL 0 / UNVERIFIABLE 6 of 22`.
+Suites at this block: 84 Node, 116 WebCodecs (103 + 9 optional-element checks for the new optional ids + 4 new feature checks), 10 cursor, 6 PWA (33 precache assets, caches `m4shlab-v35`), acceptance `PASS 16 / FAIL 0 / UNVERIFIABLE 6 of 22`.
 
 Known limits of software preview: it restarts at frame 0 when the source or settings change, it does not play or sync audio, it needs a WebCodecs `VideoDecoder` for the stream's own configuration, and it decodes sequentially from the first keyframe (normalized clips carry a single keyframe at frame 0).
 

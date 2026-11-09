@@ -158,6 +158,12 @@ A `0.00 / 0.00 s` readout follows `timeupdate`, `durationchange`, and metadata e
 
 The **Software preview** checkbox sits next to the time readout, is off by default, and is remembered under the localStorage key `m4shlab-software-preview`. With it on, the preview no longer plays the blob through a `<video>` element: the edited stream is decoded with `VideoDecoder` and painted into a canvas in the same well, one frame at a time (decode → draw → `frame.close()`, about 1.5 s of lookahead, canvas capped at 720 px on the long side). This is the same decode path an export reviewer uses, so it shows the reference-loss artefacts even on hardware decoders that quietly repeat the last picture instead of showing them. Playback is click-to-play/pause; seeking restarts from frame 0. Audio is not played in software preview — the toggle's tooltip says so, and export audio is unaffected. If the decode of the edited stream throws, the app names the reason, switches the toggle off and returns to `<video>` playback instead of leaving a blank canvas.
 
+### Diagnostics (`?debug=1`)
+
+Adding `?debug=1` to the URL shows a diagnostics panel above the bitstream report. It lists the page build stamp, the `sw.js` VERSION it fetched, the user agent, exposed device limits, whether `VideoDecoder`/`VideoEncoder`/`VideoFrame` exist, the result of `VideoDecoder.isConfigSupported` for the previewed clip's own configuration, the conversion path and frame count per clip, and the live `<video>` state (`error.code`, `readyState`, `networkState`, `currentSrc`) with counters for `stalled`, `error`, `ended`, `loadeddata`, and `emptied` events.
+
+Two buttons render a **frame strip**: twelve frames decoded from the merged output around the mosh boundary, painted into a labelled 6×2 canvas and offered as a PNG download. A second button renders the same strip for the untouched Cut control clip. The strip is the ground truth for a device report: corrupted frames in the strip mean the bytes are correct and only the playback path differs. Without `?debug=1` the panel is not created and the normal UI is unchanged.
+
 ### Phase C: WebCodecs normalization
 
 1. Feature-detect `VideoDecoder`, `VideoEncoder`, and `VideoFrame`; select an H.264 encoder configuration supported by the current browser.
@@ -393,7 +399,7 @@ Phase A, Phase B, and the multi-clip chain edit H.264 NAL units without blending
 
 The effect depends on the source GOP structure. Decode behavior is device-dependent: some sources may refuse to play after IDR removal, show black frames, or hold the last decodable frame, especially when seeking directly into a modified GOP. Different browsers and hardware decoders can show different results. This is expected behavior, not a bug.
 
-Mobile hardware decoders are the most tolerant case: several of them repair or conceal a removed IDR by repeating the last reference picture, so a phone's `<video>` can play a mosh sequence cleanly while the same bytes show the effect on desktop. The bytes are not different — the decoder path is. `Software preview` slides along that path in the editor; the exported file is unchanged either way.
+Mobile hardware decoders are the most tolerant case: several of them repair or conceal a removed IDR by repeating the last reference picture, so a phone's `<video>` can play a mosh sequence cleanly while the same bytes show the effect on desktop. The bytes are not different — the decoder path is. `Software preview` and the `?debug=1` frame strip exist to show that difference; the exported file is unchanged either way.
 
 Phase A handles a single H.264 video track in a conventional (non-fragmented) MP4. Interleaved audio sample offsets are adjusted when present. On multi-GOP sources, removing later IDRs can make the decoder discard dependent pictures, so the decoded frame count can be lower than the MP4 sample/packet count; that is the intended mosh behavior, not a parse failure.
 

@@ -3699,15 +3699,17 @@ try {
       checked: toggle.checked,
       tooltip: toggle.closest('label')?.title ?? '',
       canvasHidden: document.querySelector('#preview-canvas').hidden,
+      debugHidden: document.querySelector('#debug-panel').hidden,
       stored: localStorage.getItem('m4shlab-software-preview'),
     };
   })()`);
   assert.deepEqual(previewDefaults.order, ['sound-toggle', 'preview-time', 'software-toggle'], `preview row order is ${JSON.stringify(previewDefaults.order)}`);
   assert.equal(previewDefaults.checked, false, 'software preview must default to off');
   assert.equal(previewDefaults.canvasHidden, true, 'the preview canvas must stay hidden while software preview is off');
+  assert.equal(previewDefaults.debugHidden, true, 'the diagnostics overlay must stay hidden without ?debug=1');
   assert.equal(previewDefaults.stored, null, 'a fresh profile must not carry a stored software-preview preference');
   assert.match(previewDefaults.tooltip, /Audio is not played in software preview/, 'the software preview tooltip must state that audio is not played');
-  console.log('PASS software preview defaults to off, sits next to the time readout and states the audio limit in its tooltip');
+  console.log('PASS software preview defaults to off, sits next to the time readout, states the audio limit in its tooltip, and the diagnostics overlay stays hidden without ?debug=1');
 
   await client.setFiles('#file-input-a', [fixtures.effectA, fixtures.effectB]);
   await client.waitFor("document.querySelectorAll('.clip-card').length === 2", 60000);
@@ -3776,6 +3778,47 @@ try {
   assert.equal(softwareFallback.canvasHidden, true, 'the canvas must hide on fallback');
   assert.equal(softwareFallback.videoHidden, false, 'the <video> element must come back on fallback');
   console.log('PASS a failing software decode reports the reason, reverts to the <video> element and persists the switched-off state');
+
+  await client.send('Page.navigate', {url: `${baseUrl}?debug=1`});
+  await client.waitFor("document.documentElement.dataset.appReady === 'true'", 15000);
+  await client.setFiles('#file-input-a', [fixtures.effectA, fixtures.effectB]);
+  await client.waitFor("document.querySelectorAll('.clip-card').length === 2", 60000);
+  await client.waitFor("!document.querySelector('#assemble-preview').disabled", 180000);
+  await client.evaluate("document.querySelector('#assemble-preview').click()");
+  await client.waitFor("document.querySelector('#debug-panel').hidden === false", 10000);
+  await client.waitFor("document.querySelector('#debug-info').textContent.includes('sw.js VERSION')", 15000);
+  await client.evaluate("document.querySelector('#debug-strip-modified').click()");
+  await client.waitFor("document.querySelector('#debug-strip-status').textContent.startsWith('12/12 frames · modified stream')", 120000);
+  const modified = await client.evaluate("document.querySelector('#debug-strip-status').textContent");
+  await client.evaluate("document.querySelector('#debug-strip-cut').click()");
+  await client.waitFor("document.querySelector('#debug-strip-status').textContent.startsWith('12/12 frames · cut control')", 120000);
+  const cut = await client.evaluate("document.querySelector('#debug-strip-status').textContent");
+  const diagnostics = await client.evaluate(`(() => {
+    const canvas = document.querySelector('#debug-strip-canvas');
+    const info = document.querySelector('#debug-info').textContent;
+    const strip = document.querySelector('#debug-video-state').textContent;
+    const data = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+    let ink = 0;
+    for (let index = 0; index < data.length; index += 4) if (data[index] + data[index + 1] + data[index + 2] > 40) ink += 1;
+    return {
+      info,
+      strip,
+      ink,
+      download: !document.querySelector('#debug-strip-download').hidden,
+      href: document.querySelector('#debug-strip-download').getAttribute('href') || '',
+    };
+  })()`);
+  assert.match(modified, /boundary sample 25/, `modified strip did not centre on the mosh boundary: ${modified}`);
+  assert.match(diagnostics.info, /build\s+v\d+ \(page stamp\) · sw\.js VERSION v\d+/, 'diagnostics must name the page build and the sw.js VERSION');
+  assert.match(diagnostics.info, /WebCodecs\s+VideoDecoder yes/, 'diagnostics must report WebCodecs support');
+  assert.match(diagnostics.info, /decoder cfg\s+avc1\./, 'diagnostics must report isConfigSupported for the clip configuration');
+  assert.match(diagnostics.info, /clip 1\s+.*·.*·.*·.*frames/, 'diagnostics must list the per-clip conversion path and frame count');
+  assert.match(diagnostics.info, /video\s+error=.*readyState=.*networkState=.*/s, 'diagnostics must sample the <video> element state');
+  assert.match(diagnostics.strip, /sha256 [0-9a-f]{32}/, `strip provenance line is ${diagnostics.strip}`);
+  assert.ok(diagnostics.ink > 1000, `frame strip holds only ${diagnostics.ink} lit pixels`);
+  assert.equal(diagnostics.download, true, 'the strip PNG download must be offered');
+  assert.match(diagnostics.href, /^blob:/, `strip download href is ${diagnostics.href}`);
+  console.log(`PASS ?debug=1 shows build/sw.js VERSION, WebCodecs verdict, per-clip paths and <video> state, and renders a 12-frame strip for the modified stream (${modified}) and the cut control (${cut}) with a PNG hash`);
 
   if (client.exceptions.length) throw new Error(`Browser exceptions:\n${client.exceptions.join('\n')}`);
 } finally {

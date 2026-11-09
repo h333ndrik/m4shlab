@@ -172,6 +172,57 @@ button:focus-visible,
   outline-offset: 3px;
 }
 
+.debug-panel {
+  margin: 20px 0 0;
+  padding: 12px;
+  border: 1px dashed #b9b9b4;
+  border-radius: 4px;
+  background: #ffffffb0;
+  font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.debug-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.debug-heading h2 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.debug-heading .status { margin-right: auto; }
+
+.debug-panel pre {
+  max-height: 220px;
+  margin: 0 0 10px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.debug-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.debug-strip-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-bottom: 10px;
+  border-radius: 4px;
+  background: #000;
+}
+
 .shell-notice {
   display: flex;
   align-items: center;
