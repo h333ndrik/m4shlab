@@ -2,6 +2,21 @@
 
 Updated: 2026-11-09
 
+## Import resilience (build stamp v36)
+
+**State: shipped on `main`, automated suites green, device acceptance pending.** `v36` is the shell-consistency counter, not a release version.
+
+Device report: after one successful import and preview session on iOS Safari, further imports did nothing. The editor had no way out of that state — no error, no timeout, the busy counter held by a conversion promise that never settled.
+
+- Conversion watchdog: 60 s without any worker message aborts the conversion with "Conversion did not respond. Reload the page and try a shorter clip." It is armed before the worker is acquired, so a worker that is never handed out also trips it.
+- Import watchdog: the same message covers a picker that succeeds but whose read never returns; the import is abandoned, the token is superseded, the skeletons are dropped and the busy counter is released.
+- Worker health: `error` and `messageerror` on a slot mark it dead and report the message; a dead slot is disposed and the next acquisition spawns a fresh worker. Worker failures that happen while nothing is in flight now reach `#error`.
+- ffmpeg.wasm core load failures report "Conversion engine could not be loaded — check the connection once; it is cached afterwards."
+
+Measured before/after with a Worker stub that never answers (`synthetic-fragmented.mp4` always takes the ffmpeg.wasm path): before, after 12 s the error stayed hidden, `#status` still read "Reading 1 clip…" and `#load-settings` stayed disabled; after, the error and the release appear within 2 s.
+
+Suites at this commit: 84 Node, 119 WebCodecs (116 + 3 resilience checks), 6 PWA, acceptance `PASS 16 / FAIL 0 / UNVERIFIABLE 6 of 22`.
+
 ## Mobile playback: diagnostics and software preview (build stamp v35)
 
 **State: shipped on `main`, automated suites green, device acceptance pending.** The build stamp `v35` is again only the shell-consistency counter, not a release version.

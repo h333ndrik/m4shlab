@@ -49,6 +49,7 @@ const fixtures = {
   speed: join(projectRoot, 'testmedia', 'synthetic-speed-60.mp4'),
   poc0A: join(projectRoot, 'testmedia', 'synthetic-multigop-poc0-a.mp4'),
   poc0B: join(projectRoot, 'testmedia', 'synthetic-multigop-poc0-b.mp4'),
+  fragmented: join(projectRoot, 'testmedia', 'synthetic-fragmented.mp4'),
 };
 const normalizedPaths = {
   a: join(projectRoot, 'testmedia', 'webcodecs-browser-normalized-a.mp4'),
@@ -3819,6 +3820,110 @@ try {
   assert.equal(diagnostics.download, true, 'the strip PNG download must be offered');
   assert.match(diagnostics.href, /^blob:/, `strip download href is ${diagnostics.href}`);
   console.log(`PASS ?debug=1 shows build/sw.js VERSION, WebCodecs verdict, per-clip paths and <video> state, and renders a 12-frame strip for the modified stream (${modified}) and the cut control (${cut}) with a PNG hash`);
+
+  // ── Import resilience: watchdog, busy release, worker respawn ────────────
+  // `synthetic-fragmented.mp4` cannot be parsed, so every import of it takes
+  // the ffmpeg.wasm worker path — the fake Worker below therefore always deadlocks.
+  const silentWorkerSource = `(() => {
+    const apply = () => {
+      document.documentElement.dataset.conversionWatchdogMs = '1500';
+      document.documentElement.dataset.importStallMs = '20000';
+    };
+    if (document.documentElement) apply();
+    else document.addEventListener('DOMContentLoaded', apply, {once: true});
+    window.__realWorker = window.Worker;
+    window.Worker = class SilentWorker extends EventTarget {
+      postMessage() {}
+      terminate() {}
+    };
+  })();`;
+  const watchScript = await client.send('Page.addScriptToEvaluateOnNewDocument', {source: silentWorkerSource});
+  await client.send('Page.navigate', {url: `${baseUrl}?resilience=watchdog`});
+  await client.waitFor("document.documentElement.dataset.appReady === 'true'", 15000);
+  await client.setFiles('#file-input-a', [fixtures.fragmented]);
+  await client.waitFor("!document.querySelector('#error').hidden", 30000);
+  const stalled = await client.evaluate(`(() => ({
+    error: document.querySelector('#error').textContent,
+    status: document.querySelector('#status').textContent,
+    loadDisabled: document.querySelector('#load-settings').disabled,
+    skeletons: document.querySelectorAll('.clip-skeleton').length,
+    cards: document.querySelectorAll('.clip-card').length,
+    progressHidden: document.querySelector('#conversion-progress').hidden,
+  }))()`);
+  assert.match(stalled.error, /Conversion did not respond\. Reload the page and try a shorter clip\./, `watchdog message is ${stalled.error}`);
+  assert.equal(stalled.loadDisabled, false, 'the busy state must be released after a watchdog abort');
+  assert.equal(stalled.skeletons, 0, `the watchdog left ${stalled.skeletons} skeleton cards behind`);
+  assert.equal(stalled.cards, 0, 'a conversion that never answered must not add a clip');
+  assert.equal(stalled.progressHidden, true, 'the conversion panel must close after a watchdog abort');
+  await client.send('Page.removeScriptToEvaluateOnNewDocument', {identifier: watchScript.identifier});
+  await client.evaluate('window.Worker = window.__realWorker; true');
+  await client.setFiles('#file-input-a', [fixtures.effectA]);
+  await client.waitFor("document.querySelectorAll('.clip-card').length === 1", 180000);
+  const recovered = await client.evaluate("document.querySelector('#error').hidden ? null : document.querySelector('#error').textContent");
+  assert.equal(recovered, null, `the import after a watchdog abort still reports: ${recovered}`);
+  console.log('PASS a silent converter trips the watchdog with an actionable message, releases the busy state and the skeletons, and the next import succeeds');
+
+  const failingWorkerSource = `(() => {
+    const apply = () => {
+      document.documentElement.dataset.conversionWatchdogMs = '60000';
+      document.documentElement.dataset.importStallMs = '60000';
+    };
+    if (document.documentElement) apply();
+    else document.addEventListener('DOMContentLoaded', apply, {once: true});
+    window.__realWorker = window.Worker;
+    window.Worker = class FailingWorker extends EventTarget {
+      postMessage() {
+        setTimeout(() => this.dispatchEvent(new ErrorEvent('error', {message: 'probe worker crashed', cancelable: true})), 10);
+      }
+      terminate() {}
+    };
+  })();`;
+  const failScript = await client.send('Page.addScriptToEvaluateOnNewDocument', {source: failingWorkerSource});
+  await client.send('Page.navigate', {url: `${baseUrl}?resilience=worker-error`});
+  await client.waitFor("document.documentElement.dataset.appReady === 'true'", 15000);
+  await client.setFiles('#file-input-a', [fixtures.fragmented]);
+  await client.waitFor("!document.querySelector('#error').hidden", 30000);
+  const workerError = await client.evaluate("document.querySelector('#error').textContent");
+  assert.match(workerError, /probe worker crashed/, `a worker error must reach #error, got ${workerError}`);
+  await client.send('Page.removeScriptToEvaluateOnNewDocument', {identifier: failScript.identifier});
+  await client.evaluate('window.Worker = window.__realWorker; true');
+  await client.setFiles('#file-input-a', [fixtures.effectA]);
+  await client.waitFor("document.querySelectorAll('.clip-card').length === 1", 180000);
+  console.log(`PASS a worker error event surfaces in #error ("${workerError}") and the next import respawns a fresh worker`);
+
+  const stallSource = `(() => {
+    const apply = () => {
+      document.documentElement.dataset.conversionWatchdogMs = '60000';
+      document.documentElement.dataset.importStallMs = '1200';
+    };
+    if (document.documentElement) apply();
+    else document.addEventListener('DOMContentLoaded', apply, {once: true});
+    window.__realWorker = window.Worker;
+    window.Worker = class SilentWorker extends EventTarget {
+      postMessage() {}
+      terminate() {}
+    };
+  })();`;
+  const stallScript = await client.send('Page.addScriptToEvaluateOnNewDocument', {source: stallSource});
+  await client.send('Page.navigate', {url: `${baseUrl}?resilience=import-stall`});
+  await client.waitFor("document.documentElement.dataset.appReady === 'true'", 15000);
+  const before = Date.now();
+  await client.setFiles('#file-input-a', [fixtures.fragmented]);
+  await client.waitFor("document.querySelector('#status').textContent.startsWith('Import stopped')", 30000);
+  const importStall = await client.evaluate(`(() => ({
+    status: document.querySelector('#status').textContent,
+    error: document.querySelector('#error').textContent,
+    loadDisabled: document.querySelector('#load-settings').disabled,
+  }))()`);
+  const elapsed = Date.now() - before;
+  assert.match(importStall.error, /Conversion did not respond/, `import-stall message is ${importStall.error}`);
+  assert.equal(importStall.loadDisabled, false, 'the import-level stall must release the busy state too');
+  assert.ok(elapsed < 20000, `the import-level watchdog took ${elapsed} ms`);
+  await client.send('Page.removeScriptToEvaluateOnNewDocument', {identifier: stallScript.identifier});
+  await client.evaluate('window.Worker = window.__realWorker; true');
+  await client.setFiles('#file-input-a', [fixtures.effectA]);
+  await client.waitFor("document.querySelectorAll('.clip-card').length === 1", 180000);
+  console.log(`PASS an import whose pipeline never starts is abandoned after the stall window (${Math.round(elapsed)} ms in the test), reports the same actionable message and stays usable`);
 
   if (client.exceptions.length) throw new Error(`Browser exceptions:\n${client.exceptions.join('\n')}`);
 } finally {

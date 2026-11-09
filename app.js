@@ -10,8 +10,10 @@ import {
   mergeSequenceH264,
 } from './merge.js';
 import {
+  converterWorkerStatus,
   convertToH264,
   extractAudioPcmWithFfmpeg,
+  onConverterFailure,
   MAX_CONVERSION_BYTES,
   muxAacWithFfmpeg,
   muxPcmWithFfmpeg,
@@ -37,7 +39,7 @@ import {
 } from './audio.js';
 
 const MAX_CLIPS = 12;
-const BUILD = 'v35';
+const BUILD = 'v36';
 const SHELL_NOTICE_MIXED = 'This page mixes two m4shlab versions. Reload to get a consistent editor.';
 const SHELL_NOTICE_INCOMPLETE = 'This editor is incomplete. Reload the page.';
 const REQUIRED_UI = [
@@ -2800,6 +2802,13 @@ async function importFilesOrReport(fileList) {
   if (clips.length === loadedBefore && error.hidden) setError(importFailureText(files, ''));
 }
 
+const IMPORT_STALL_TEXT = 'Conversion did not respond. Reload the page and try a shorter clip.';
+
+function importStallMs() {
+  const override = Number(document.documentElement.dataset.importStallMs);
+  return Number.isFinite(override) && override > 0 ? override : 60_000;
+}
+
 async function importFilesInternal(fileList) {
   const candidates = [...fileList].filter(looksLikeVideo);
   if (candidates.length === 0) {
@@ -2823,7 +2832,7 @@ async function importFilesInternal(fileList) {
   importSkeletons = selected.map((file, index) => ({token, index, file, status: 'waiting'}));
   renderSourceTiers();
 
-  const settled = await mapWithConcurrency(selected, 2, async (file, offset) => {
+  const work = mapWithConcurrency(selected, 2, async (file, offset) => {
     updateImportSkeleton(token, offset, 'converting… 0 %');
     try {
       return {
@@ -2835,7 +2844,28 @@ async function importFilesInternal(fileList) {
     } catch (reason) {
       return {status: 'rejected', reason};
     }
+  }).then(value => ({outcome: 'settled', value}), error => ({outcome: 'failed', error}));
+
+  // A conversion the worker dropped never settles. The watchdog turns that into
+  // a visible error and releases the busy counter instead of leaving the editor
+  // looking dead until the page is reloaded.
+  let stallTimer = 0;
+  const stalled = new Promise(resolve => {
+    stallTimer = setTimeout(() => resolve({outcome: 'stalled'}), importStallMs());
   });
+  const outcome = await Promise.race([work, stalled]);
+  clearTimeout(stallTimer);
+  if (outcome.outcome === 'stalled') {
+    importToken += 1;
+    importSkeletons = [];
+    renderSourceTiers();
+    finishConversionPanel();
+    status.textContent = 'Import stopped: the conversion did not respond.';
+    setError(IMPORT_STALL_TEXT);
+    return;
+  }
+  if (outcome.outcome === 'failed') throw outcome.error;
+  const settled = outcome.value;
   if (token !== importToken) {
     for (const result of settled) {
       if (result.status === 'fulfilled' && result.value?.url) URL.revokeObjectURL(result.value.url);
@@ -3927,6 +3957,10 @@ function startApp() {
   wireTransitionDialogEvents();
   wireCoreUi();
   wireOptionalUi();
+  onConverterFailure(message => {
+    if (importInFlight > 0) return;
+    setError(`Conversion engine error: ${message} Reload the page if this keeps happening.`);
+  });
   applySoundPreference();
   applySoftwarePreviewPreference();
   initDebugMode();

@@ -4,17 +4,72 @@ import { normalizeSpeed } from './speed.js';
 
 const MAX_CONVERSION_BYTES = 100 * 1024 * 1024;
 const FFMPEG_CORE_VERSION = '0.12.10';
-const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000;
+const DEFAULT_CONVERSION_WATCHDOG_MS = 60 * 1000;
 const MAX_WORKERS = 2;
 const workers = [];
 const waiters = [];
+const failureListeners = new Set();
+const recentFailures = [];
 let nextRequestId = 1;
+let lastWatchdogAt = null;
+
+/* The watchdog is the only thing that ends a conversion the worker silently
+   dropped (a wedged wasm instance, a terminated thread, a core fetch that never
+   settles). Sixty seconds without any message is the contract; tests shorten it
+   with the data-conversion-watchdog-ms attribute on <html>. */
+function conversionWatchdogMs() {
+  const override = Number(globalThis.document?.documentElement?.dataset?.conversionWatchdogMs);
+  return Number.isFinite(override) && override > 0 ? override : DEFAULT_CONVERSION_WATCHDOG_MS;
+}
+
+function watchdogError() {
+  return new Error('Conversion did not respond. Reload the page and try a shorter clip.');
+}
+
+export function onConverterFailure(listener) {
+  failureListeners.add(listener);
+  return () => failureListeners.delete(listener);
+}
+
+function reportWorkerFailure(message) {
+  const failure = {message, at: Date.now()};
+  recentFailures.push(failure);
+  if (recentFailures.length > 20) recentFailures.shift();
+  for (const listener of failureListeners) {
+    try {
+      listener(message);
+    } catch {}
+  }
+}
+
+function noteWatchdog() {
+  lastWatchdogAt = Date.now();
+  reportWorkerFailure(watchdogError().message);
+}
+
+export function converterWorkerStatus() {
+  return {
+    workers: workers.map(slot => ({busy: slot.busy, dead: slot.dead === true, lastError: slot.lastError ?? null})),
+    queued: waiters.length,
+    failures: recentFailures.length,
+    lastFailure: recentFailures.at(-1) ?? null,
+    lastWatchdogAt,
+  };
+}
 
 function createWorkerSlot() {
-  const slot = {
-    busy: false,
-    worker: new Worker(new URL('./converter-worker.js', import.meta.url), {type: 'module'}),
-  };
+  const worker = new Worker(new URL('./converter-worker.js', import.meta.url), {type: 'module'});
+  const slot = {busy: false, worker, dead: false, lastError: null};
+  worker.addEventListener('error', event => {
+    slot.dead = true;
+    slot.lastError = event?.message || 'converter worker crashed';
+    reportWorkerFailure(slot.lastError);
+  });
+  worker.addEventListener('messageerror', () => {
+    slot.dead = true;
+    slot.lastError = 'converter worker message could not be decoded';
+    reportWorkerFailure(slot.lastError);
+  });
   workers.push(slot);
   return slot;
 }
@@ -22,17 +77,28 @@ function createWorkerSlot() {
 function removeWorkerSlot(slot) {
   const index = workers.indexOf(slot);
   if (index !== -1) workers.splice(index, 1);
+  slot.dead = true;
+  slot.busy = false;
   slot.worker.terminate();
 }
 
-function acquireWorker() {
-  let slot = workers.find(candidate => !candidate.busy);
-  if (!slot && workers.length < MAX_WORKERS) slot = createWorkerSlot();
+function acquireWorker(timeoutMs = conversionWatchdogMs()) {
+  let slot = workers.find(candidate => !candidate.busy && !candidate.dead);
+  if (!slot && workers.filter(candidate => !candidate.dead).length < MAX_WORKERS) slot = createWorkerSlot();
   if (slot) {
     slot.busy = true;
     return Promise.resolve(slot);
   }
-  return new Promise(resolve => waiters.push(resolve));
+  return new Promise((resolve, reject) => {
+    const waiter = {resolve, timer: 0};
+    waiter.timer = setTimeout(() => {
+      const index = waiters.indexOf(waiter);
+      if (index !== -1) waiters.splice(index, 1);
+      noteWatchdog();
+      reject(watchdogError());
+    }, timeoutMs);
+    waiters.push(waiter);
+  });
 }
 
 function releaseWorker(slot, healthy = true) {
@@ -40,23 +106,28 @@ function releaseWorker(slot, healthy = true) {
     removeWorkerSlot(slot);
     const waiter = waiters.shift();
     if (waiter) {
+      clearTimeout(waiter.timer);
       const replacement = createWorkerSlot();
       replacement.busy = true;
-      waiter(replacement);
+      waiter.resolve(replacement);
     }
     return;
   }
   const waiter = waiters.shift();
-  if (waiter) waiter(slot);
-  else slot.busy = false;
+  if (waiter) {
+    clearTimeout(waiter.timer);
+    waiter.resolve(slot);
+  } else {
+    slot.busy = false;
+  }
 }
 
 function friendlyError(message) {
   if (/out of memory|memory access out of bounds|cannot enlarge|allocation failed|oom|runtimeerror/i.test(message)) {
     return new Error('ffmpeg.wasm ran out of memory during conversion. Try a shorter clip or a lower-resolution source.');
   }
-  if (/failed to fetch|networkerror|importing a module|dynamically imported module|load failed/i.test(message)) {
-    return new Error('Could not load ffmpeg.wasm from the CDN. Check the network connection; the original file was never uploaded.');
+  if (/failed to fetch|networkerror|importing a module|dynamically imported module|load failed|wasm streaming|failed to compile|out of memory during instantiation/i.test(message)) {
+    return new Error('Conversion engine could not be loaded — check the connection once; it is cached afterwards.');
   }
   return new Error(`ffmpeg.wasm conversion failed: ${message}`);
 }
@@ -96,8 +167,9 @@ async function runConversion(inputBytes, options) {
     const resetTimer = () => {
       clearTimeout(inactivityTimer);
       inactivityTimer = setTimeout(() => {
-        fail(new Error('ffmpeg.wasm stopped responding for 5 minutes. The conversion was stopped; try a smaller file.'), false);
-      }, INACTIVITY_TIMEOUT_MS);
+        noteWatchdog();
+        fail(watchdogError(), false);
+      }, conversionWatchdogMs());
     };
     const onMessage = event => {
       const data = event.data;
@@ -151,6 +223,7 @@ async function runConversion(inputBytes, options) {
         });
       } else if (data.type === 'error') {
         const outOfMemory = /out of memory|memory access out of bounds|cannot enlarge|allocation failed|oom|runtimeerror/i.test(data.message || '');
+        if (outOfMemory) reportWorkerFailure(`ffmpeg.wasm reported: ${data.message}`);
         fail(friendlyError(data.message), !outOfMemory);
       }
     };
@@ -185,7 +258,9 @@ async function runWorkerTask(payload, transfer, options = {}) {
   const started = performance.now();
   return new Promise((resolve, reject) => {
     let settled = false;
+    let inactivityTimer = 0;
     const clear = () => {
+      clearTimeout(inactivityTimer);
       instance.removeEventListener('message', onMessage);
       instance.removeEventListener('error', onWorkerError);
       instance.removeEventListener('messageerror', onMessageError);
@@ -197,9 +272,17 @@ async function runWorkerTask(payload, transfer, options = {}) {
       releaseWorker(slot, healthy);
       reject(error);
     };
+    const resetTimer = () => {
+      clearTimeout(inactivityTimer);
+      inactivityTimer = setTimeout(() => {
+        noteWatchdog();
+        fail(watchdogError(), false);
+      }, conversionWatchdogMs());
+    };
     const onMessage = event => {
       const data = event.data;
       if (data.requestId !== id) return;
+      resetTimer();
       if (data.type === 'status') options.onStatus?.(data.message);
       else if (data.type === 'done') {
         if (settled) return;
@@ -221,6 +304,7 @@ async function runWorkerTask(payload, transfer, options = {}) {
     instance.addEventListener('message', onMessage);
     instance.addEventListener('error', onWorkerError);
     instance.addEventListener('messageerror', onMessageError);
+    resetTimer();
     instance.postMessage({id, ...payload}, transfer);
   });
 }
