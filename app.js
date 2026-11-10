@@ -47,7 +47,7 @@ import {
 } from './audio.js';
 
 const MAX_CLIPS = 12;
-const BUILD = 'v38';
+const BUILD = 'v39';
 const SHELL_NOTICE_MIXED = 'This page mixes two m4shlab versions. Reload to get a consistent editor.';
 const SHELL_NOTICE_INCOMPLETE = 'This editor is incomplete. Reload the page.';
 const REQUIRED_UI = [
@@ -125,6 +125,7 @@ const OPTIONAL_UI = [
   'trim-apply',
   'session-hint',
   'mosh-notice',
+  'software-marker',
   'debug-panel',
   'debug-info',
   'debug-video-state',
@@ -147,6 +148,7 @@ const dropZone = document.querySelector('#drop-zone');
 const error = document.querySelector('#error');
 const sessionHint = document.querySelector('#session-hint');
 const moshNotice = document.querySelector('#mosh-notice');
+const softwareMarker = document.querySelector('#software-marker');
 const conversionProgress = document.querySelector('#conversion-progress');
 const conversionStatus = document.querySelector('#conversion-status');
 const assemblePreviewButton = document.querySelector('#assemble-preview');
@@ -405,12 +407,30 @@ function applySoundPreference() {
   video.muted = !soundEnabled;
 }
 
+/* First launch on a touch device defaults to software preview: the device
+   decoder is the one that may hide the mosh, so the safe default is the path
+   that shows the decoded stream. An explicit stored choice always wins, and
+   the visibility check can still switch it off on devices that show the mosh
+   correctly. */
+function softwarePreviewDefault() {
+  return globalThis.matchMedia?.('(pointer: coarse)')?.matches === true;
+}
+
 function readSoftwarePreviewPreference() {
   try {
-    return localStorage.getItem(SOFTWARE_PREVIEW_KEY) === 'true';
+    const stored = localStorage.getItem(SOFTWARE_PREVIEW_KEY);
+    if (stored === 'true') return true;
+    if (stored === 'false') return false;
+    const fallback = softwarePreviewDefault();
+    if (fallback) localStorage.setItem(SOFTWARE_PREVIEW_KEY, 'true');
+    return fallback;
   } catch {
     return false;
   }
+}
+
+function setSoftwareMarker(active) {
+  if (softwareMarker) softwareMarker.hidden = !active;
 }
 
 function writeSoftwarePreviewPreference() {
@@ -2177,23 +2197,27 @@ function releasePreviewResources() {
 }
 
 function stopSoftwarePreview() {
+  setSoftwareMarker(false);
   if (softwarePreviewPlayer) softwarePreviewPlayer.stop();
   if (previewCanvas) previewCanvas.hidden = true;
   video.hidden = false;
 }
 
-function disableSoftwarePreview(message = '') {
+function disableSoftwarePreview(message = '', persist = true) {
   stopSoftwarePreview();
   softwarePreviewEnabled = false;
   if (softwarePreviewToggle) softwarePreviewToggle.checked = false;
-  writeSoftwarePreviewPreference();
+  if (persist) writeSoftwarePreviewPreference();
   if (message) setError(message);
 }
 
 async function startSoftwarePreview() {
   if (!softwarePreviewEnabled || !previewBytes || !previewCanvas) return;
   if (!softwarePreviewDecodable()) {
-    disableSoftwarePreview('This browser has no WebCodecs VideoDecoder, so software preview is not available here.');
+    // No VideoDecoder: the <video> preview still works, so switching back is
+    // not an error the user has to read about — and it must not overwrite a
+    // preference the user has not set on this device yet.
+    disableSoftwarePreview('', false);
     return;
   }
   video.pause();
@@ -2211,6 +2235,7 @@ async function startSoftwarePreview() {
     softwarePreviewInfo = await softwarePreviewPlayer.load(previewBytes);
     if (!softwarePreviewInfo) return;
     softwarePreviewPlayer.play();
+    setSoftwareMarker(true);
   } catch (error) {
     softwarePreviewInfo = null;
     disableSoftwarePreview(`Software preview could not decode this stream (${error instanceof Error ? error.message : String(error)}). Showing the browser's video element instead.`);

@@ -410,7 +410,7 @@ try {
   assert.equal(emptyState.projectMaxLength, 60);
   assert.equal(emptyState.projectAria, 'Project name');
   assert.equal(emptyState.exportLabel, 'Export MP4 ↗');
-  assert.deepEqual(emptyState.previewOrder, ['sound', 'time', 'software']);
+  assert.deepEqual(emptyState.previewOrder, ['sound', 'time', 'software', 'software-marker']);
   assert.deepEqual(emptyState.sequenceOrder, ['undo-button', 'redo-button', 'project-menu', 'sequence-label']);
   assert.deepEqual(emptyState.footerActionOrder, ['assemble-preview', 'export-button']);
   assert.equal(emptyState.footer, 'Real H.264 bitstream editing · max 720px · 30 fps · originals untouched');
@@ -3701,6 +3701,7 @@ try {
   console.log(`PASS black & white lands on the trimmed pixels: exported frame 0 matches source frame 10 best (MAD ${madInPoint.toFixed(2)} <= 16, chroma ${chromaSpread.toFixed(2)}) and misses source frame 0 (MAD ${madFrameZero.toFixed(2)} >= 18)`);
 
   // ── Software preview and ?debug=1 diagnostics ────────────────────────────
+  await client.evaluate("localStorage.removeItem('m4shlab-software-preview'); true");
   await client.send('Page.navigate', {url: `${baseUrl}?software-preview-check=1`});
   await client.waitFor("document.documentElement.dataset.appReady === 'true'", 15000);
   const previewDefaults = await client.evaluate(`(() => {
@@ -3715,7 +3716,7 @@ try {
       stored: localStorage.getItem('m4shlab-software-preview'),
     };
   })()`);
-  assert.deepEqual(previewDefaults.order, ['sound-toggle', 'preview-time', 'software-toggle'], `preview row order is ${JSON.stringify(previewDefaults.order)}`);
+  assert.deepEqual(previewDefaults.order, ['sound-toggle', 'preview-time', 'software-toggle', 'software-marker'], `preview row order is ${JSON.stringify(previewDefaults.order)}`);
   assert.equal(previewDefaults.checked, false, 'software preview must default to off');
   assert.equal(previewDefaults.canvasHidden, true, 'the preview canvas must stay hidden while software preview is off');
   assert.equal(previewDefaults.debugHidden, true, 'the diagnostics overlay must stay hidden without ?debug=1');
@@ -4063,6 +4064,44 @@ try {
   assert.equal(unmeasurable.toggle, false, 'an unmeasurable check must not switch the preview');
   assert.match(unmeasurable.line, /unmeasurable: probe decode produced no frames/, `debug line is ${unmeasurable.line}`);
   console.log(`PASS an unmeasurable check leaves <video> in charge, shows no notice and logs "${unmeasurable.line.trim()}" only in ?debug=1`);
+
+  // ── Coarse-pointer default and the SW marker ─────────────────────────────
+  await client.send('Emulation.setTouchEmulationEnabled', {enabled: true, maxTouchPoints: 5});
+  await client.send('Emulation.setDeviceMetricsOverride', {width: 390, height: 844, deviceScaleFactor: 1, mobile: true});
+  await client.evaluate("localStorage.removeItem('m4shlab-software-preview'); true");
+  await client.send('Page.navigate', {url: `${baseUrl}?debug=1&mobile-default=1`});
+  await client.waitFor("document.documentElement.dataset.appReady === 'true'", 15000);
+  const mobileDefault = await client.evaluate(`(() => ({
+    coarse: matchMedia('(pointer: coarse)').matches,
+    toggle: document.querySelector('#software-preview').checked,
+    stored: localStorage.getItem('m4shlab-software-preview'),
+    markerHidden: document.querySelector('#software-marker').hidden,
+  }))()`);
+  assert.equal(mobileDefault.coarse, true, 'touch emulation must report a coarse pointer');
+  assert.equal(mobileDefault.toggle, true, 'a coarse-pointer first launch must default software preview on');
+  assert.equal(mobileDefault.stored, 'true', 'the coarse-pointer default must be persisted');
+  assert.equal(mobileDefault.markerHidden, true, 'the SW marker must stay hidden until the canvas actually runs');
+  console.log('PASS a coarse-pointer first launch defaults software preview on and persists that choice, while the SW marker waits for the canvas');
+
+  await client.setFiles('#file-input-a', [fixtures.effectA, fixtures.effectB]);
+  await client.waitFor("document.querySelectorAll('.clip-card').length === 2", 60000);
+  await client.waitFor("!document.querySelector('#assemble-preview').disabled", 180000);
+  await client.evaluate("document.querySelector('#assemble-preview').click()");
+  await client.waitFor("document.querySelector('#preview-canvas').hidden === false", 20000);
+  await client.waitFor("document.querySelector('#software-marker').hidden === false", 20000);
+  const markerOn = await client.evaluate("document.querySelector('#software-marker').textContent");
+  await client.evaluate(`(() => {
+    const toggle = document.querySelector('#software-preview');
+    toggle.checked = false;
+    toggle.dispatchEvent(new Event('change', {bubbles: true}));
+  })()`);
+  await new Promise(resolve => setTimeout(resolve, 300));
+  const markerOff = await client.evaluate("document.querySelector('#software-marker').hidden");
+  assert.equal(markerOn.trim(), 'SW');
+  assert.equal(markerOff, true, 'the SW marker must disappear when software preview is switched off');
+  console.log('PASS the "SW" marker appears next to the toggle only while the software canvas is drawing the preview');
+  await client.send('Emulation.setTouchEmulationEnabled', {enabled: false, maxTouchPoints: 1});
+  await client.send('Emulation.setDeviceMetricsOverride', {width: 1200, height: 900, deviceScaleFactor: 1, mobile: false});
 
   if (client.exceptions.length) throw new Error(`Browser exceptions:\n${client.exceptions.join('\n')}`);
 } finally {

@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="en" data-build="v38">
+<html lang="en" data-build="v39">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Client-side H.264 bitstream moshing.">
-  <meta name="m4shlab-build" content="v38">
+  <meta name="m4shlab-build" content="v39">
   <meta name="theme-color" content="#f5f5f3">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="m4shlab">
@@ -39,6 +39,7 @@
         <label class="sound-toggle"><input id="sound-toggle" type="checkbox" checked> <span>Sound on</span></label>
         <span id="preview-time" aria-label="Preview time">0.00 / 0.00 s</span>
         <label class="software-toggle" title="Decodes the edited stream with WebCodecs instead of the browser's video element. Audio is not played in software preview."><input id="software-preview" type="checkbox"> <span>Software preview</span></label>
+        <span id="software-marker" class="software-marker" title="Software preview is drawing the preview" hidden>SW</span>
       </div>
     </div>
 

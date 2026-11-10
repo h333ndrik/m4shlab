@@ -549,16 +549,27 @@ try {
   await importFiles([fixtures.speed, fixtures.silentB], 2);
 
   await check(12, 'mobile-emulation', async () => {
-    const before = await client.evaluate("document.querySelector('#preview-video').currentTime");
-    await clickAt('#preview-video');
+    // Touch devices start with the software preview, so the row measures the
+    // preview clock (which both paths feed) instead of <video>.currentTime, and
+    // it allows at most the one gesture a phone needs.
+    const read = () => client.evaluate(`(() => {
+      const text = document.querySelector('#preview-time').textContent;
+      return {
+        current: Number(text.split(' / ')[0]) || 0,
+        text,
+        canvas: document.querySelector('#preview-canvas').hidden === false,
+      };
+    })()`);
+    const start = await read();
     await sleep(800);
-    const after = await client.evaluate(`({
-      currentTime: document.querySelector('#preview-video').currentTime,
-      paused: document.querySelector('#preview-video').paused,
-      duration: document.querySelector('#preview-video').duration,
-    })`);
-    assert.ok(after.currentTime > before, `currentTime did not advance after one click: ${before} -> ${after.currentTime}`);
-    return `one click advanced currentTime ${before.toFixed(2)} -> ${after.currentTime.toFixed(2)}s (paused=${after.paused})`;
+    let state = await read();
+    if (!(state.current > start.current)) {
+      await clickAt(state.canvas ? '#preview-canvas' : '#preview-video');
+      await sleep(800);
+      state = await read();
+    }
+    assert.ok(state.current > start.current, `the preview did not advance after one gesture: ${start.text} -> ${state.text}`);
+    return `the ${state.canvas ? 'software canvas' : '<video>'} preview advanced ${start.current.toFixed(2)} -> ${state.current.toFixed(2)}s with at most one gesture`;
   });
 
   await check(13, 'mobile-emulation', async () => {

@@ -395,6 +395,15 @@ button:focus-visible,
 
 .software-toggle input { margin: 0; }
 
+.software-marker {
+  padding: 1px 4px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+}
+
 .empty-preview {
   position: absolute;
   color: #b5b5b5;

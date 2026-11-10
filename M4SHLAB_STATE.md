@@ -2,6 +2,13 @@
 
 Updated: 2026-11-09
 
+## Touch default and SW marker (build stamp v39)
+
+- Coarse-pointer first launch (no stored `m4shlab-software-preview`) starts with software preview on and persists that choice; an explicit stored value always wins, and the mosh-visibility check can still switch it off.
+- A small `SW` marker next to the toggle shows only while the canvas is actually drawing the preview.
+- A browser without `VideoDecoder` falls back to `<video>` silently and does not overwrite the stored preference.
+- Suites: 86 Node, 129 WebCodecs (126 + 2 checks + 1 optional element), 10 cursor, 6 PWA (33 assets, caches `m4shlab-v39`), acceptance `PASS 16 / FAIL 0 / UNVERIFIABLE 6 of 22`.
+
 ## Automatic mosh-visibility check (build stamp v38)
 
 **State: shipped on `main`, automated suites green, device acceptance pending.**
