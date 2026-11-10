@@ -330,6 +330,51 @@ function alignFrameNumbers(chunks, description, frameNumberBase) {
   return {patched, log2MaxFrameNum: sps.log2MaxFrameNum, picOrderCntType: sps.picOrderCntType};
 }
 
+/* Mosh visibility thresholds on the 0-255 mean-absolute-error scale.
+   A frame that repeats the previous picture stays well below 2; a decoded
+   stream that really changes at the mosh boundary moves above 6 (measured on
+   the synthetic colour-bar fixtures: repeats land at 0.0-0.4, real changes at
+   14-40). Paths that agree stay below 2 as well. */
+export const MOSH_VISIBILITY_THRESHOLDS = {
+  repeatedFrameMae: 2,
+  visibleChangeMae: 6,
+  pathMatchMae: 2,
+};
+
+export function meanAbsoluteError(rgbaA, rgbaB) {
+  if (!rgbaA || !rgbaB) throw new TypeError('meanAbsoluteError needs two RGBA buffers');
+  if (rgbaA.length !== rgbaB.length) throw new Error(`meanAbsoluteError needs equal buffers (${rgbaA.length} vs ${rgbaB.length})`);
+  if (rgbaA.length === 0) throw new Error('meanAbsoluteError needs a non-empty buffer');
+  let total = 0;
+  for (let index = 0; index < rgbaA.length; index += 4) {
+    total += Math.abs(rgbaA[index] - rgbaB[index]);
+    total += Math.abs(rgbaA[index + 1] - rgbaB[index + 1]);
+    total += Math.abs(rgbaA[index + 2] - rgbaB[index + 2]);
+  }
+  return total / ((rgbaA.length / 4) * 3);
+}
+
+/* The check compares the platform's <video> playback with our own decode of the
+   same bytes. `repeatMae` is how much the <video> frame after the boundary
+   differs from the <video> frame just before it; `changeMae` is the same
+   difference in the decoded stream; `videoMae` compares the two paths at the
+   post-boundary sample.
+
+   A decoder that hides the mosh shows the pre-boundary picture again
+   (`repeatMae` ~ 0) while the decoded stream demonstrably changes
+   (`changeMae` high). When the stream does not change, or the <video> frame
+   changes with it, the mosh is visible and nothing is switched. */
+export function decideMoshVisibility({repeatMae, changeMae, videoMae} = {}) {
+  if (!Number.isFinite(repeatMae) || !Number.isFinite(changeMae)) {
+    return {hidden: false, reason: 'no-measurement', pathsMatch: null};
+  }
+  const thresholds = MOSH_VISIBILITY_THRESHOLDS;
+  const pathsMatch = Number.isFinite(videoMae) ? videoMae < thresholds.pathMatchMae : null;
+  if (changeMae < thresholds.visibleChangeMae) return {hidden: false, reason: 'stream-does-not-change', pathsMatch};
+  if (repeatMae < thresholds.repeatedFrameMae) return {hidden: true, reason: 'video-repeats-frame-before-boundary', pathsMatch};
+  return {hidden: false, reason: 'mosh-visible-in-video', pathsMatch};
+}
+
 export function isWebCodecsAvailable() {
   return typeof globalThis.VideoDecoder === 'function'
     && typeof globalThis.VideoEncoder === 'function'

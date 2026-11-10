@@ -10,6 +10,7 @@ import { HEVC_IRAP_MAX, HEVC_IRAP_MIN, extractHevcNals, parseHevcConfig } from '
 import { moshH264 } from '../mosh.js';
 import { CompatibilityError, appendCutH264, checkCompatibility, mergeEffectH264, mergeMoshH264, mergeSequenceH264, parseAvcConfig } from '../merge.js';
 import { buildNormalizedMp4, chooseNormalizationTarget } from '../webcodecs-muxer.js';
+import { MOSH_VISIBILITY_THRESHOLDS, decideMoshVisibility, meanAbsoluteError } from '../webcodecs.js';
 import { MAX_TARGET_LONG_SIDE, capNormalizationDimensions } from '../conversion-settings.js';
 import { parseSps } from '../parser/sps.js';
 import { ValueError, frameRateForTrack } from '../classic-mosh.js';
@@ -2027,5 +2028,29 @@ assert.equal(chainedDuration.report.boundaries[1].duration_frames, 5);
 assert.equal(chainedDuration.report.boundaries[1].ending, 'continue');
 assert.ok(chainedDuration.report.mergedSamples > 0);
 pass('chained rendering carries independent duration/ending settings at both Classic Mosh boundaries and retains the restore IDR report');
+
+const solid = (red, green, blue) => Uint8ClampedArray.from([red, green, blue, 255]);
+assert.equal(meanAbsoluteError(solid(10, 20, 30), solid(10, 20, 30)), 0, 'identical frames must have zero error');
+const repeatedPair = meanAbsoluteError(solid(12, 22, 31), solid(10, 20, 30));
+const changedPair = meanAbsoluteError(solid(10, 20, 30), solid(60, 120, 180));
+assert.ok(repeatedPair < MOSH_VISIBILITY_THRESHOLDS.repeatedFrameMae, `near-identical frames scored ${repeatedPair}`);
+assert.ok(changedPair > MOSH_VISIBILITY_THRESHOLDS.visibleChangeMae, `a real picture change scored ${changedPair}`);
+assert.throws(() => meanAbsoluteError(Uint8ClampedArray.from([0, 0, 0, 255]), Uint8ClampedArray.from([0, 0, 0, 255, 0, 0, 0, 255])), /equal buffers/, 'mismatched buffers must be rejected');
+pass(`mosh visibility MAE scores repeats at ${repeatedPair} and changes at ${changedPair.toFixed(1)} on the 0-255 scale, with thresholds repeat<${MOSH_VISIBILITY_THRESHOLDS.repeatedFrameMae} and change>=${MOSH_VISIBILITY_THRESHOLDS.visibleChangeMae}`);
+
+const hidden = decideMoshVisibility({repeatMae: 0.3, changeMae: 18, videoMae: 12});
+assert.equal(hidden.hidden, true);
+assert.equal(hidden.reason, 'video-repeats-frame-before-boundary');
+const desktop = decideMoshVisibility({repeatMae: 22, changeMae: 18, videoMae: 0.4});
+assert.equal(desktop.hidden, false, 'a <video> that changes with the stream must not trigger a switch');
+assert.equal(desktop.reason, 'mosh-visible-in-video');
+assert.equal(desktop.pathsMatch, true);
+const unchanged = decideMoshVisibility({repeatMae: 0.2, changeMae: 1, videoMae: 0.1});
+assert.equal(unchanged.hidden, false, 'a stream that does not change at the boundary must not trigger a switch');
+assert.equal(unchanged.reason, 'stream-does-not-change');
+const unmeasured = decideMoshVisibility({});
+assert.equal(unmeasured.hidden, false);
+assert.equal(unmeasured.reason, 'no-measurement');
+pass('mosh visibility decision: hidden only when the <video> repeats the pre-boundary frame while the decoded stream changes; desktop, unchanged-stream and unmeasured cases stay off');
 
 console.log(`All tests passed. Phase A: ${input.byteLength} B → ${result.output.byteLength} B; Phase B: ${phaseAInput.byteLength} B + ${phaseBInput.byteLength} B → ${mergeResult.output.byteLength} B.`);

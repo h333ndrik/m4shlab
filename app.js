@@ -19,7 +19,15 @@ import {
   muxPcmWithFfmpeg,
   speedAudioPcmWithFfmpeg,
 } from './converter.js';
-import { decoderConfigForTrack, decodeChunksForTrack, isWebCodecsAvailable, normalizeWithWebCodecs } from './webcodecs.js';
+import {
+  MOSH_VISIBILITY_THRESHOLDS,
+  decideMoshVisibility,
+  decoderConfigForTrack,
+  decodeChunksForTrack,
+  isWebCodecsAvailable,
+  meanAbsoluteError,
+  normalizeWithWebCodecs,
+} from './webcodecs.js';
 import { chooseNormalizationTarget } from './webcodecs-muxer.js';
 import { frameRateForTrack, maxMoshFrames } from './classic-mosh.js';
 import { atempoChain, normalizeSpeed, speedOutputFrameCount, SPEED_MAX, SPEED_MIN, SPEED_STEP } from './speed.js';
@@ -39,7 +47,7 @@ import {
 } from './audio.js';
 
 const MAX_CLIPS = 12;
-const BUILD = 'v37';
+const BUILD = 'v38';
 const SHELL_NOTICE_MIXED = 'This page mixes two m4shlab versions. Reload to get a consistent editor.';
 const SHELL_NOTICE_INCOMPLETE = 'This editor is incomplete. Reload the page.';
 const REQUIRED_UI = [
@@ -116,6 +124,7 @@ const OPTIONAL_UI = [
   'trim-reset',
   'trim-apply',
   'session-hint',
+  'mosh-notice',
   'debug-panel',
   'debug-info',
   'debug-video-state',
@@ -137,6 +146,7 @@ const sequenceLabel = document.querySelector('#sequence-label');
 const dropZone = document.querySelector('#drop-zone');
 const error = document.querySelector('#error');
 const sessionHint = document.querySelector('#session-hint');
+const moshNotice = document.querySelector('#mosh-notice');
 const conversionProgress = document.querySelector('#conversion-progress');
 const conversionStatus = document.querySelector('#conversion-status');
 const assemblePreviewButton = document.querySelector('#assemble-preview');
@@ -243,6 +253,12 @@ let softwarePreviewEnabled = readSoftwarePreviewPreference();
 let previewBytes = null;
 let sessionConversions = 0;
 let sessionHintShown = false;
+const moshVisibilityResults = new Map();
+let moshVisibilityTimer = 0;
+let moshVisibilityRunning = false;
+
+const MOSH_CHECK_MAX_EDGE = 480;
+const MOSH_HIDDEN_NOTICE = 'Device decoder hides the mosh — software preview enabled.';
 
 const SESSION_CONVERSION_HINT_AT = 20;
 const SESSION_HINT_TEXT = 'Many conversions this session — if imports stop responding, reload the page.';
@@ -1665,6 +1681,7 @@ function updatePreviewSelection() {
 }
 
 function resetMerged() {
+  showMoshNotice('');
   if (merged?.cutUrl) URL.revokeObjectURL(merged.cutUrl);
   if (merged?.mergedUrl) URL.revokeObjectURL(merged.mergedUrl);
   merged = null;
@@ -1955,6 +1972,203 @@ function softwarePreviewSource() {
   const index = previewClipIndex();
   if (index < 0) return null;
   return {bytes: clips[index].bytes, label: clipPreviewLabel(index)};
+}
+
+/* ── Mosh visibility check ─────────────────────────────────────────────────
+   Compares the platform's <video> playback of the assembled preview with our
+   own decode of the same bytes around the first mosh boundary. The <video>
+   element is a separate, muted element so the visible preview is not moved.
+   The measurement is cached per source/settings signature and never runs while
+   an import or render is in flight. */
+
+function showMoshNotice(message) {
+  if (!moshNotice) return;
+  moshNotice.textContent = message;
+  moshNotice.hidden = !message;
+}
+
+function moshVisibilitySignature() {
+  if (!merged) return null;
+  return [
+    merged.result.report.mergedSamples,
+    merged.result.report.timescale,
+    clips.map(clip => [clip.id, clip.transition, clip.moshDurationFrames ?? '', clip.moshEnding ?? '', clip.meltRepeat ?? ''].join(':')).join('|'),
+  ].join('#');
+}
+
+function seekVideoElement(element, time) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('seeking the preview element timed out')), 5000);
+    const done = () => {
+      clearTimeout(timer);
+      element.removeEventListener('seeked', done);
+      resolve();
+    };
+    element.addEventListener('seeked', done);
+    element.currentTime = time;
+  });
+}
+
+async function captureVideoFrames(url, times) {
+  const element = document.createElement('video');
+  element.muted = true;
+  element.playsInline = true;
+  element.preload = 'auto';
+  element.src = url;
+  const frames = [];
+  try {
+    await new Promise((resolve, reject) => {
+      element.addEventListener('loadeddata', resolve, {once: true});
+      element.addEventListener('error', () => reject(new Error('the video element could not load the assembled preview')), {once: true});
+    });
+    const sourceWidth = element.videoWidth || 320;
+    const sourceHeight = element.videoHeight || 240;
+    const width = Math.max(2, Math.min(MOSH_CHECK_MAX_EDGE, sourceWidth));
+    const height = Math.max(2, Math.round(width * sourceHeight / sourceWidth));
+    for (const time of times) {
+      await seekVideoElement(element, time);
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext('2d', {alpha: false});
+      context.fillStyle = '#000';
+      context.fillRect(0, 0, width, height);
+      context.drawImage(element, 0, 0, width, height);
+      frames.push(context.getImageData(0, 0, width, height).data);
+    }
+    return {frames, width, height};
+  } finally {
+    element.removeAttribute('src');
+    element.load();
+  }
+}
+
+function imageDataFromFrame(frame, width, height) {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d', {alpha: false});
+  context.fillStyle = '#000';
+  context.fillRect(0, 0, width, height);
+  const scale = Math.min(width / frame.displayWidth, height / frame.displayHeight);
+  const drawWidth = Math.max(1, Math.round(frame.displayWidth * scale));
+  const drawHeight = Math.max(1, Math.round(frame.displayHeight * scale));
+  context.drawImage(frame, Math.floor((width - drawWidth) / 2), Math.floor((height - drawHeight) / 2), drawWidth, drawHeight);
+  return context.getImageData(0, 0, width, height).data;
+}
+
+async function measureMoshVisibility() {
+  const override = globalThis.__m4shlabMoshMeasurement;
+  if (typeof override === 'function') return override();
+  const parsed = parseMp4(merged.result.output);
+  const track = parsed.videoTrack;
+  const total = track.samples.length;
+  const boundary = mergedBoundarySample(total);
+  if (boundary == null || boundary < 1 || boundary + 3 >= total) throw new Error('no measurable mosh boundary');
+  const before = Math.max(0, boundary - 1);
+  const after = Math.min(total - 1, boundary + 3);
+  const chunks = decodeChunksForTrack(merged.result.output, track);
+  const times = [chunks[before].timestamp / 1e6, chunks[after].timestamp / 1e6];
+  const video = await captureVideoFrames(merged.mergedUrl, times);
+  const {frames} = await decodeStripFrames(merged.result.output, [before, after]);
+  try {
+    const softwareBefore = frames.get(before);
+    const softwareAfter = frames.get(after);
+    if (!softwareBefore || !softwareAfter) throw new Error('the WebCodecs decode returned no frames for the boundary samples');
+    const softBefore = imageDataFromFrame(softwareBefore, video.width, video.height);
+    const softAfter = imageDataFromFrame(softwareAfter, video.width, video.height);
+    return {
+      samples: {before, after},
+      repeatMae: meanAbsoluteError(video.frames[0], video.frames[1]),
+      changeMae: meanAbsoluteError(softBefore, softAfter),
+      pathMae: meanAbsoluteError(video.frames[1], softAfter),
+    };
+  } finally {
+    for (const frame of frames.values()) frame.close();
+  }
+}
+
+function applyMoshVisibilityResult(record) {
+  moshVisibilityResults.set(record.signature, record);
+  if (record.decision.hidden) {
+    if (!softwarePreviewEnabled) {
+      softwarePreviewEnabled = true;
+      writeSoftwarePreviewPreference();
+      if (softwarePreviewToggle) softwarePreviewToggle.checked = true;
+      refreshSoftwarePreview();
+    }
+    showMoshNotice(MOSH_HIDDEN_NOTICE);
+  } else {
+    showMoshNotice('');
+  }
+  updateMoshVisibilityReport(record);
+  updateDebugInfo();
+}
+
+function updateMoshVisibilityReport(record) {
+  if (!merged) return;
+  try {
+    const parsed = JSON.parse(report.textContent);
+    if (!parsed || typeof parsed !== 'object') return;
+    parsed.mosh_visibility = {
+      signature: record.signature,
+      sample_before: record.samples?.before ?? null,
+      sample_after: record.samples?.after ?? null,
+      video_repeat_mae: Number(record.repeatMae.toFixed(3)),
+      stream_change_mae: Number(record.changeMae.toFixed(3)),
+      video_vs_software_mae: Number(record.pathMae.toFixed(3)),
+      repeated_threshold: MOSH_VISIBILITY_THRESHOLDS.repeatedFrameMae,
+      change_threshold: MOSH_VISIBILITY_THRESHOLDS.visibleChangeMae,
+      hidden: record.decision.hidden,
+      decision: record.decision.reason,
+      paths_match: record.decision.pathsMatch,
+    };
+    const text = JSON.stringify(parsed, null, 2);
+    report.textContent = text;
+    if (bitstreamReportJson) bitstreamReportJson.textContent = text;
+  } catch {}
+}
+
+async function runMoshVisibilityCheck() {
+  if (!merged || moshVisibilityRunning) return;
+  const signature = moshVisibilitySignature();
+  if (!signature || moshVisibilityResults.has(signature)) return;
+  if (document.hidden || importInFlight > 0 || refreshInFlight > 0) return;
+  if (!softwarePreviewDecodable()) return;
+  moshVisibilityRunning = true;
+  const token = refreshToken;
+  try {
+    const measurement = await measureMoshVisibility();
+    if (token !== refreshToken || !merged) return;
+    const decision = decideMoshVisibility({
+      repeatMae: measurement.repeatMae,
+      changeMae: measurement.changeMae,
+      videoMae: measurement.pathMae,
+    });
+    applyMoshVisibilityResult({signature, ...measurement, decision});
+  } catch (error) {
+    const record = {
+      signature,
+      samples: null,
+      repeatMae: NaN,
+      changeMae: NaN,
+      pathMae: NaN,
+      decision: {hidden: false, reason: `unmeasurable: ${error instanceof Error ? error.message : String(error)}`, pathsMatch: null},
+    };
+    moshVisibilityResults.set(signature, record);
+    updateDebugInfo();
+  } finally {
+    moshVisibilityRunning = false;
+  }
+}
+
+function scheduleMoshVisibilityCheck() {
+  if (!merged || moshVisibilityTimer) return;
+  if (moshVisibilityResults.has(moshVisibilitySignature())) return;
+  moshVisibilityTimer = setTimeout(() => {
+    moshVisibilityTimer = 0;
+    void runMoshVisibilityCheck();
+  }, 0);
 }
 
 function releasePreviewResources() {
@@ -3617,6 +3831,7 @@ async function refreshSequenceInternal() {
     const serializedReport = JSON.stringify(mergeReport, null, 2);
     report.textContent = serializedReport;
     if (bitstreamReportJson) bitstreamReportJson.textContent = serializedReport;
+    scheduleMoshVisibilityCheck();
   } catch (cause) {
     if (token !== refreshToken) return;
     status.textContent = 'No merged MP4 was produced.';
@@ -3886,6 +4101,16 @@ function debugWorkerLines() {
   ];
 }
 
+function debugMoshLines() {
+  const signature = moshVisibilitySignature();
+  const record = signature ? moshVisibilityResults.get(signature) : null;
+  if (!record) return ['mosh check   not run yet'];
+  const format = value => (Number.isFinite(value) ? value.toFixed(2) : 'n/a');
+  return [
+    `mosh check   repeat ${format(record.repeatMae)} · change ${format(record.changeMae)} · video-vs-software ${format(record.pathMae)} · ${record.decision.hidden ? 'hidden' : 'visible'} (${record.decision.reason})`,
+  ];
+}
+
 function debugMemoryLines() {
   const frames = softwarePreviewPlayer?.liveFrames ?? 0;
   const memory = performance.memory;
@@ -3912,6 +4137,7 @@ function updateDebugInfo() {
     ...debugClipLines(),
     ...debugVideoLines(),
     ...debugWorkerLines(),
+    ...debugMoshLines(),
     ...debugMemoryLines(),
   ];
   debugInfo.textContent = lines.join('\n');

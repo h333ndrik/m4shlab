@@ -172,6 +172,13 @@ button:focus-visible,
   outline-offset: 3px;
 }
 
+.mosh-notice {
+  margin: 0;
+  padding: 8px 0;
+  color: #5a5a52;
+  font-size: 11px;
+}
+
 .session-hint {
   margin: 0;
   padding: 8px 0;

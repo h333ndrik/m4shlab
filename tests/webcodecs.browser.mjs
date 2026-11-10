@@ -2126,7 +2126,18 @@ try {
         cards: document.querySelectorAll('.clip-card').length,
         names: [...document.querySelectorAll('.clip-card .clip-name')].map(node => node.textContent),
         connectors: [...document.querySelectorAll('.connector')].map(node => node.textContent),
-        report: document.querySelector('#report').textContent,
+        // mosh_visibility is filled in asynchronously by its own check, so the
+        // snapshot compares the merge report without that block.
+        report: (() => {
+          const text = document.querySelector('#report').textContent;
+          try {
+            const parsed = JSON.parse(text);
+            delete parsed.mosh_visibility;
+            return JSON.stringify(parsed);
+          } catch {
+            return text;
+          }
+        })(),
         project: document.querySelector('#project-name').value,
         sound: document.querySelector('#sound-toggle').checked,
       };
@@ -3982,6 +3993,76 @@ try {
   assert.ok(resumed.frames > 0, 'the software preview did not resume after pagehide');
   assert.ok(resumed.time < afterHide.time + 1.5 && resumed.time > 0, `the resumed preview did not restart from frame 0 (${afterHide.time} -> ${resumed.time})`);
   console.log(`PASS pagehide releases all ${beforeHide.frames} decoded frames, pauses the clock and the next click replays from frame 0 (${resumed.time.toFixed(2)} s)`);
+
+  // ── Mosh visibility check: auto-switch when the device hides the mosh ────
+  const readMoshState = () => client.evaluate(`(() => {
+    const text = document.querySelector('#debug-info').textContent;
+    const line = /mosh check[^\\n]*/.exec(text);
+    const report = document.querySelector('#report').textContent;
+    let visibility = null;
+    try { visibility = JSON.parse(report).mosh_visibility ?? null; } catch {}
+    return {
+      line: line ? line[0] : null,
+      visibility,
+      notice: document.querySelector('#mosh-notice').hidden ? null : document.querySelector('#mosh-notice').textContent,
+      toggle: document.querySelector('#software-preview').checked,
+      stored: localStorage.getItem('m4shlab-software-preview'),
+    };
+  })()`);
+
+  // Each case starts without a stored software-preview preference so the
+  // automatic switch is the only thing that can turn it on.
+  const openMoshCase = async label => {
+    await client.evaluate("localStorage.removeItem('m4shlab-software-preview'); true");
+    await client.send('Page.navigate', {url: `${baseUrl}?debug=1&mosh=${label}`});
+    await client.waitFor("document.documentElement.dataset.appReady === 'true'", 15000);
+  };
+  await openMoshCase('desktop');
+  await client.setFiles('#file-input-a', [fixtures.effectA, fixtures.effectB]);
+  await client.waitFor("document.querySelectorAll('.clip-card').length === 2", 60000);
+  await client.waitFor("!document.querySelector('#assemble-preview').disabled", 180000);
+  await client.evaluate("document.querySelector('#assemble-preview').click()");
+  await client.waitFor("(() => { const t = document.querySelector('#debug-info').textContent; return /mosh check(?!   not run yet)/.test(t); })()", 60000);
+  await new Promise(resolve => setTimeout(resolve, 600));
+  const desktopMosh = await readMoshState();
+  assert.ok(desktopMosh.visibility, 'the merge report must carry the mosh_visibility block');
+  assert.equal(desktopMosh.visibility.hidden, false, `a desktop-like path must not switch, got ${JSON.stringify(desktopMosh.visibility)}`);
+  assert.equal(desktopMosh.notice, null, `no notice expected, got "${desktopMosh.notice}"`);
+  assert.equal(desktopMosh.toggle, false, 'software preview must stay off when the mosh is visible');
+  assert.match(desktopMosh.line, /repeat [0-9.]+\s+· change [0-9.]+\s+· video-vs-software [0-9.]+\s+· visible/, `debug line is ${desktopMosh.line}`);
+  assert.equal(desktopMosh.visibility.repeated_threshold, 2);
+  assert.equal(desktopMosh.visibility.change_threshold, 6);
+  console.log(`PASS the desktop path keeps <video>: ${desktopMosh.line.trim()} — no notice, software preview stays off, and the MAE record is in the merge report`);
+
+  await openMoshCase('hidden');
+  await client.evaluate("window.__m4shlabMoshMeasurement = () => ({repeatMae: 0.4, changeMae: 21, pathMae: 16}); true");
+  await client.setFiles('#file-input-a', [fixtures.effectA, fixtures.effectB]);
+  await client.waitFor("document.querySelectorAll('.clip-card').length === 2", 60000);
+  await client.waitFor("!document.querySelector('#assemble-preview').disabled", 180000);
+  await client.waitFor("document.querySelector('#software-preview').checked === true", 60000);
+  const hiddenMosh = await readMoshState();
+  assert.equal(hiddenMosh.notice, 'Device decoder hides the mosh — software preview enabled.', `notice is ${hiddenMosh.notice}`);
+  assert.equal(hiddenMosh.toggle, true, 'the toggle must be on after an automatic switch');
+  assert.equal(hiddenMosh.stored, 'true', 'the automatic switch must be persisted');
+  assert.equal(hiddenMosh.visibility.hidden, true, 'the report must record the hidden decision');
+  assert.equal(hiddenMosh.visibility.decision, 'video-repeats-frame-before-boundary');
+  assert.equal(hiddenMosh.visibility.sample_before, null, 'injected measurements carry no sample indexes');
+  await new Promise(resolve => setTimeout(resolve, 1200));
+  const cached = await readMoshState();
+  assert.equal(cached.notice, hiddenMosh.notice, 'the cached decision must not re-announce itself');
+  console.log(`PASS a <video> that repeats the pre-boundary frame while the stream changes flips software preview on, persists it ("${hiddenMosh.notice}") and the decision is cached`);
+
+  await openMoshCase('unmeasurable');
+  await client.evaluate("window.__m4shlabMoshMeasurement = () => { throw new Error('probe decode produced no frames'); }; true");
+  await client.setFiles('#file-input-a', [fixtures.effectA, fixtures.effectB]);
+  await client.waitFor("document.querySelectorAll('.clip-card').length === 2", 60000);
+  await client.waitFor("!document.querySelector('#assemble-preview').disabled", 180000);
+  await client.waitFor("(() => /unmeasurable/.test(document.querySelector('#debug-info').textContent))()", 60000);
+  const unmeasurable = await readMoshState();
+  assert.equal(unmeasurable.notice, null, `an unmeasurable check must stay silent, got "${unmeasurable.notice}"`);
+  assert.equal(unmeasurable.toggle, false, 'an unmeasurable check must not switch the preview');
+  assert.match(unmeasurable.line, /unmeasurable: probe decode produced no frames/, `debug line is ${unmeasurable.line}`);
+  console.log(`PASS an unmeasurable check leaves <video> in charge, shows no notice and logs "${unmeasurable.line.trim()}" only in ?debug=1`);
 
   if (client.exceptions.length) throw new Error(`Browser exceptions:\n${client.exceptions.join('\n')}`);
 } finally {

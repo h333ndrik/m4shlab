@@ -2,6 +2,19 @@
 
 Updated: 2026-11-09
 
+## Automatic mosh-visibility check (build stamp v38)
+
+**State: shipped on `main`, automated suites green, device acceptance pending.**
+
+Device decoders may hide the mosh. After a merge the app measures the assembled preview once per source and settings: the frame before and a few frames after the first mosh boundary are captured from a muted off-screen `<video>` and decoded with WebCodecs; the mean absolute errors decide.
+
+- `MOSH_VISIBILITY_THRESHOLDS` in `webcodecs.js`: a repeated frame scores below 2/255, a real stream change above 6/255. `decideMoshVisibility()` returns `hidden` only when the `<video>` repeats the pre-boundary picture while the decoded stream changes.
+- A hidden mosh enables Software preview, persists it and shows "Device decoder hides the mosh — software preview enabled." Everything else stays on `<video>`; an unmeasurable check is logged in `?debug=1` only.
+- The result is cached per source/settings signature, never runs while an import or render is in flight, and lands in the merge report under `mosh_visibility` (MAEs, thresholds, decision, sample indexes).
+- Measured on the two-clip mosh fixture (desktop Chromium): repeat 11.03, stream change 10.63, video-vs-software 8.15 → `mosh-visible-in-video`, no switch.
+
+Suites at this commit: 86 Node (84 + 2 decision checks), 126 WebCodecs (122 + 3 checks + 1 optional element), 10 cursor, 6 PWA (33 assets, caches `m4shlab-v38`), acceptance `PASS 16 / FAIL 0 / UNVERIFIABLE 6 of 22`.
+
 ## Memory guard for repeated sessions (build stamp v37)
 
 **State: shipped on `main`, automated suites green, device acceptance pending.**
